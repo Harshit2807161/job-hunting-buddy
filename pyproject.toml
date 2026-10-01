@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-hunting-buddy"
+version = "0.1.0"
+description = "Discover US new-grad software and AI/ML roles and notify the candidate."
+requires-python = ">=3.12"
+dependencies = ["requests>=2.32,<3"]
+
+[project.optional-dependencies]
+discovery = ["python-jobspy==1.1.82"]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+jhb-poll = "jhb.poll:main"
+
+[tool.setuptools.packages.find]
+include = ["jhb*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
