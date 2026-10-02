@@ -35,8 +35,29 @@ PY
 ```
 
 An isolated Chrome instance can also be started with the Browser Use
-`BrowserSession` library, using an ignored private profile. Point the CLI at its
-exact endpoint with `BU_CDP_WS`; this was the route used for the live check.
+`BrowserSession` library. Point the CLI at its exact endpoint with `BU_CDP_WS`
+or `BU_CDP_URL`; this was the route used for the live check. Browser Use can copy
+Chrome profiles into temporary directories, so verify the resolved profile path
+before using candidate data. Persistent candidate sessions must stay private.
+
+### Explicit local endpoint
+
+If Chrome shows **Server running at: 127.0.0.1:PORT**, remote debugging is enabled
+even when automatic discovery reports that `DevToolsActivePort` is missing.
+Use the endpoint shown by Chrome instead of repeating the setup step:
+
+```sh
+BU_CDP_URL=http://127.0.0.1:PORT BH_HOME="$PWD/private/browser-use-harness" browser-use <<'PY'
+print(page_info())
+PY
+```
+
+Replace `PORT` with Chrome's current port. The endpoint at port `52018` was
+verified through `/json/version` and an actual Browser Use `page_info()` call.
+The local endpoint and harness directory are saved in the ignored project
+`.env` for application commands, which load that file. Shell calls to the CLI
+still need these environment variables. The existing private default daemon is
+reused; no per-job local daemon is needed.
 
 ## Live-site result, October 1, 2026
 
