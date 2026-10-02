@@ -41,6 +41,8 @@ not passed to the server.
 
 ```sh
 npm ci
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" npx playwright install chromium
+# Separate Chromium revision for Python fixture tests:
 PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" .venv/bin/python -m playwright install chromium
 ```
 

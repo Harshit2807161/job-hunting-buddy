@@ -21,5 +21,8 @@ jobs:
       - run: python -m playwright install --with-deps chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: .local-browsers
+      - run: npx playwright install --with-deps chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: .local-browsers
       - run: python -m pytest -q
       - run: python -m compileall -q jhb

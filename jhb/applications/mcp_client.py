@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 
 PLAYWRIGHT_MCP_VERSION = "0.0.83"
@@ -57,6 +58,19 @@ def chromium_executable() -> str:
         if not Path(override).is_file():
             raise RuntimeError("JHB_SOURCE_CHROMIUM does not name an installed executable")
         return override
+    # Prefer the binary revision belonging to the pinned official MCP package.
+    # Python fixture Playwright may install a different Chromium revision.
+    if shutil.which("node"):
+        try:
+            lookup = subprocess.run(["node", "-p", "require('playwright').chromium.executablePath()"],
+                                    capture_output=True, text=True, timeout=5,
+                                    env={key: value for key, value in os.environ.items()
+                                         if key in {"PATH", "HOME", "SYSTEMROOT", "WINDIR", "PLAYWRIGHT_BROWSERS_PATH"}})
+            candidate = Path(lookup.stdout.strip())
+            if lookup.returncode == 0 and candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate.resolve())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ".local-browsers"))
     patterns = ("chromium-*/**/Contents/MacOS/*", "chromium-*/chrome-linux/chrome",
                 "chromium-*/chrome-linux64/chrome", "chromium_headless_shell-*/**/chrome-headless-shell")
@@ -79,6 +93,7 @@ class PlaywrightMCPClient:
         self._id = 0
         self._stderr_task = None
         self._temp = None
+        self.fixture_stderr = ""
 
     async def __aenter__(self):
         try:
@@ -104,6 +119,8 @@ class PlaywrightMCPClient:
                         "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"}
         env = {k: v for k, v in os.environ.items() if k in runtime_keys}
         env["JHB_MCP_FIXTURE_LOCAL"] = "1" if self.allow_localhost else "0"
+        if self.allow_localhost:
+            env["DEBUG"] = "pw:browser"
         cmd = ["npx", "-y", f"@playwright/mcp@{PLAYWRIGHT_MCP_VERSION}", "--headless", "--isolated",
                "--executable-path", self.executable_path or chromium_executable(),
                "--block-service-workers", "--image-responses", "omit", "--init-page", str(init),
@@ -119,8 +136,12 @@ class PlaywrightMCPClient:
 
     async def _drain_stderr(self):
         # Never echo browser URLs, npm environment details, or server stderr.
-        while self.process and await self.process.stderr.read(8192):
-            pass
+        while self.process:
+            chunk = await self.process.stderr.read(8192)
+            if not chunk:
+                break
+            if self.allow_localhost:
+                self.fixture_stderr = (self.fixture_stderr + chunk.decode("utf-8", errors="replace"))[-16000:]
 
     async def _notify(self, method, params):
         self.process.stdin.write((json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n").encode())
