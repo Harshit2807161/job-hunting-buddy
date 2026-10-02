@@ -188,3 +188,7 @@ explicitly names one country. City-only or ambiguous locations remain unknown;
 a US authorization answer cannot substitute for a Canadian one. Standing
 compliance, signature, prior-employer and education-catalog preferences require
 explicit candidate authorization. They are not enabled by the example profile.
+
+GitHub's Ubuntu runner restricts Chromium user namespaces. CI explicitly opts
+into a sandbox override for the trusted localhost-only MCP fixture. The same
+flag has no effect on live source checks; those retain MCP's browser sandbox.

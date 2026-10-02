@@ -256,3 +256,12 @@ def test_actual_official_mcp_stdio_http_redirect_and_embed_inspection(monkeypatc
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_ci_fixture_sandbox_override_cannot_apply_to_live_source_checks(monkeypatch):
+    from jhb.applications.mcp_client import fixture_launch_options
+    monkeypatch.setenv("JHB_MCP_FIXTURE_NO_SANDBOX", "1")
+    assert fixture_launch_options(False) == {}
+    assert fixture_launch_options(True) == {"chromiumSandbox": False}
+    monkeypatch.delenv("JHB_MCP_FIXTURE_NO_SANDBOX")
+    assert fixture_launch_options(True) == {}

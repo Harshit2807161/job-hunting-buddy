@@ -25,4 +25,6 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: .local-browsers
       - run: python -m pytest -q
+        env:
+          JHB_MCP_FIXTURE_NO_SANDBOX: "1"
       - run: python -m compileall -q jhb

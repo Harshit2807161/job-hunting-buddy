@@ -52,6 +52,14 @@ module.exports.default = async ({ page }) => {
 """
 
 
+def fixture_launch_options(allow_localhost):
+    # GitHub's Ubuntu AppArmor policy prevents Chromium sandbox startup.
+    # This opt-in applies only to trusted, localhost-only synthetic fixtures.
+    if allow_localhost and os.environ.get("JHB_MCP_FIXTURE_NO_SANDBOX") == "1":
+        return {"chromiumSandbox": False}
+    return {}
+
+
 def chromium_executable() -> str:
     override = os.environ.get("JHB_SOURCE_CHROMIUM")
     if override:
@@ -126,6 +134,11 @@ class PlaywrightMCPClient:
                "--block-service-workers", "--image-responses", "omit", "--init-page", str(init),
                "--output-dir", self._temp.name, "--timeout-navigation", "20000",
                "--timeout-action", "5000"]
+        launch_options = fixture_launch_options(self.allow_localhost)
+        if launch_options:
+            fixture_config = Path(self._temp.name) / "fixture-config.json"
+            fixture_config.write_text(json.dumps({"browser": {"launchOptions": launch_options}}))
+            cmd.extend(["--config", str(fixture_config)])
         self.process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=env, limit=8 * 1024 * 1024)
