@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 
@@ -52,6 +53,14 @@ def run_once(conn, *, use_jobspy: bool = True, dry_run: bool = False,
             log.error("%-9s FAILED: %s: %s", name, type(e).__name__, e)
 
     pending, suppressed = store.pending_notification(conn)
+    applications_queued = 0
+    if os.environ.get("JHB_APPLICATIONS_ENABLED") == "1" and not seeding and not dry_run:
+        from .applications import queue
+        # Recover insertion→enqueue crashes from the ledger before notification collapsing.
+        candidates = [dict(r) for r in conn.execute("SELECT * FROM jobs WHERE notified_at IS NULL")]
+        applications_queued = queue.enqueue(conn, candidates)
+        if applications_queued:
+            log.info("queued %d Greenhouse application(s) for preparation", applications_queued)
     if suppressed:
         # Same role already emailed (other source, or another location row).
         store.mark_notified(conn, suppressed)
@@ -83,7 +92,7 @@ def run_once(conn, *, use_jobspy: bool = True, dry_run: bool = False,
         log.info("no new openings this cycle")
 
     return {"seen": total_seen, "new": total_new, "notified": len(pending) if not seeding else 0,
-            "emails": emailed, "seeded": seeding}
+            "emails": emailed, "seeded": seeding, "applications_queued": applications_queued}
 
 
 def main(argv=None) -> int:

@@ -3,4 +3,11 @@
 # Calls the env's python directly -- no conda activation needed.
 cd "$(dirname "$0")" || exit 1
 mkdir -p data
-exec "$HOME/miniforge3/envs/jhb/bin/python" -m jhb.poll >> data/poll.log 2>&1
+"$HOME/miniforge3/envs/jhb/bin/python" -m jhb.poll >> data/poll.log 2>&1
+jhb_poll_exit=$?
+if [ -x .venv/bin/python ]; then
+    export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+    export PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers"
+    .venv/bin/python -m jhb.applications.cli worker --if-enabled >> data/applications.log 2>&1
+fi
+exit "$jhb_poll_exit"

@@ -60,6 +60,7 @@ ALIASES = {
     "screening.us_government_or_military_5y": ["have you served in the u.s. armed forces or worked for u.s. government in the last five years?"],
     "disclosure.gender": ["gender"],
     "disclosure.ethnicity": ["race/ethnicity", "race and ethnicity", "ethnicity"],
+    "disclosure.race": ["race", "please identify your race"],
     "disclosure.hispanic": ["are you hispanic/latino?"],
     "disclosure.veteran": ["veteran status", "protected veteran status"],
     "disclosure.disability": ["disability status"],
@@ -116,9 +117,13 @@ def for_role(book: dict, role: str) -> dict:
         raise ValueError("Choose sde or ml explicitly for ambiguous jobs")
     values = {**book["answers"], **book["roles"][role]}
     records = book.get("education_records", [])
-    if records and records[0].get("status") == "verified":
-        for field in ("school", "degree"):
-            values["education."+field] = answer(records[0][field], records[0]["source"])
+    for index, record in enumerate(records):
+        if record.get("status") == "verified":
+            for field in ("school", "degree", "major", "start_date", "end_date"):
+                if field in record:
+                    values[f"education.{index}.{field}"] = answer(record[field], record["source"])
+                    if index == 0:
+                        values["education."+field] = values[f"education.{index}.{field}"]
     return values
 
 
