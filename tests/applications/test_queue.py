@@ -71,3 +71,12 @@ def test_user_confirmed_submission_cannot_be_requeued_or_resumed(conn, monkeypat
     monkeypatch.setattr(config, "ROOT", tmp_path)
     notify_pending(conn)
     assert not (tmp_path / "private" / "notifications").exists()
+
+
+def test_verified_embed_and_hosted_job_share_application_identity(conn):
+    assert queue.enqueue(conn, [job("https://boards.greenhouse.io/embed/job_app?for=example&token=1234"),
+                                job("https://job-boards.greenhouse.io/example/jobs/1234", "other-source")]) == 1
+    assert queue.greenhouse_identity("https://boards.eu.greenhouse.io/embed/job_app?for=example&token=1234") == ("eu", "example", "1234")
+    assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?token=1234")
+    assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?for=example&for=other&token=1234")
+    assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?for=example&token=1234&token=5678")

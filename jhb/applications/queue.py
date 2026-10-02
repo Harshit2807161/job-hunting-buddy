@@ -5,7 +5,7 @@ import json
 import hashlib
 import re
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
@@ -33,9 +33,19 @@ def greenhouse_identity(url: str):
         hosts = {"boards.greenhouse.io", "job-boards.greenhouse.io",
                  "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
         match = re.fullmatch(r"/([A-Za-z0-9_-]+)/jobs/(\d+)/?", p.path)
-        if p.scheme != "https" or p.username or p.password or p.hostname not in hosts or p.port not in {None, 443} or not match:
+        if p.scheme != "https" or p.username or p.password or p.hostname not in hosts or p.port not in {None, 443}:
             return None
-        return ("eu" if ".eu." in p.hostname else "global", match[1].lower(), match[2])
+        if match:
+            board, job_id = match[1], match[2]
+        elif p.path.rstrip("/") == "/embed/job_app":
+            query = parse_qs(p.query)
+            boards, jobs = query.get("for", []), query.get("token", [])
+            if len(boards) != 1 or len(jobs) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", boards[0]) or not jobs[0].isdigit():
+                return None
+            board, job_id = boards[0], jobs[0]
+        else:
+            return None
+        return ("eu" if ".eu." in p.hostname else "global", board.lower(), job_id)
     except (TypeError, ValueError):
         return None
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Application source checker"
+  short_description: "Resolve job links and classify ATSs through Playwright MCP"
