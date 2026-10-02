@@ -1,6 +1,6 @@
 ---
-name: prepare-glassdoor
-description: Map observed Glassdoor application fields to a candidate's approved role-specific answer booklet and prepare a pre-submit review packet.
+name: prepare-greenhouse
+description: Map observed Greenhouse application fields to a candidate's approved role-specific answer booklet and prepare a pre-submit review packet.
 ---
 
 Use the observation and answer catalog provided by the worker. Return the JSON

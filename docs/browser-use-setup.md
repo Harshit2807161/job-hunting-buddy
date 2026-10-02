@@ -4,14 +4,14 @@ Browser Use is installed as a local coding-agent tool, following
 https://docs.browser-use.com/open-source/browser-use-cli:
 
 ```sh
-uv tool install --python 3.12 --upgrade --force 'browser-use @ git+https://github.com/browser-use/browser-use.git'
-browser-use skill install --target codex --no-install
+uv tool install --python 3.12 --upgrade --force browser-use
+browser-use skill install --target codex
 browser-use skill install --path skills/browser-use/SKILL.md --no-install
 ```
 
-The installed source revision is
-`302d8fcb245a7a63fb7531a4734c9ce3c7792779`. The Browser Use Python library is
-version `0.13.10`; its CLI delegates to Browser Harness `0.1.13`, so
+The stable package upgrade was verified on October 1, 2026 with uv `0.12.22`
+and Python `3.12.15`. The resolved Browser Use release is `0.13.10`; its CLI
+delegates to Browser Harness `0.1.13`, so
 `browser-use --version` reports the harness version. The project optional
 `applications` dependencies also include Browser Use. The login-shell PATH
 includes `~/.local/bin`.
@@ -34,11 +34,17 @@ print(page_info())
 PY
 ```
 
-An isolated Chrome instance can also be started with the Browser Use
-`BrowserSession` library. Point the CLI at its exact endpoint with `BU_CDP_WS`
-or `BU_CDP_URL`; this was the route used for the live check. Browser Use can copy
-Chrome profiles into temporary directories, so verify the resolved profile path
-before using candidate data. Persistent candidate sessions must stay private.
+The user requires CLI access mode for all live browser work. Invoke `browser-use`
+with its documented helpers and raw CDP operations, using the default daemon.
+Do not use the Python browser library or direct Playwright for live actions.
+Keep browser operations sequential and reuse tabs containing application drafts.
+Persistent candidate sessions must stay private.
+
+The stable upgrade reused the running Chrome endpoint and four existing tabs.
+`page_info()` successfully inspected the authenticated Simplify profile without
+navigating or resetting the application draft. The observed helper time was
+0.004 seconds, while the complete CLI invocation took about 0.86 seconds. This
+is a connection smoke check, not evidence of faster application completion.
 
 ### Explicit local endpoint
 
