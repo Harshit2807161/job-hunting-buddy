@@ -106,6 +106,16 @@ Private evidence is in `private/browser-use-live/validation.json` and
 These are ignored local artifacts; they must not be committed or published.
 
 This verifies live navigation, rendering, accessibility inspection and clicks.
-It does not establish end-to-end application compatibility. The existing
-application worker still uses Playwright and requires migration and further live
-validation. Synthetic fixture results are recorded separately.
+It does not establish end-to-end application compatibility. The Phase 2 Greenhouse
+worker now uses the Browser Use CLI; Playwright is limited to synthetic fixtures.
+The actual OneStream Greenhouse draft subsequently reached `waiting_review`
+using the signed-in Codex planner and CLI executor, with no missing required
+answers and no submission. Location autocomplete and the mailing-city field use
+separate approved booklet entries. A subsequent live audit filled two education
+records: the graduate school resolved to its catalog entry; the undergraduate
+school was absent, so its school
+uses the available `Other` category while the resume retains the full name.
+The newly revealed race disclosure is filled. The final audit found no blank
+required fields or invalid controls; three optional/inapplicable fields remain
+blank. The submission guard stays active.
+Synthetic fixture results are recorded separately in the Phase 2 specification.
