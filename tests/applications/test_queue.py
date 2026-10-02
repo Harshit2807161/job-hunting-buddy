@@ -55,3 +55,19 @@ def test_claim_recovery_is_bounded_and_review_cannot_auto_resume(conn):
     queue.finish(conn, item["job_hash"], "waiting_review")
     queue.resume(conn, item["job_hash"])
     assert queue.claim(conn) is None
+
+
+def test_user_confirmed_submission_cannot_be_requeued_or_resumed(conn, monkeypatch, tmp_path):
+    from jhb import config
+    from jhb.applications.worker import notify_pending
+    candidate_job = job("https://job-boards.greenhouse.io/example/jobs/5678")
+    queue.enqueue(conn, [candidate_job])
+    item = queue.claim(conn)
+    queue.finish(conn, item["job_hash"], "submitted", "synthetic-receipt.html")
+    queue.resume(conn, item["job_hash"])
+    assert queue.enqueue(conn, [candidate_job]) == 0
+    assert queue.claim(conn) is None
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "submitted"
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    notify_pending(conn)
+    assert not (tmp_path / "private" / "notifications").exists()

@@ -49,6 +49,12 @@ not expose a submit command or automatically release the live submission guard.
 The interactive review command releases it only when the candidate types
 `TAKE OVER`; browser automation ends immediately after that acknowledgement.
 
+Submission explicitly directed by the user in a separate browser session is
+outside the preparation worker. After receipt is confirmed, its private ledger
+can record `submitted`; that state cannot be resumed, claimed or prepared again.
+The review command opens no browser for completed records, and preparation
+notifications exclude them. This does not authorize unattended submission.
+
 CAPTCHA solving in a local browser has not been demonstrated. No visible CAPTCHA
 appeared in the tested live flows. Invisible reCAPTCHA response inputs do not
 count as a challenge. No cloud browser or subscription/API credentials run in CI.

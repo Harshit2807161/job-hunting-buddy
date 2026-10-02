@@ -98,8 +98,11 @@ def main(argv=None):
             queue.resume(conn, args.job_hash)
         elif args.command == "review":
             from .worker import run_job
-            row = conn.execute("SELECT job_json FROM applications WHERE job_hash=?", (args.job_hash,)).fetchone()
+            row = conn.execute("SELECT job_json,state,packet FROM applications WHERE job_hash=?", (args.job_hash,)).fetchone()
             if not row: raise ValueError("Application ID not found")
+            if row["state"] == "submitted":
+                print(f"Already submitted; saved review packet: {row['packet']}")
+                return 0
             result, packet = asyncio.run(run_job(json.loads(row[0]), booklet.load(args.booklet),
                      planner_name=args.planner, interactive=True, role=args.role))
             print(f"{result['state']}: {packet}")

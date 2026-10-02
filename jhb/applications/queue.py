@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 """
 STATES = {"queued", "running", "waiting_review", "waiting_input", "waiting_login",
-          "waiting_captcha", "unsupported", "failed"}
+          "waiting_captcha", "unsupported", "failed", "submitted"}
 
 
 def is_greenhouse(url: str) -> bool:
@@ -95,5 +95,5 @@ def finish(conn, job_hash, state, packet=None):
 
 def resume(conn, job_hash):
     conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,updated_at=? "
-                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review')", (int(time.time()), job_hash))
+                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submitted')", (int(time.time()), job_hash))
     conn.commit()

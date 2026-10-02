@@ -143,7 +143,7 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
 
 def notify_pending(conn, *, send_email=False):
     queue.initialize(conn)
-    for row in conn.execute("SELECT * FROM applications WHERE state NOT IN ('queued','running') AND notified_at IS NULL").fetchall():
+    for row in conn.execute("SELECT * FROM applications WHERE state NOT IN ('queued','running','submitted') AND notified_at IS NULL").fetchall():
         job = json.loads(row["job_json"])
         notification = {"job_hash": row["job_hash"], "state": row["state"], "packet": row["packet"], "submitted": False}
         path = config.ROOT / "private" / "notifications" / (row["job_hash"] + ".json")
