@@ -235,7 +235,10 @@ def test_actual_official_mcp_stdio_http_redirect_and_embed_inspection(monkeypatc
     async def run():
         from jhb.applications.greenhouse_source import _json_result, _OBSERVE
         async with PlaywrightMCPClient(allow_localhost=True) as client:
-            await client.call_tool("browser_navigate", {"url": url + "/redirect"})
+            # All content is synthetic and localhost-only in this test. Show
+            # tool diagnostics on CI failures without changing live log policy.
+            navigation = await client._request("tools/call", {"name": "browser_navigate", "arguments": {"url": url + "/redirect"}})
+            assert not navigation.get("isError"), navigation.get("content")
             await client.call_tool("browser_snapshot", {})
             observed = _json_result(await client.call_tool("browser_evaluate", {"function": _OBSERVE}))
             assert observed["url"] == url + "/job"
