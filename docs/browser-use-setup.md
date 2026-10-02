@@ -77,9 +77,10 @@ The launcher does not register accounts, fill forms, or submit applications.
 The user requires Google SSO for job-site authentication. Do not fall back to
 email/password registration. On the live Glassdoor site, **Continue with Google**
 opened Google Accounts through an Indeed authentication broker. Browser Use
-switched to the existing Google popup and reached **Email or phone**. The local
-profile has no signed-in Google account yet; first sign-in is pending candidate
-input. This is observed login navigation, not a completed login or application.
+switched to the existing Google popup and reached **Email or phone**. The candidate
+completed the first Google sign-in. Glassdoor then showed its profile-confirmation
+dialog and a signed-in profile menu. This verifies Google SSO and profile access;
+application filling and final-review compatibility still need validation.
 
 ## Live-site result, October 1, 2026
 
