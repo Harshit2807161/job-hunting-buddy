@@ -59,6 +59,28 @@ The local endpoint and harness directory are saved in the ignored project
 still need these environment variables. The existing private default daemon is
 reused; no per-job local daemon is needed.
 
+To start or reuse a persistent private local browser without a test timer:
+
+```sh
+.venv/bin/python scripts/start-local-browser.py
+BU_CDP_URL=http://127.0.0.1:52018 BH_HOME="$PWD/private/browser-use-harness" browser-use --doctor
+```
+
+This launcher uses installed Chrome and the official CLI's documented CDP
+connection mode. It binds to loopback, keeps the profile and log under ignored
+`private/`, and saves the endpoint in ignored `.env`. Chrome remains open after
+the launcher exits. Use `--port` if the displayed Chrome endpoint differs.
+The launcher does not register accounts, fill forms, or submit applications.
+
+### Google sign-in
+
+The user requires Google SSO for job-site authentication. Do not fall back to
+email/password registration. On the live Glassdoor site, **Continue with Google**
+opened Google Accounts through an Indeed authentication broker. Browser Use
+switched to the existing Google popup and reached **Email or phone**. The local
+profile has no signed-in Google account yet; first sign-in is pending candidate
+input. This is observed login navigation, not a completed login or application.
+
 ## Live-site result, October 1, 2026
 
 Using Browser Use's actual CLI and CDP helpers against live Glassdoor:
