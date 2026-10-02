@@ -102,10 +102,13 @@ def render(jobs: list[dict], subject_prefix: str = "") -> tuple[str, str, str]:
     return subject, body, "\n".join(lines)
 
 
-def send(jobs: list[dict], subject_prefix: str = "", dry_run: bool = False) -> bool:
+def send(jobs: list[dict], subject_prefix: str = "", dry_run: bool = False, details: str = "") -> bool:
     if not jobs:
         return False
     subject, body_html, body_text = render(jobs, subject_prefix)
+    if details:
+        body_text += "\n" + details
+        body_html = body_html.replace("</body>", f"<pre>{html.escape(details)}</pre></body>")
 
     if dry_run:
         out = config.ROOT / "data" / f"preview-{int(time.time())}.html"

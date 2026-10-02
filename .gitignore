@@ -16,5 +16,8 @@ dist/
 private/
 artifacts/
 browser-profiles/
+.local-browsers/
+skills-local/
+node_modules/
 *.sqlite3
 *.sqlite3-*

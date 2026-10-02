@@ -1,0 +1,9 @@
+{
+  "name": "job-hunting-buddy-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned official Playwright MCP source-checking server",
+  "devDependencies": {
+    "@playwright/mcp": "0.0.83"
+  }
+}
