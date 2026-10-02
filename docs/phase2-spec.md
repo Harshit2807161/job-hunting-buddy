@@ -9,12 +9,18 @@ hands them to the candidate; it never submits them.
 - A private answer booklet retains provenance, conflicting source history, and
   separate SDE/ML resumes and skills. Authenticated Simplify Profile and Personal
   Info observations supplement resume facts; explicit user answers take priority.
-- Phase 1 optionally queues HTTPS Greenhouse-hosted job URLs from any discovery
-  source. Tracking parameters and old/new board domains share one job identity.
-  Seed and dry-run cycles never enqueue. Queue claims and retries are bounded.
+- Phase 1 durably records every new job URL for source classification before
+  notification deduplication. Seed and dry-run cycles never enqueue. The official
+  Playwright MCP server checks redirects, employer pages and embedded forms in
+  an isolated browser. It classifies recognized ATS providers and dispatches
+  only confirmed Greenhouse jobs. Tracking parameters, wrappers and old/new
+  board domains share a canonical application identity. Closed or ambiguous
+  postings never become guessed application targets.
 - The live worker uses the **Browser Use CLI**, its default local daemon, and the
   existing Chrome CDP endpoint. It reuses matching tabs and preserves drafts.
-  Worker and browser locks serialize automated preparation.
+  A manager lock prevents overlapping batches; independent planners and jobs
+  run with bounded concurrency. Each CLI operation serializes the browser lane
+  and attaches to its job's own tab.
 - A signed-in `codex exec` instance proposes schema-constrained field bindings.
   It receives field labels and answer keys, without answer values or credentials.
   Python validates the plan and performs the approved actions. A deterministic
@@ -26,9 +32,21 @@ hands them to the candidate; it never submits them.
   supported rows and re-observes after filling to catch newly revealed questions.
   Employer-specific school catalog mappings preserve the actual institution in
   the booklet and resume.
+- Explicit standing preferences reuse approved relocation, office/HQ,
+  career-fair and preferred-name decisions through supported exact question
+  templates. Original verified institutions drive institution-specific school
+  checks; employer dropdown display mappings never change education facts.
+- Salary expectation uses the arithmetic midpoint of a single recognized
+  advertised annual USD base range, otherwise the user's approved annual
+  fallback. Multiple ranges require a location/range decision. Hourly,
+  foreign-currency and total-compensation ranges are excluded from extraction.
 - Required unknown answers produce `waiting_input`; a visible challenge produces
   a verification handoff. Unsupported widgets and external redirects stop the
-  workflow. Optional fields that fail are reported in the private event log.
+  workflow. Meaningful unknown optional fields enter the private question ledger;
+  technical widget failures remain distinguishable from missing user answers.
+  Questions retain wording, choices, employer scope and field context. Explicit
+  replies unblock only eligible input handoffs, with a fresh pass if an answer
+  arrives while an older worker snapshot is still running.
 - A local HTML/JSON review packet, screenshot and event log accompany each
   outcome. Notifications go to a private local outbox; email is separately opt-in.
   The persistent Chrome tab stays open. No automation operation submits a form.
@@ -49,15 +67,17 @@ not expose a submit command or automatically release the live submission guard.
 The interactive review command releases it only when the candidate types
 `TAKE OVER`; browser automation ends immediately after that acknowledgement.
 
-Submission explicitly directed by the user in a separate browser session is
+Submission explicitly directed by the user in a separate instruction is
 outside the preparation worker. After receipt is confirmed, its private ledger
 can record `submitted`; that state cannot be resumed, claimed or prepared again.
 The review command opens no browser for completed records, and preparation
 notifications exclude them. This does not authorize unattended submission.
 
-CAPTCHA solving in a local browser has not been demonstrated. No visible CAPTCHA
-appeared in the tested live flows. Invisible reCAPTCHA response inputs do not
-count as a challenge. No cloud browser or subscription/API credentials run in CI.
+CAPTCHA solving in the candidate's local browser has not been demonstrated.
+Candidate-browser preparation encountered no visible CAPTCHA; isolated source
+checks did encounter Cloudflare verification and stopped. Invisible reCAPTCHA
+response inputs do not count as a challenge. No cloud browser or
+subscription/API credentials run in CI.
 
 ## Validation evidence
 
@@ -67,7 +87,15 @@ Report these separately:
    fields, missing-answer and visible-challenge handoffs, custom combobox input,
    PDF upload, and blocked terminal submissions. Requests stay local or are
    fulfilled from synthetic HTML before reaching a real site.
-2. **Live Browser Use CLI:** authenticated Simplify Google sign-in and both profile
+2. **Live Playwright MCP source checks:** OneImaging and Parallel Systems hosted
+   Greenhouse jobs confirmed from rendered pages; Block's employer page resolved
+   to a rendered embedded Greenhouse application. Pinterest and RTX/Recruitics
+   reached Cloudflare verification handoffs; a LinkedIn Apply destination
+   required login. Atlas Energy Solutions redirected to its board error page
+   and was recorded closed. Navigation/form evidence remains in ignored local
+   files. These checks used isolated browsers and did not access candidate
+   sessions or fill applications.
+3. **Live Browser Use CLI:** authenticated Simplify Google sign-in and both profile
    subpages; the OneStream Greenhouse form; contact/address fields, custom
    dropdowns and the ML resume upload, with retained-value verification.
    The final audit verified 30 filled answers, both education records, the race
@@ -77,7 +105,11 @@ Report these separately:
    `Other` category was used with an
    employer-scoped mapping; its full name remains in the resume and booklet.
    Preferred first name and two inapplicable conditional explanations remain blank.
-3. **Signed-in Codex:** schema output from the actual CLI validated against the
+   Later OneImaging and Parallel Systems preparations verified known fields and
+   role-specific resume uploads and handed off genuinely new employer questions.
+   Fresh passes using explicit answers and tailored documents remain subject to
+   their own final audits; source confirmation alone is not draft completion.
+4. **Signed-in Codex:** schema output from the actual CLI validated against the
    observed OneStream controls, with no final-submit action.
 
 These results do not establish compatibility with every Greenhouse employer or
@@ -89,17 +121,25 @@ unattended CAPTCHA handling.
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/start-local-browser.py
 .venv/bin/python -m jhb.applications.cli missing
+.venv/bin/python -m jhb.applications.cli classify https://example.com/careers/job
 .venv/bin/python -m jhb.applications.cli probe https://job-boards.greenhouse.io/BOARD/jobs/ID
-.venv/bin/python -m jhb.applications.cli worker --planner codex
+.venv/bin/python -m jhb.applications.cli pipeline --planner codex
+.venv/bin/python -m jhb.applications.cli source-status
 .venv/bin/python -m jhb.applications.cli status
+.venv/bin/python -m jhb.applications.cli questions
+.venv/bin/python -m jhb.applications.cli answer-question q_QUESTION_ID
 .venv/bin/python -m jhb.applications.cli demo
 ```
 
-Install `.[dev,browser-tests]` and local Chromium for fixture tests. Install the
+Install `.[dev,browser-tests]`, run `npm ci` for the pinned official MCP server,
+and install local Chromium for source checks and fixtures. Install the
 stable Browser Use CLI using the setup document before live commands. Fill the
 ignored local booklet and configure the existing endpoint in ignored `.env`.
 Set `JHB_APPLICATIONS_ENABLED=1` to opt into the discovery-to-worker path;
 `JHB_APPLICATION_EMAIL=1` opts into email notifications. Keep these disabled in CI.
-The wrapper drains at most one application per discovery cycle. Reset the opt-in
+The wrapper runs bounded batches, defaulting to three source checks and three
+applications with two concurrent job planners and ten active drafts. Browser
+operations remain serialized. See [pipeline.md](pipeline.md) for limits,
+scheduler recovery and separate fixture/live results. Reset the opt-in
 to zero to return to Phase 1 discovery. Never merge Phase 2 before its limitations
 and actual review evidence have been assessed.

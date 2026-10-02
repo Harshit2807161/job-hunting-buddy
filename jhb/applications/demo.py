@@ -103,36 +103,88 @@ def sample_book(directory: Path):
 
 
 def run_demo(*, planner="deterministic", headless=True):
-    """Run the real Phase 1 entry point against mocked sources, then the real worker."""
+    """Exercise the entire durable pipeline with synthetic jobs and local forms.
+
+    Source resolution is injected fixture evidence, not live MCP validation.
+    Actual guarded browser preparation uses isolated Playwright fixture contexts.
+    """
     from unittest.mock import patch
-    from .worker import drain_once, notify_pending
-    directory = config.ROOT / "private" / "demo"
+    from playwright.async_api import async_playwright
+    from . import pipeline, questions
+    from .credentials import CredentialStore
+    from .planner import CodexPlanner, deterministic_plan
+    from .worker import prepare, role_for_job, write_packet
+
+    directory = config.ROOT / "private" / "demo" / f"run-{__import__('time').time_ns()}"
     book_path = directory / "answer-booklet.json"
     booklet.write_private(book_path, sample_book(directory))
-    conn = store.connect(directory / f"jobs-{__import__('time').time_ns()}.sqlite3")
-    # Seed unrelated history so this demo exercises new-job discovery rather than seed mode.
-    store.upsert_jobs(conn, [store.Job("simplify", "seed", "Demo", "Seed", "https://example.test")], mark_notified=True)
-    with fixture_server() as (server, origin):
-        job = store.Job("simplify", "demo-job", "Demo Company", "Software Engineer",
-                        "https://job-boards.greenhouse.io/demo/jobs/1234", role_classes=["swe"])
-        with patch.dict(os.environ, {"JHB_APPLICATIONS_ENABLED": "1"}), \
-             patch.object(poll.simplify, "poll", return_value=([job], "fixture")), \
-             patch.object(poll.jobspy_src, "poll", return_value=([], "fixture")), \
-             patch.object(poll.notify, "send", return_value=True):
-            summary = poll.run_once(conn)
-        row = conn.execute("SELECT job_hash,job_json FROM applications").fetchone()
-        actual = json.loads(row["job_json"])
-        actual["url"] = origin + "/job?role=sde"
-        conn.execute("UPDATE applications SET job_json=? WHERE job_hash=?", (json.dumps(actual), row["job_hash"]))
-        conn.commit()
-        result = drain_once(conn, book_path, planner_name=planner, demo_origin=origin,
-                            headless=headless, artifacts=directory / "applications")
-        notify_pending(conn, send_email=False)
-        packet = conn.execute("SELECT packet FROM applications").fetchone()[0]
-        print(f"Discovery queued: {summary['applications_queued']} · {result['state']}")
-        print(f"Accounts created: {len(server.accounts)} · submissions: {server.submissions}")
-        print(f"Review packet: {packet}")
-        if result["state"] != "waiting_review" or server.submissions != 0:
-            raise RuntimeError("Demo did not reach pre-submit review safely")
-    conn.close()
+    conn = store.connect(directory / "jobs.sqlite3")
+    store.upsert_jobs(conn, [store.Job("simplify", "seed", "History", "Seed", "https://example.test/seed")], mark_notified=True)
+    discovered = [
+        store.Job("simplify", "direct", "Demo Company", "Software Engineer",
+                  "https://job-boards.greenhouse.io/demo/jobs/1234", role_classes=["swe"]),
+        store.Job("jobspy:linkedin", "wrapper", "Demo Company", "Machine Learning Engineer",
+                  "https://www.linkedin.com/jobs/view/5678", role_classes=["ml"]),
+        store.Job("simplify", "other", "Other Demo Company", "Software Engineer",
+                  "https://jobs.lever.co/other-demo/abc", role_classes=["swe"]),
+    ]
+
+    async def fixture_resolver(candidate, **kwargs):
+        source_url = candidate["url"]
+        if "lever.co" in source_url:
+            return {"state": "not_greenhouse", "board_type": "lever", "source_url": source_url,
+                    "application_url": None, "evidence": [{"kind": "fixture", "url": source_url}]}
+        application_url = ("https://job-boards.greenhouse.io/demo/jobs/5678"
+                           if "linkedin.com" in source_url else source_url)
+        return {"state": "greenhouse", "board_type": "greenhouse", "source_url": source_url,
+                "application_url": application_url,
+                "evidence": [{"kind": "injected_fixture_redirect", "url": application_url}]}
+
+    try:
+        with fixture_server() as (server, origin):
+            async def fixture_runner(candidate, book, **kwargs):
+                role = role_for_job(candidate)
+                answers = booklet.for_role(book, role)
+                identity = queue.greenhouse_identity(candidate["url"])
+                answers.update({key: item for key, item in book.get("custom_answers", {}).items()
+                                if not item.get("scope") or item["scope"] == {"region": identity[0], "board": identity[1]}})
+                artifact = directory / "applications" / candidate["dedupe_hash"]
+                selected_planner = CodexPlanner(artifact) if planner == "codex" else deterministic_plan
+                local_job = {**candidate, "url": origin + f"/job?role={role}&auth=skip&unknown=1"}
+                async with async_playwright() as pw:
+                    browser = await pw.chromium.launch(headless=headless)
+                    context = await browser.new_context(service_workers="block", viewport={"width": 1280, "height": 960})
+                    try:
+                        page = await context.new_page()
+                        result, _ = await prepare(page, local_job, answers, selected_planner,
+                                                  CredentialStore(directory / "demo-vault.json"), demo_origin=origin)
+                        return result, await write_packet(page, artifact, candidate, result)
+                    finally:
+                        await context.close()
+                        await browser.close()
+
+            with patch.object(poll.simplify, "poll", return_value=(discovered[:1] + discovered[2:], "fixture")), \
+                 patch.object(poll.jobspy_src, "poll", return_value=(discovered[1:2], "fixture")), \
+                 patch.object(poll.notify, "send", return_value=True):
+                discovery = poll.run_once(conn)
+                first = pipeline.run_cycle(conn, book_path, resolver=fixture_resolver, runner=fixture_runner,
+                                           planner_name=planner)
+                pending = questions.pending(book_path)
+                if len(pending) != 1 or len(pending[0]["contexts"]) != 2:
+                    raise RuntimeError("Fixture did not preserve a deduplicated question for both applications")
+                # This value is synthetic test input, never an inferred candidate answer.
+                affected = questions.answer(pending[0]["id"], "Built a synthetic adapter for the demo engine.",
+                                            book_path, connection=conn)
+                resumed = pipeline.run_cycle(conn, book_path, resolver=fixture_resolver, runner=fixture_runner,
+                                             planner_name=planner)
+            states = [row[0] for row in conn.execute("SELECT state FROM applications")]
+            if states != ["waiting_review"] * 2 or server.submissions != 0 or len(affected) != 2:
+                raise RuntimeError("Fixture pipeline did not stop safely at pre-submit review")
+            print("SYNTHETIC FIXTURE VALIDATION: source resolution is injected; browser filling uses local Playwright.")
+            print(f"Phase 1 source checks queued: {discovery['sources_queued']} · boards: {json.dumps(first['boards'], sort_keys=True)}")
+            print(f"Greenhouse applications: {first['applications_queued']} · new questions: {len(pending)} · resumed: {len(affected)}")
+            print(f"Review-ready: {resumed['applications_prepared']} · final submissions: {server.submissions}")
+            print(f"Private fixture artifacts: {directory}")
+    finally:
+        conn.close()
     return 0

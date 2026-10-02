@@ -8,11 +8,19 @@ Use `skills/prepare-greenhouse/SKILL.md` for application planning and
 local source skill before editing a letter; references stay unchanged.
 
 Use `skills/browser-use/SKILL.md` and the official Browser Use CLI for live browser
-interaction. Always invoke `browser-use` through its CLI access mode, using the
+application filling. Always invoke `browser-use` through its CLI access mode, using the
 default daemon and the existing local CDP endpoint. Do not use the Python browser
 library or direct Playwright for live interaction. Serialize browser operations
 and preserve tabs containing drafts. Fixture tests and direct Playwright checks
 are not live Browser Use validation.
+
+For Phase 1 application-source classification, use
+`skills/check-application-source/SKILL.md` and the official Playwright MCP server
+in isolated browsers, as requested by the user. Resolve redirects and embedded
+ATS forms before routing; only confirmed Greenhouse jobs enter Phase 2. This
+read-only checker must not attach to or reset the candidate's Chrome profile.
+Independent jobs may plan in parallel, but Browser Use CLI operations in the
+shared local browser must hold the browser-lane lock and reattach their own tab.
 
 Use Google SSO for job-site authentication, as explicitly requested by the user.
 Do not fall back to email/password registration. Reuse the existing Google
