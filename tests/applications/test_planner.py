@@ -52,6 +52,15 @@ def test_multiple_education_rows_keep_their_own_institutions():
     assert answers["education.0.school"]["value"] != answers["education.1.school"]["value"]
 
 
+def test_question_response_does_not_cross_education_or_country_context():
+    from jhb.applications.planner import key_for_field
+    answers = {"custom.school": {**booklet.answer("Other", "synthetic explicit answer"), "question": "School", "field_ref": "school--1"},
+               "custom.consent": {**booklet.answer(True, "synthetic explicit answer"), "question": "Employer certification", "country_context": "united states"}}
+    assert key_for_field({"ref": "school--0", "label": "School", "type": "combobox"}, answers) is None
+    assert key_for_field({"ref": "school--1", "label": "School", "type": "combobox"}, answers) == "custom.school"
+    assert key_for_field({"ref": "consent", "label": "Employer certification", "type": "checkbox", "country_context": "united kingdom"}, answers) is None
+
+
 def test_planner_cannot_guess_screening_or_click_final_submit():
     snapshot = {"fields": [{"ref": "sponsor", "label": "Do you need employer-specific approval?", "type": "text"}],
                 "buttons": [{"ref": "submit", "label": "Submit application"}]}

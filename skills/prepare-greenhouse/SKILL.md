@@ -12,6 +12,19 @@ demographic, veteran, disability, consent, or salary decisions need user input.
 Do not infer them from a resume. SDE and ML document/skill variants are selected
 by the worker; an ambiguous role requires a user choice.
 
+Reuse worker-approved standing preferences and verified profile facts before
+asking again. Approved salary policy supplies the advertised annual base-range
+midpoint, or the saved fallback when no range is advertised; multiple applicable
+ranges need a decision. Education eligibility uses original verified institutions,
+independent of employer catalog display mappings. Optional preferred name stays
+blank unless required. Office willingness alone does not authorize certifications,
+arbitration, demographic processing, or other employer consents. An explicit
+standing compliance preference can supply approved consent bindings; otherwise
+request an employer-scoped decision. Names for electronic signatures require an
+explicit signature preference. User-approved school/major catalog fallbacks apply
+only after the actual answer is absent, with original education facts retained. A generic checkbox label such as Accept must include its
+associated description before it can receive an approved answer.
+
 Use only the worker's approved field/key pairs. Repeated education controls map
 to their indexed education record, never all to the first institution. The worker
 adds supported education rows and observes again after filling, including fields

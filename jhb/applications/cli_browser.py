@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
+import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from ..config import ROOT
@@ -15,10 +19,57 @@ MARKER = "JHB_BROWSER_RESULT="
 
 class BrowserUseCLI:
     def __init__(self, *, executable="browser-use", timeout=45):
+        if not isinstance(timeout, (int, float)) or not 0 < timeout <= 300:
+            raise ValueError("Browser operation timeout must be between 0 and 300 seconds")
         self.executable, self.timeout = executable, timeout
         self.target_id = None
+        self.last_failure = None
+        self._uploads = {}
 
-    def call(self, operation: str, **payload):
+    @staticmethod
+    def _stop(process):
+        # The CLI executes the action script itself. Its own session isolates
+        # cleanup from Chrome and the persistent Browser Use daemon.
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=2)
+
+    def _run(self, script, env, deadline, cancelled):
+        process = subprocess.Popen([self.executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
+        first = True
+        try:
+            while True:
+                if cancelled.is_set():
+                    raise RuntimeError("Browser Use operation cancelled")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Browser Use CLI operation timed out")
+                try:
+                    stdout, stderr = process.communicate(input=script if first else None,
+                                                         timeout=min(remaining, 0.2))
+                    return subprocess.CompletedProcess([self.executable], process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    first = False
+        finally:
+            # Reap before releasing the global browser lane, even on timeout,
+            # cancellation or a parser exception. Never echo captured content.
+            self._stop(process)
+
+    def call(self, operation: str, *, _cancelled=None, **payload):
+        started = time.monotonic()
+        deadline = started + self.timeout
+        cancelled = _cancelled or threading.Event()
         if operation != "open" and self.target_id:
             payload["target_id"] = self.target_id
         request = json.dumps({"operation": operation, **payload}, ensure_ascii=False)
@@ -42,11 +93,29 @@ class BrowserUseCLI:
         lane = ROOT / "private" / "browser-lane.lock"
         lane.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         lane.parent.chmod(0o700)
-        lane.touch(mode=0o600, exist_ok=True)
-        with lane.open("r+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            result = subprocess.run([self.executable], input=script, text=True,
-                                    capture_output=True, env=env, timeout=self.timeout)
+        if lane.is_symlink() or any(parent.is_symlink() for parent in lane.parents):
+            raise RuntimeError("Browser lane lock must remain in its private directory")
+        fd = os.open(lane, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        os.fchmod(fd, 0o600)
+        try:
+            while True:
+                if cancelled.is_set():
+                    raise RuntimeError("Browser Use operation cancelled")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Browser Use browser lane timed out")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    cancelled.wait(min(0.05, max(0, deadline-time.monotonic())))
+            result = self._run(script, env, deadline, cancelled)
+        except (TimeoutError, RuntimeError):
+            self.last_failure = {"operation": operation, "kind": "cancelled" if cancelled.is_set() else "timeout",
+                                 "elapsed_seconds": round(time.monotonic()-started, 3)}
+            raise
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
         # CLI errors may contain private page content; never echo them in routine logs.
         if result.returncode:
             raise RuntimeError("Browser Use CLI failed; run browser-use --doctor")
@@ -59,7 +128,24 @@ class BrowserUseCLI:
         raise RuntimeError("Browser Use CLI returned no structured result")
 
     async def invoke(self, operation, **payload):
-        return await asyncio.to_thread(self.call, operation, **payload)
+        cancelled = threading.Event()
+        work = asyncio.create_task(asyncio.to_thread(self.call, operation, _cancelled=cancelled, **payload))
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            cancelled.set()
+            # to_thread does not cancel its worker. Keep waiting for process
+            # cleanup before an outer worker can release its application lock.
+            while not work.done():
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if work.done() and not work.cancelled():
+                work.exception()
+            raise
 
     async def open(self, url):
         response = await self.invoke("open", url=url)
@@ -73,7 +159,22 @@ class BrowserUseCLI:
         return await self.invoke("education", count=count)
 
     async def fill(self, field, value):
-        return await self.invoke("fill", field=field, value=value)
+        cache_key, receipt = None, None
+        if field["type"] == "file":
+            path = Path(str(value))
+            if path.is_file():
+                semantic = "cover_letter" if field["label"].casefold() == "cover letter" else field["label"].casefold()
+                if semantic in {"resume", "resume/cv"}:
+                    semantic = "resume"
+                cache_key = (self.target_id, semantic, str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
+                receipt = self._uploads.get(cache_key)
+        result = await self.invoke("fill", field=field, value=value, upload_receipt=receipt)
+        if cache_key and result.get("verified") and result.get("upload_receipt"):
+            self._uploads[cache_key] = result["upload_receipt"]
+        return result
+
+    async def describe(self, field):
+        return await self.invoke("describe", field=field)
 
     async def click_next(self, button):
         return await self.invoke("next", button=button)

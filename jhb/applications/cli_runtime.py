@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 from .browser import GUARD_SCRIPT
@@ -20,12 +21,13 @@ FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
    (e.getClientRects().length && getComputedStyle(e).visibility!=='hidden')))
  .filter(e=>!['hidden','password','submit','button','reset'].includes(e.type))
  .map(e=>({id:e.id,type:e.type,tag:e.tagName,role:e.getAttribute('role'),
-   required:e.required||e.getAttribute('aria-required')==='true',
-   label:(e.getAttribute('aria-label')||[...(e.labels||[])].map(l=>l.innerText).join(' ')||
+   required:e.required||e.getAttribute('aria-required')==='true'||(e.type==='file'&&e.closest('.file-upload')?.getAttribute('aria-required')==='true'),
+   label:((e.type==='file'?((e.closest('.file-upload')?.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.closest('.file-upload')?.querySelector('.upload-label')?.innerText):'')||e.getAttribute('aria-label')||[...(e.labels||[])].map(l=>l.innerText).join(' ')||
      (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||'').trim(),
-   value:e.value,selected:e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||'',
+   description:e.getAttribute('description')||'',
+   value:e.value,checked:e.checked,selected:e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||'',
    invalid:e.getAttribute('aria-invalid')==='true',
-   options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value})):[]}))"""
+   options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}))"""
 
 
 def option_matches(label, value, *, field_id=""):
@@ -34,7 +36,7 @@ def option_matches(label, value, *, field_id=""):
     if isinstance(value, bool):
         if field_id == "veteran_status" and value is False:
             return label in {"i am not a protected veteran", "i am not a veteran", "not a veteran"}
-        return label in ({"yes", "true"} if value else {"no", "false"})
+        return label in ({"yes", "true"} if value else {"no", "false", "no, i am not a veteran or active member"})
     expected = normalize(str(value))
     if label == expected:
         return True
@@ -82,9 +84,67 @@ def dispatch(request, helpers):
                 return node["backendDOMNodeId"]
         raise ValueError("Observed field is no longer available")
 
+    def options_for(field):
+        # Closed native selects also expose AX options. Only the opened
+        # combobox's own listbox may supply candidates for matching/clicking.
+        nodes = ax()
+        by_id = {n["nodeId"]: n for n in nodes}
+        controls = js("(()=>{const e=document.getElementById("+json.dumps(field["ref"])+
+                      ");return (e?.getAttribute('aria-controls')||e?.getAttribute('aria-owns')||'').split(' ').filter(Boolean)})()")
+        eligible = []
+        for node in nodes:
+            if node.get("role", {}).get("value") != "listbox" or node.get("ignored"):
+                continue
+            if controls:
+                if identifier(node) in controls:
+                    eligible.append(node["nodeId"])
+            elif node.get("backendDOMNodeId"):
+                obj = cdp("DOM.resolveNode", backendNodeId=node["backendDOMNodeId"])["object"]["objectId"]
+                same = cdp("Runtime.callFunctionOn", objectId=obj,
+                           functionDeclaration="function(){const e=document.getElementById("+json.dumps(field["ref"])+
+                           ");const p=e?.closest('.select')||e?.closest('.select__container')||e?.closest('.select__value-container');return !!p?.contains(this)}",
+                           returnByValue=True)["result"].get("value")
+                if same:
+                    eligible.append(node["nodeId"])
+        if len(eligible) != 1:
+            return []
+        result = []
+        for node in nodes:
+            if node.get("role", {}).get("value") != "option" or node.get("ignored"):
+                continue
+            parent, seen = node.get("parentId"), set()
+            while parent in by_id and parent not in seen:
+                if parent == eligible[0]:
+                    result.append(node)
+                    break
+                seen.add(parent)
+                parent = by_id[parent].get("parentId")
+        return result
+
     def control_value(ref):
         return js("(()=>{const e=document.getElementById("+json.dumps(ref)+
-                  ");return e?{value:e.value,selected:e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||'',countryCode:e.closest('.select__value-container')?.querySelector('.iti__flag')?.className||'',invalid:e.getAttribute('aria-invalid')==='true'}:null})()")
+                  ");return e?{value:e.value,checked:e.checked,selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||[...(e.closest('.select__value-container')?.querySelectorAll('.select__multi-value__label')||[])].map(e=>e.innerText).join(', ')||'',countryCode:e.closest('.select__value-container')?.querySelector('.iti__flag')?.className||'',invalid:e.getAttribute('aria-invalid')==='true'}:null})()")
+
+    def keypress(key, code=None):
+        virtual = {"Home": 36, "End": 35, "ArrowDown": 40, "ArrowUp": 38, "Escape": 27}.get(key, 0)
+        cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=code or key, windowsVirtualKeyCode=virtual)
+        cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=code or key, windowsVirtualKeyCode=virtual)
+
+    def upload_container(label):
+        # Inspect each filename only inside its own labeled upload control.
+        return "(()=>{const wanted="+json.dumps(normalize(label))+";return [...document.querySelectorAll('.file-upload')].find(e=>{const l=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.querySelector('label')?.innerText||e.innerText.split('\\n')[0]||'';return l.trim().replace(/[ *]+$/,'').toLowerCase()===wanted})})()"
+
+    def upload_state(label):
+        return js("(()=>{const e="+upload_container(label)+";return e?{filename:e.querySelector('.file-upload__filename p')?.innerText||'',receipt:e.__jhbUploadReceipt||null}:null})()")
+
+    def mark_upload(label):
+        receipt = uuid.uuid4().hex
+        js("(()=>{const e="+upload_container(label)+";if(!e)return; e.__jhbUploadReceipt="+json.dumps(receipt)+";"
+           "e.__jhbUploadWatcher?.disconnect();"
+           "e.__jhbUploadWatcher=new MutationObserver(()=>{delete e.__jhbUploadReceipt;e.__jhbUploadWatcher.disconnect()});"
+           "e.__jhbUploadWatcher.observe(e,{childList:true,subtree:true,characterData:true});"
+           "e.addEventListener('change',()=>{delete e.__jhbUploadReceipt},{once:true,capture:true})})()")
+        return receipt
 
     def type_text(backend, value):
         cdp("DOM.focus", backendNodeId=backend)
@@ -140,7 +200,10 @@ def dispatch(request, helpers):
             if len(eligible) != 1:
                 raise ValueError("Education add-record control is ambiguous")
             click(eligible[0]["backendDOMNodeId"])
-            wait(0.25)
+            for _ in range(10):
+                wait(0.2)
+                if row_count() == current+1:
+                    break
             if row_count() != current+1:
                 raise ValueError("Another education row did not appear")
             current += 1
@@ -159,15 +222,47 @@ def dispatch(request, helpers):
             if not item["label"] and item["type"] != "file":
                 continue
             kind = "combobox" if item["role"] == "combobox" else ("select" if item["tag"] == "SELECT" else item["type"])
-            fields.append({"ref": item["id"], "label": item["label"] or item["id"],
+            label = item["label"] or item["id"]
+            if kind == "checkbox" and normalize(label) in {"accept", "agree", "yes", "no"} and item.get("description"):
+                label = item["description"] + " (" + label + ")"
+            fields.append({"ref": item["id"], "label": label,
                            "type": kind, "required": item["required"], "options": item["options"]})
-        for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:e.innerText.split('\\n')[0].trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||''}))"):
+        for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:((e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0]).trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||'',required:e.getAttribute('aria-required')==='true'}))"):
             if upload["label"] in {"Resume/CV", "Resume", "Cover Letter"}:
                 fields.append({"ref": "uploaded:"+upload["label"], "label": upload["label"],
-                               "type": "file", "required": upload["label"] != "Cover Letter", "options": []})
+                               "type": "file", "required": upload["required"], "options": []})
         buttons = [{"ref": str(n["backendDOMNodeId"]), "label": n.get("name", {}).get("value", "")}
                    for n in nodes if n.get("role", {}).get("value") == "button" and n.get("backendDOMNodeId")]
-        return {"url": js("location.href"), "title": js("document.title"), "fields": fields, "buttons": buttons}
+        from .salary import advertised_ranges
+        return {"url": js("location.href"), "title": js("document.title"), "fields": fields, "buttons": buttons,
+                "salary_ranges": advertised_ranges(text)}
+
+    if operation == "describe":
+        field = request["field"]
+        ref, kind = field["ref"], field["type"]
+        if kind == "select":
+            item = next((item for item in js(FIELD_DATA) if item["id"] == ref), None)
+            if not item:
+                raise ValueError("Observed field is no longer available")
+            labels = [o["label"] for o in item["options"] if not o["disabled"] and o["value"] != ""]
+            return {"choices": labels[:50], "truncated": len(labels)>50, "type": kind}
+        if kind == "checkbox":
+            return {"choices": [True, False], "truncated": False, "type": kind}
+        if kind != "combobox":
+            return {"choices": [], "truncated": False, "type": kind}
+        if ref.startswith("school--"):
+            return {"choices": [], "truncated": True, "type": kind, "reason": "Institution catalog requires an exact user-supplied institution"}
+        before = control_value(ref)
+        if before and before["value"] and not before["selected"]:
+            return {"choices": [], "truncated": False, "type": kind, "reason": "Preserved uncommitted draft query"}
+        backend = find(field)
+        try:
+            click(backend)
+            wait(0.2)
+            labels = [n.get("name", {}).get("value", "") for n in options_for(field)]
+            return {"choices": list(dict.fromkeys(labels))[:50], "truncated": len(labels)>50, "type": kind}
+        finally:
+            keypress("Escape")
 
     if operation == "fill":
         field, value = request["field"], request["value"]
@@ -176,14 +271,26 @@ def dispatch(request, helpers):
             path = Path(str(value))
             if not path.is_file() or path.suffix.casefold() != ".pdf":
                 raise ValueError("Approved PDF is unavailable")
+            previous = upload_state(field["label"])
+            if (request.get("upload_receipt") and previous and
+                    previous["receipt"] == request["upload_receipt"] and previous["filename"] == path.name):
+                return {"verified": True, "filename": path.name, "upload_receipt": previous["receipt"], "cached": True}
             if ref.startswith("uploaded:"):
                 # A filename alone cannot identify SDE vs ML resumes with the same
                 # basename. Replace it from the approved role-specific source.
                 remove = [n for n in ax() if n.get("role", {}).get("value") == "button"
                           and n.get("name", {}).get("value") == "Remove file"]
-                if len(remove) != 1:
-                    raise ValueError("Multiple uploaded files need an explicit review")
-                click(remove[0]["backendDOMNodeId"])
+                eligible = []
+                for node in remove:
+                    obj = cdp("DOM.resolveNode", backendNodeId=node["backendDOMNodeId"])["object"]["objectId"]
+                    inside = cdp("Runtime.callFunctionOn", objectId=obj,
+                                 functionDeclaration="function(){return this.closest('.file-upload')==="+upload_container(field["label"])+"}",
+                                 returnByValue=True)["result"].get("value")
+                    if inside:
+                        eligible.append(node)
+                if len(eligible) != 1:
+                    raise ValueError("Matching uploaded-file removal control is ambiguous")
+                click(eligible[0]["backendDOMNodeId"])
                 wait(0.2)
                 ref = "cover_letter" if field["label"] == "Cover Letter" else "resume"
             # Hidden upload input is absent from AX: use the documented DOM fallback.
@@ -194,11 +301,55 @@ def dispatch(request, helpers):
             cdp("DOM.setFileInputFiles", nodeId=node, files=[str(path.resolve())])
             wait(1)
             for _ in range(20):
-                if path.name in js("document.body.innerText"):
-                    return {"verified": True, "filename": path.name}
+                observed = upload_state(field["label"])
+                if observed and observed["filename"] == path.name:
+                    return {"verified": True, "filename": path.name, "upload_receipt": mark_upload(field["label"])}
                 wait(0.25)
             raise ValueError("Uploaded filename did not appear in the form")
         backend = find(field)
+        if kind == "checkbox":
+            if not isinstance(value, bool):
+                raise ValueError("Checkbox answers require an explicit boolean")
+            before = control_value(ref)
+            if before is None:
+                raise ValueError("Observed checkbox is no longer available")
+            if before["checked"] != value:
+                click(backend)
+                wait(0.15)
+            after = control_value(ref)
+            if not after or after["checked"] != value or after["invalid"]:
+                raise ValueError("Checkbox did not retain the approved answer")
+            return {"verified": True, "checked": value}
+        if kind == "select":
+            item = next((item for item in js(FIELD_DATA) if item["id"] == ref), None)
+            options = [o for o in (item or {}).get("options", []) if not o["disabled"]]
+            matches = [i for i, o in enumerate(options) if option_matches(o["label"], value, field_id=ref)]
+            if len(matches) != 1:
+                raise ValueError("Stored answer does not uniquely match a native select option")
+            selected = options[matches[0]]
+            before = control_value(ref)
+            if not before or before["value"] != selected["value"] or before["invalid"]:
+                cdp("DOM.focus", backendNodeId=backend)
+                keypress("Home")
+                for _ in range(matches[0]):
+                    keypress("ArrowDown")
+                wait(0.15)
+                interim = control_value(ref)
+                if not interim or interim["value"] != selected["value"]:
+                    # macOS native selects can ignore navigation keys while
+                    # accepting typeahead. Clear its bounded typeahead window,
+                    # then send actual keyboard text for the exact option.
+                    wait(1.05)
+                    for char in selected["label"]:
+                        virtual = ord(char.upper()) if len(char.upper()) == 1 and char.isascii() else 0
+                        cdp("Input.dispatchKeyEvent", type="keyDown", key=char, text=char,
+                            unmodifiedText=char, windowsVirtualKeyCode=virtual)
+                        cdp("Input.dispatchKeyEvent", type="keyUp", key=char, windowsVirtualKeyCode=virtual)
+                    wait(0.15)
+            after = control_value(ref)
+            if not after or after["value"] != selected["value"] or after["invalid"]:
+                raise ValueError("Native select did not retain the approved answer")
+            return {"verified": True, "selected": selected["label"]}
         if kind == "combobox":
             before = control_value(ref)
             if ref == "country" and value == "United States" and before and "iti__us" in before["countryCode"]:
@@ -207,10 +358,10 @@ def dispatch(request, helpers):
                 return {"verified": True}
             click(backend)
             wait(0.15)
-            options = [n for n in ax() if n.get("role", {}).get("value") == "option"]
+            options = options_for(field)
             match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref)]
             if not match:
-                query = str(value).split(",")[0] if ref == "candidate-location" else str(value)
+                query = ("Yes" if value else "No") if isinstance(value, bool) else (str(value).split(",")[0] if ref == "candidate-location" else str(value))
                 queries = [query]
                 if ref.startswith("school--"):
                     queries.append(str(value).split()[-1])
@@ -218,7 +369,7 @@ def dispatch(request, helpers):
                     type_text(backend, query)
                     for _ in range(12):
                         wait(0.25)
-                        options = [n for n in ax() if n.get("role", {}).get("value") == "option"]
+                        options = options_for(field)
                         match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref)]
                         if match:
                             break
@@ -228,11 +379,13 @@ def dispatch(request, helpers):
                 type_text(backend, "")
                 cdp("Input.dispatchKeyEvent", type="keyDown", key="Escape", code="Escape")
                 cdp("Input.dispatchKeyEvent", type="keyUp", key="Escape", code="Escape")
-                raise ValueError("Stored answer does not uniquely match a dropdown option")
+                raise ValueError("Stored answer is absent from dropdown options" if not match else "Stored answer matches multiple dropdown options")
             label = match[0].get("name", {}).get("value", "")
             click(match[0]["backendDOMNodeId"])
             wait(0.2)
             after = control_value(ref)
+            if ref == "country" and value == "United States" and after and "iti__us" in after["countryCode"] and not after["invalid"]:
+                return {"verified": True, "selected": "United States (+1)"}
             if not after or normalize(after["selected"]) != normalize(label) or after["invalid"]:
                 raise ValueError("Dropdown did not retain the selected answer")
             return {"verified": True, "selected": label}

@@ -15,10 +15,16 @@ SKILL_PATH = ROOT / "skills" / "prepare-greenhouse" / "SKILL.md"
 
 def key_for_field(field, answers):
     label = normalize(field["label"])
+    if field.get("required") and label in ALIASES["identity.preferred_name"] and "standing.required_preferred_name" in answers:
+        return "standing.required_preferred_name"
     # The worker filters these records by employer scope. An exact approved
     # employer answer takes precedence over a reusable standing default.
     for key, item in answers.items():
         if key.startswith("custom.") and normalize(item.get("question", "")) == label:
+            if item.get("field_ref") and item["field_ref"] != field["ref"]:
+                continue
+            if item.get("country_context") and item["country_context"] != field.get("country_context"):
+                continue
             return key
     education = re.fullmatch(r"(school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
     if education:
@@ -29,6 +35,10 @@ def key_for_field(field, answers):
     for key, aliases in ALIASES.items():
         if label in aliases and key in answers:
             return key
+    if label in {"are you authorized to work lawfully in the location posted for this position?", "work authorization"}:
+        suffix = {"united states": "us", "canada": "canada", "united kingdom": "uk"}.get(normalize(field.get("country_context") or ""))
+        if suffix and f"eligibility.authorized_{suffix}" in answers:
+            return f"eligibility.authorized_{suffix}"
     # User-approved standing answers apply to these exact question templates
     # across employers. No broader semantic or fuzzy screening matching.
     standing = {
@@ -39,6 +49,36 @@ def key_for_field(field, answers):
     for key, pattern in standing.items():
         if key in answers and re.fullmatch(pattern, label):
             return key
+    preferences = {
+        "preferences.relocation": r"are you (?:open|willing) to relocat(?:e|ing)(?: (?:to|for) [^?]+)?\?",
+        "standing.office_willingness": r"(?:are you interested in working (?:out of|at) [^?]+\bhq|are you (?:willing|open) to work (?:on[- ]site|in[- ]office|at our [^?]+ office))\?",
+        "standing.career_fair_contact": r"who did you meet at the career fair\?",
+        "standing.location_relocation": r"where are you currently located\? are you open to relocating(?: to [^?]+)?\?",
+    }
+    for key, pattern in preferences.items():
+        if key in answers and re.fullmatch(pattern, label):
+            return key
+    if label in {"desired salary", "salary expectations", "what are your yearly salary expectations?", "what are your salary expectations?"} and "preferences.salary" in answers:
+        return "preferences.salary"
+    education = re.fullmatch(r"are you currently attending or a recent graduate of (?:the )?(.+)\?", label)
+    if education:
+        key = "standing.school." + re.sub(r"[^a-z0-9]", "", education[1])
+        if key in answers:
+            return key
+    policies = {
+        "standing.previous_employment": r"have you ever been employed full-time at [^?]+\?",
+        "standing.previous_contract": r"have you ever provided any contract work for [^?]+\?",
+    }
+    for key, pattern in policies.items():
+        if key in answers and re.fullmatch(pattern, label):
+            return key
+    if "standing.compliance" in answers:
+        consent = (re.match(r"(?:by clicking|by checking this box|i certify|i agree|i consent|i acknowledge|how we interview:)", label)
+                   or re.search(r"do you consent to us using ai to transcribe and summarize your interview\?", label))
+        if consent and field["type"] in {"checkbox", "combobox", "select"}:
+            return "standing.interview_expectations" if label.startswith("how we interview:") else "standing.compliance"
+        if field["type"] in {"text", "textarea"} and "electronic signature" in label and "please sign by typing your full legal" in label:
+            return "standing.legal_signature"
     # Bound extensions for common resume prompts; no fuzzy eligibility/disclosure matching.
     if field["type"] == "file":
         if re.fullmatch(r"(?:upload |attach )?resume(?:/cv| \(pdf\))?", label):
