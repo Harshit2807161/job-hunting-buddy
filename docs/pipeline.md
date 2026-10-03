@@ -18,6 +18,25 @@ Only a confirmed canonical Greenhouse application URL enters the application
 queue. The canonical region/board/job identity deduplicates different wrappers
 and tracking links. An existing submitted application stays submitted.
 
+The standing eligibility filter excludes jobs requiring a particular citizenship,
+security clearance, TS/SCI, or a polygraph, including the ability to obtain or
+maintain those requirements. Phase 1 checks available titles and descriptions;
+the preparation worker verifies the exact job's official Greenhouse description
+before accessing the candidate browser. Matched requirements and their source
+are saved privately, and the application becomes `skipped`. Answering an older
+question or resuming the queue cannot reactivate that state. This filter does not
+infer the candidate's citizenship and does not exclude optional citizenship
+questions, disclosure requirements, generic work authorization, background
+checks, explicitly unnecessary clearances, or citizenship with a permanent-
+resident alternative.
+
+An unavailable or empty official description prevents preparation. Stale,
+mismatched, or altered cached descriptions trigger a fresh official fetch.
+Failed verification produces a `waiting_input` operational handoff
+with no candidate question; no application tab is opened or filled. Retry only
+after the official description can be verified. Fresh cached descriptions must
+match the exact official job URL and their recorded content hash.
+
 Greenhouse preparation uses the registered Browser Use skill and its official
 CLI, default daemon, and existing local Chrome CDP endpoint. Independent job
 planners can run concurrently. Every browser operation holds the shared browser
@@ -70,7 +89,7 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" .venv/bin/python -m playwright i
 New application questions are employer scoped, carry their exact wording and
 form context, and are deduplicated across applications. Answering a question
 automatically resumes only `waiting_input` jobs whose required pending questions
-are all answered. It cannot resume review-ready or submitted applications.
+are all answered. It cannot resume review-ready, submitted, or skipped applications.
 `--decline` is available for optional questions; required questions require an
 explicit answer. Verification codes and credentials do not enter this ledger.
 
@@ -151,6 +170,15 @@ synthetic answer resumes both, and both stop at review with zero submissions.
 This proves the orchestration and handoff flow. It is not evidence of live MCP
 resolution or live Browser Use behavior. Dedicated MCP fixture tests exercise
 the actual MCP protocol; live site results must be reported separately.
+
+Synthetic eligibility regressions cover required citizenship and clearance,
+negated requirements, disclosure-only questions, permanent-resident alternatives,
+unavailable descriptions, and proof that excluded jobs never construct a browser
+client. A separate live-description audit excluded a previously prepared draft
+whose official posting required citizenship and clearance; its tab remained
+untouched. Another audited draft passed the filter and reached review using the
+Browser Use CLI. No submission is part of these checks. Phase 1's `main` and
+`v0.1.0` baseline remain unchanged; these changes belong to the Phase 2 branch.
 
 ### Live source validation, 2026-10-02
 

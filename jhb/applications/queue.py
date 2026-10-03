@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 """
 STATES = {"queued", "running", "waiting_review", "waiting_input", "waiting_login",
-          "waiting_captcha", "unsupported", "failed", "submitted"}
+          "waiting_captcha", "unsupported", "failed", "submitted", "skipped"}
 
 
 def is_greenhouse(url: str) -> bool:
@@ -67,8 +67,12 @@ def enqueue(conn, jobs) -> int:
             continue
         application_hash = hashlib.sha256("|".join(identity).encode()).hexdigest()
         row = {**row, "source_job_hash": row["dedupe_hash"], "dedupe_hash": application_hash}
-        count += conn.execute("INSERT OR IGNORE INTO applications(job_hash,job_json,updated_at) VALUES(?,?,?)",
-                              (row["dedupe_hash"], json.dumps(row), int(time.time()))).rowcount
+        from ..eligibility import preliminary, POLICY_ID
+        findings = preliminary(row)
+        if findings:
+            row["eligibility"] = {"policy": POLICY_ID, "findings": findings, "state": "skipped"}
+        count += conn.execute("INSERT OR IGNORE INTO applications(job_hash,job_json,state,updated_at) VALUES(?,?,?,?)",
+                              (row["dedupe_hash"], json.dumps(row), "skipped" if findings else "queued", int(time.time()))).rowcount
     conn.commit()
     return count
 
@@ -105,5 +109,5 @@ def finish(conn, job_hash, state, packet=None):
 
 def resume(conn, job_hash):
     conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,updated_at=? "
-                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submitted')", (int(time.time()), job_hash))
+                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submitted','skipped')", (int(time.time()), job_hash))
     conn.commit()

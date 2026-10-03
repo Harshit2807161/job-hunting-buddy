@@ -255,6 +255,15 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
     directory = (artifacts or config.ROOT / "private" / "applications") / job["dedupe_hash"]
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
+    if not demo_origin:
+        from ..eligibility import assess_job
+        eligibility = await asyncio.to_thread(assess_job, job)
+        booklet.write_private(directory / "eligibility.json", eligibility)
+        if eligibility["state"] != "eligible":
+            result = {"state": eligibility["state"], "reason": eligibility["reason"],
+                      "eligibility": eligibility, "events": [{"event": "eligibility_handoff", "policy": eligibility["policy"]}],
+                      "filled": [], "missing": []}
+            return result, await write_packet(None, directory, job, result)
     if not selected_role:
         result = {"state": "waiting_input", "reason": "Ambiguous role; choose --role sde or --role ml",
                   "missing": [{"question": "Choose the SDE or ML resume variant"}], "events": [], "filled": []}

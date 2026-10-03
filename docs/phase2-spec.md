@@ -53,6 +53,17 @@ hands them to the candidate; it never submits them.
 
 ## Authentication and submission boundaries
 
+Before opening or filling an application, the worker enforces the standing
+citizenship, security-clearance, TS/SCI and polygraph exclusion policy against
+the exact official Greenhouse job description. Ability-to-obtain or maintain
+requirements count. Ordinary work authorization, background checks, optional
+citizenship disclosures, and citizenship-or-permanent-resident alternatives do
+not count as strict citizenship requirements. Excluded jobs become durable
+`skipped` records and cannot be resumed through an older question answer.
+If the description cannot be verified, the worker stops at an operational
+`waiting_input` handoff without opening the browser or asking the candidate to
+guess a job requirement. Evidence stays in the private application packet.
+
 Google SSO is the user's required authentication route. Hosted Greenhouse forms
 often need no account: OneStream's tested form was public. Unknown login,
 account choice, MFA and verification requirements are explicit handoffs. Live

@@ -157,6 +157,10 @@ def test_exact_employer_office_answer_overrides_general_willingness():
 
 def test_run_job_injects_only_explicit_standing_policies_and_uses_application_city(monkeypatch, tmp_path):
     job = {"dedupe_hash": "b" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123", "role_classes": "swe"}
+    import hashlib, time
+    job["verified_job_description"] = {"status": "verified", "source_url": "https://boards-api.greenhouse.io/v1/boards/example/jobs/123",
+        "text": "Synthetic software role with no security clearance required.", "retrieved_at": time.time(),
+        "sha256": hashlib.sha256(b"Synthetic software role with no security clearance required.").hexdigest()}
     book = {"answers": {"identity.first_name": booklet.answer("Sam", "synthetic explicit name"),
                          "identity.preferred_name": booklet.answer(status="declined", source="synthetic explicit decline"),
                          "preferences.application_city": booklet.answer("Example Metro, CA", "synthetic application-city instruction"),
@@ -191,6 +195,10 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
 
 def test_school_attendance_uses_original_verified_catalog_not_dropdown_other_mapping(monkeypatch, tmp_path):
     job = {"dedupe_hash": "a" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123", "role_classes": "swe"}
+    import hashlib, time
+    job["verified_job_description"] = {"status": "verified", "source_url": "https://boards-api.greenhouse.io/v1/boards/example/jobs/123",
+        "text": "Synthetic software role with no security clearance required.", "retrieved_at": time.time(),
+        "sha256": hashlib.sha256(b"Synthetic software role with no security clearance required.").hexdigest()}
     book = {"answers": {"identity.first_name": booklet.answer("Sam", "synthetic source")},
             "roles": {"sde": {}, "ml": {}}, "workflow_preferences": {"school_attendance": True},
             "education_records": [
