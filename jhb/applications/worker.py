@@ -17,6 +17,15 @@ from .credentials import CredentialStore
 from .planner import CodexPlanner, deterministic_plan, key_for_field, validate_plan
 
 
+def _apply_phone_format(answers, policy):
+    """Keep the national-number alternative only under the explicit user rule."""
+    record = answers.get("identity.phone_national", {})
+    if (policy.get("phone_format", {}).get("separate_country") != "national"
+            or record.get("status") != "verified"
+            or not isinstance(record.get("value"), str) or not record["value"].strip()):
+        answers.pop("identity.phone_national", None)
+
+
 def _inapplicable_optional(field, answers):
     if field["required"]:
         return False
@@ -172,7 +181,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         updated = await observe()
         if updated.get("handoff"):
             return {"state": updated["handoff"], "reason": updated["reason"], "events": events, "filled": list(filled.values())}, actions
-        if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context")) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context")) for f in snapshot["fields"]}:
+        if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in snapshot["fields"]}:
             events.append({"step": step, "event": "fields_revealed"})
             previous = None
             continue
@@ -270,6 +279,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         return result, await write_packet(None, directory, job, result)
     answers = booklet.for_role(book, selected_role)
     policy = book.get("workflow_preferences", {})
+    _apply_phone_format(answers, policy)
     if policy.get("salary_when_no_range"):
         answers["standing.salary_policy"] = booklet.answer(True, "Explicit user salary policy")
     if policy.get("school_attendance"):

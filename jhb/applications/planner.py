@@ -17,6 +17,12 @@ def key_for_field(field, answers):
     label = normalize(field["label"])
     if field.get("required") and label in ALIASES["identity.preferred_name"] and "standing.required_preferred_name" in answers:
         return "standing.required_preferred_name"
+    # The latest explicit phone-format rule also supersedes an older saved
+    # employer phone answer, but only in an observed split calling-code widget.
+    if field.get("type") == "tel" and field.get("separate_phone_country") is True and label in ALIASES["identity.phone"]:
+        national = answers.get("identity.phone_national", {})
+        if national.get("status") == "verified" and isinstance(national.get("value"), str) and national["value"].strip():
+            return "identity.phone_national"
     # The worker filters these records by employer scope. An exact approved
     # employer answer takes precedence over a reusable standing default.
     for key, item in answers.items():

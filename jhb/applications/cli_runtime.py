@@ -63,6 +63,12 @@ FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
    label:((e.type==='file'?((e.closest('.file-upload')?.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.closest('.file-upload')?.querySelector('.upload-label')?.innerText):'')||e.getAttribute('aria-label')||[...(e.labels||[])].map(l=>l.innerText).join(' ')||
      (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||'').trim(),
    description:e.getAttribute('description')||'',
+   separate_phone_country:e.type==='tel' && !!e.closest('.iti') &&
+     [...(e.closest('.phone-input')||e.closest('.iti')).querySelectorAll('input[role="combobox"],select,[role="combobox"]')]
+       .some(c=>c!==e && !c.disabled && !c.matches('.iti__search-input,[id$="__search-input"]') &&
+         c.getClientRects().length && getComputedStyle(c).visibility!=='hidden' &&
+         (c.id==='country' || /^(?:phone[-_])?country(?:[-_]code)?$/i.test(c.name||'') ||
+          /^(?:country|calling code|country code)$/i.test((c.getAttribute('aria-label')||[...(c.labels||[])].map(l=>l.innerText).join(' ')).trim()))),
    value:e.value,checked:e.checked,selected:e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||'',
    invalid:e.getAttribute('aria-invalid')==='true',
    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}))"""
@@ -262,7 +268,8 @@ def dispatch(request, helpers):
             if kind == "checkbox" and normalize(label) in {"accept", "agree", "yes", "no"} and item.get("description"):
                 label = item["description"] + " (" + label + ")"
             fields.append({"ref": item["id"], "label": label,
-                           "type": kind, "required": item["required"], "options": item["options"]})
+                           "type": kind, "required": item["required"], "options": item["options"],
+                           **({"separate_phone_country": item["separate_phone_country"]} if kind == "tel" else {})})
         for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:((e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0]).trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||'',required:e.getAttribute('aria-required')==='true'}))"):
             if upload["label"] in {"Resume/CV", "Resume", "Cover Letter"}:
                 fields.append({"ref": "uploaded:"+upload["label"], "label": upload["label"],
