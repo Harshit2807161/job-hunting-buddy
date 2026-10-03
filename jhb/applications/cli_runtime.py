@@ -7,6 +7,7 @@ values, which are not represented by the combobox input's empty value.
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from pathlib import Path
@@ -15,6 +16,43 @@ from .browser import GUARD_SCRIPT
 from .booklet import normalize
 from .planner import safe_next
 from .queue import greenhouse_identity, is_greenhouse
+
+
+def _settled_click(backend, cdp, wait, click_at_xy):
+    """Click only after bounded, viewport-relative CDP geometry has settled."""
+    cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
+    previous, stable = None, 0
+    for _ in range(20):
+        # A completed scroll request does not guarantee a completed reflow or
+        # animation triggered by that scroll. Observe several rendered frames.
+        wait(0.05)
+        quad = cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
+        if len(quad) != 8 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in quad):
+            raise ValueError("Observed control has invalid click geometry")
+        stable = stable+1 if previous is not None and max(abs(a-b) for a, b in zip(quad, previous)) <= 1 else 0
+        previous = quad
+        if stable < 2:
+            continue
+        metrics = cdp("Page.getLayoutMetrics")
+        viewport = metrics.get("cssVisualViewport") or metrics["visualViewport"]
+        x, y = sum(quad[0::2])/4, sum(quad[1::2])/4
+        if not (0 < x < viewport["clientWidth"] and 0 < y < viewport["clientHeight"]):
+            # A later layout expansion can move the settled control outside
+            # the viewport. Retry the documented CDP scroll, never JS scrolling.
+            cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
+            previous, stable = None, 0
+            continue
+        final = cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
+        if len(final) != 8 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in final):
+            raise ValueError("Observed control has invalid click geometry")
+        if max(abs(a-b) for a, b in zip(final, quad)) > 1:
+            previous, stable = None, 0
+            continue
+        if max(final[0::2]) <= min(final[0::2]) or max(final[1::2]) <= min(final[1::2]):
+            raise ValueError("Observed control has no clickable area")
+        click_at_xy(sum(final[0::2])/4, sum(final[1::2])/4)
+        return
+    raise ValueError("Observed control did not settle in the viewport")
 
 FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
  .filter(e=>e.id && !e.disabled && (e.type==='file' ||
@@ -68,9 +106,7 @@ def dispatch(request, helpers):
         return cdp("Accessibility.getFullAXTree")["nodes"]
 
     def click(backend):
-        cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
-        q = cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
-        helpers["click_at_xy"](sum(q[0::2])/4, sum(q[1::2])/4)
+        _settled_click(backend, cdp, wait, helpers["click_at_xy"])
 
     def identifier(node):
         attrs = cdp("DOM.describeNode", backendNodeId=node["backendDOMNodeId"])["node"].get("attributes", [])
