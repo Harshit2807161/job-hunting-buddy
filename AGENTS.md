@@ -6,6 +6,10 @@ feature branch until its tests and live limitations have been reviewed.
 Use `skills/prepare-greenhouse/SKILL.md` for application planning and
 `skills/tailor-cover-letter/SKILL.md` for cover-letter work. Read the candidate's
 local source skill before editing a letter; references stay unchanged.
+Deliver the validated company-named cover-letter PDF into the matching candidate
+role directory beside its resume, as the source skill requires. Private build
+artifacts do not replace that final delivery. Verify the resume variant before
+upload and retain document provenance privately.
 
 Use `skills/browser-use/SKILL.md` and the official Browser Use CLI for live browser
 application filling. Always invoke `browser-use` through its CLI access mode, using the

@@ -18,3 +18,11 @@ JSON. The compiler validates the allowed paragraph zones, escapes replacement
 text, compiles with XeLaTeX, checks one page, and preserves a diff. Check the PDF
 visually before approving it for application upload. A compiler error or overflow
 is a handoff, never permission to alter the template's layout.
+
+After validation, follow the candidate source skill's final delivery step: copy
+only the finished company-named PDF into the selected role directory beside its
+resume and reference template. Keep build files and provenance in the private
+application directory. Preserve a private backup before replacing a different
+existing company PDF. Register the final delivered PDF in the answer booklet,
+and verify the uploaded resume is the selected SDE or ML variant. Report both
+the final cover-letter path and the resume path.
