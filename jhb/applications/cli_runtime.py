@@ -541,7 +541,10 @@ def dispatch(request, helpers):
                     queries.append(str(value).split()[-1])
                 for query in dict.fromkeys(queries):
                     type_text(backend, query)
-                    for _ in range(12):
+                    # Remote location and institution catalogs can return after
+                    # the ordinary local-menu budget. Keep the extra wait bounded.
+                    polls = 32 if ref == "candidate-location" else 24 if ref.startswith("school--") else 12
+                    for _ in range(polls):
                         wait(0.25)
                         options = options_for(field)
                         match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref, field_label=field["label"])]

@@ -110,6 +110,8 @@ def key_for_field(field, answers):
         if label in aliases and key in answers:
             return key
     known_facts = {
+        "are you located in the us?": "standing.located_us",
+        "are you located in the united states?": "standing.located_us",
         "can you provide proof that you are authorized to work in the united states?": "eligibility.proof_authorization_us",
         "did someone refer you to apply to this role?": "screening.personal_referral",
         "are you at least 18 years old?": "eligibility.over_18",
@@ -129,10 +131,12 @@ def key_for_field(field, answers):
             "are you authorized to work in the united states?",
             "are you legally authorized to work in the u.s.?",
             "are you legally authorized to work in the us?",
+            "are you legally authorized to work in the united states for our company?",
         },
         "eligibility.sponsorship": {
             "will you, at any point, require employer sponsorship to work in the united states?",
             "would you require sponsorship to work in the united states now or in the future?",
+            "will you now or in the future require sponsorship for employment visa status (e.g., h-1b visa status) to work legally for our company in the united states?",
             "will you now or in the future require immigration sponsorship by our company to attain or maintain your employment eligibility (e.g., h-1b, e-3, tn, o-1, stem opt ead, or any immigration work authorization requiring a written submission from the company to a government agency)?",
         },
     }
@@ -155,6 +159,13 @@ def key_for_field(field, answers):
     for key, pattern in standing.items():
         if key in answers and re.fullmatch(pattern, label):
             return key
+    family_label = ("are any of your immediate family members employees or directors of pathai or poplar healthcare pllc, "
+                    "including a spouse or partner living in same household, parent, child, sibling, grandparent or grandchild "
+                    "(including step-persons, such as a step-parent or step-child)?")
+    related = answers.get("screening.employee_relative", {})
+    if (label == family_label and related.get("status") == "verified"
+            and related.get("source") and isinstance(related.get("value"), bool)):
+        return "screening.employee_relative"
     if (label == "do you have a non-compete, non-disclosure, non-solicitation agreement or any other post-employment agreement?"
             and "screening.non_compete" in answers):
         return "screening.non_compete"

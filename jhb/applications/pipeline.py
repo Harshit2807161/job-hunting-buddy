@@ -2,7 +2,8 @@
 
 Only the manager touches SQLite. Independent source checks and application
 planners overlap; Browser Use CLI operations keep their existing atomic lock.
-All real applications stop at review or explicit question/verification handoff.
+Preparation stops at review or handoff. A separate finite user authorization can
+enable audited submission of new Phase 1 jobs through the receipt-only tracker.
 """
 from __future__ import annotations
 
@@ -189,7 +190,7 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
 
 async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, application_limit=3,
                 concurrency=2, source_timeout=90, application_timeout=600, planner_name="codex", send_email=False,
-                max_active_drafts=10):
+                max_active_drafts=10, submission_runner=None):
     """Run one already-authorized batch. Caller owns the single manager lock."""
     if not (1 <= concurrency <= 4 and 1 <= source_limit <= 20 and 1 <= application_limit <= 10):
         raise ValueError("Pipeline batch/concurrency limits out of range")
@@ -215,7 +216,6 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     queue.initialize(conn)
     source_queue.initialize(conn)
     recovered = recover_technical_failures(conn)
-    notify_pending(conn, send_email=send_email)
     notify_source_handoffs(conn, send_email=send_email)
     summary = {"sources_checked": 0, "boards": {}, "applications_queued": 0,
                "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": 0,
@@ -260,7 +260,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     items = []
     lease = math.ceil(application_limit / concurrency) * application_timeout + 120
     active = conn.execute("SELECT COUNT(*) FROM applications WHERE state IN "
-                          "('waiting_review','waiting_input','waiting_login','waiting_captcha') OR "
+                          "('waiting_review','waiting_input','waiting_login','waiting_captcha','submission_uncertain') OR "
                           "(state='running' AND lease_until >= ?)", (int(time.time()),)).fetchone()[0]
     for _ in range(min(application_limit, max(0, max_active_drafts - active))):
         item = queue.claim(conn, lease_seconds=lease)
@@ -299,6 +299,11 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                 summary["states"][state] = summary["states"].get(state, 0) + 1
                 if state == "waiting_input":
                     summary["question_handoffs"] += 1
+    # Expiring user opt-in is evaluated after preparation and before review
+    # notices. Defaults perform no terminal clicks; uncertain attempts stay held.
+    from .overnight import drain as drain_authorized
+    summary["authorized_submissions"] = await drain_authorized(
+        conn, book_path, limit=application_limit, submitter=submission_runner)
     # Refresh from the authoritative ledger, including earlier batches and
     # answered questions. Never leave a stale outbox after successful resumption.
     try:
@@ -328,7 +333,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         "sources": conn.execute("SELECT COUNT(*) FROM application_sources WHERE state IN ('queued','retry')").fetchone()[0],
         "applications": conn.execute("SELECT COUNT(*) FROM applications WHERE state IN ('queued','retry')").fetchone()[0],
         "active_drafts": conn.execute("SELECT COUNT(*) FROM applications WHERE state IN "
-                                      "('waiting_review','waiting_input','waiting_login','waiting_captcha') OR "
+                                      "('waiting_review','waiting_input','waiting_login','waiting_captcha','submission_uncertain') OR "
                                       "(state='running' AND lease_until > ?)", (int(time.time()),)).fetchone()[0],
         "draft_limit": max_active_drafts,
     }
@@ -347,4 +352,7 @@ def run_cycle(conn, book_path, **kwargs):
             fcntl.flock(manager, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"skipped": "Another pipeline/worker manager is active"}
+        quarantine = config.ROOT / "private" / "overnight-monitor" / "repair-pending.json"
+        if quarantine.exists() or quarantine.is_symlink():
+            return {"skipped": "Overnight repair requires validated recovery"}
         return asyncio.run(cycle(conn, book_path, **kwargs))

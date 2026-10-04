@@ -347,3 +347,17 @@ def test_composio_failure_or_unknown_shape_never_masquerades_as_success(monkeypa
 @pytest.mark.parametrize("day,suffix", [(1,"st"),(2,"nd"),(3,"rd"),(11,"th"),(12,"th"),(13,"th"),(21,"st"),(22,"nd"),(23,"rd"),(31,"st")])
 def test_sheet_date_matches_ordinal_day_style(day, suffix):
     assert tracking._date(f"2026-10-{day:02}T12:00:00+00:00", "America/Los_Angeles") == f"{day}{suffix} oct"
+
+
+def test_employer_we_received_wording_records_once_and_syncs_without_reclick(setup):
+    conn, job, receipt, sheets, settings = setup
+    url = 'https://job-boards.greenhouse.io/example/jobs/7410'
+    body = 'Thank you for your interest. We wanted to let you know we received your application.'
+    booklet.write_private(receipt, {**json.loads(receipt.read_text()), 'url': url,
+        'confirmation': 'we received your application.', 'body': body,
+        'source': 'Live Greenhouse success page after authorized submission'})
+    first = tracking.record_confirmed(conn, {**job, 'url': url}, receipt, executor=sheets)
+    second = tracking.record_confirmed(conn, {**job, 'url': url}, receipt, executor=sheets)
+    assert first['state'] == 'submitted' and first['tracking']['synced'] == 1
+    assert second['tracking']['synced'] == 0 and sheets.appends == 1
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'submitted'

@@ -365,3 +365,15 @@ def test_source_null_lease_recovers_without_resetting_budget(setup):
     db.commit()
     assert source_queue.claim(db) is None
     assert db.execute("SELECT state FROM application_sources").fetchone()[0] == "failed"
+
+
+def test_pending_overnight_repair_quarantines_pipeline_before_any_work(setup):
+    db, path = setup
+    source_queue.enqueue(db, [job("quarantined", "https://example.test/job")])
+    booklet.write_private(config.ROOT / "private" / "overnight-monitor" / "repair-pending.json",
+                          {"state": "repairing"})
+    async def forbidden(*args, **kwargs):
+        pytest.fail("A quarantined pipeline cannot touch the browser")
+    result = pipeline.run_cycle(db, path, resolver=forbidden, runner=forbidden)
+    assert result["skipped"] == "Overnight repair requires validated recovery"
+    assert db.execute("SELECT attempts FROM application_sources").fetchone()[0] == 0

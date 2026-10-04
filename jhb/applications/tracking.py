@@ -124,7 +124,7 @@ def _proof(job, receipt_path):
         kind = "explicit_user_confirmation"
         extra = {"user_evidence_path": str(evidence_path), "user_evidence_sha256": evidence_digest}
     else:
-        positive = r"(?:your application (?:was successfully submitted|has been submitted successfully)|(?:we have|we've) received your application|thank you for applying)"
+        positive = r"(?:your application (?:was successfully submitted|has been submitted successfully|has been received)|we(?: have|'ve)? received your application|thank you for applying)"
         if (not source.startswith("Live ") or "success page" not in source.lower()
                 or not isinstance(receipt.get("target_id"), str) or not receipt["target_id"]
                 or not re.search(positive, confirmation, re.I)):

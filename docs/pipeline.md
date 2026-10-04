@@ -165,6 +165,13 @@ An incompatible answer stays at a question handoff rather than retrying forever.
 
 ## Final step: submission tracking
 
+The default scheduled workflow stops at review. A separately enabled, verified,
+expiring overnight authorization can submit only new Phase 1 Greenhouse jobs
+discovered within its window, after two fresh Browser Use audits and approved
+document checks. Durable attempts prevent blind repetition after an uncertain
+click; positive receipts precede spreadsheet updates. Existing drafts remain
+outside this scope. See [overnight-submissions.md](overnight-submissions.md).
+
 After a separately authorized submission succeeds, the agent records the exact
 job's private success receipt with `confirm-submission`. This durably records the
 submission and automatically synchronizes the configured existing spreadsheet.
@@ -272,7 +279,8 @@ required clearance headings, export-control alternatives, menu/geometry recovery
 and salary-category retention. They do not prove universal ATS compatibility or
 CAPTCHA solving. Unsupported controls and genuinely unknown factual answers
 remain explicit handoffs; the pipeline never changes an answer to improve
-screening results and never submits scheduled applications.
+screening results. Default scheduled preparation stops before submission; the
+separate expiring overnight policy requires explicit verified authorization.
 
 
 A subsequent live education audit verified four indexed year fields across two

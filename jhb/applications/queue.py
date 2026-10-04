@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS applications (
  notified_at INTEGER
 );
 """
-STATES = {"queued", "running", "retry", "waiting_review", "waiting_input", "waiting_login",
+STATES = {"queued", "running", "retry", "waiting_review", "submission_uncertain", "waiting_input", "waiting_login",
           "waiting_captcha", "unsupported", "failed", "submitted", "skipped"}
 
 
@@ -114,7 +114,7 @@ def finish(conn, job_hash, state, packet=None):
     # interactive submission was confirmed. Preserve that terminal record.
     conn.execute("UPDATE applications SET state=?,lease_until=NULL,available_at=0,error_kind=NULL,"
                  "updated_at=?,packet=?,notified_at=NULL "
-                 "WHERE job_hash=? AND (state NOT IN ('submitted','waiting_review','skipped') OR state=? "
+                 "WHERE job_hash=? AND (state NOT IN ('submitted','waiting_review','submission_uncertain','skipped') OR state=? "
                  "OR ?='submitted' OR (state='waiting_review' AND ?='skipped'))",
                  (state, int(time.time()), str(packet) if packet else None, job_hash, state, state, state))
     conn.commit()
@@ -122,7 +122,7 @@ def finish(conn, job_hash, state, packet=None):
 
 def resume(conn, job_hash):
     conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,updated_at=? "
-                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submitted','skipped')", (int(time.time()), job_hash))
+                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submission_uncertain','submitted','skipped')", (int(time.time()), job_hash))
     conn.commit()
 
 

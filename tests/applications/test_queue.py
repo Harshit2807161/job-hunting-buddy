@@ -95,7 +95,7 @@ def test_stale_preparation_finish_preserves_confirmed_submission(conn, stale_sta
     assert queue.claim(conn) is None
 
 
-@pytest.mark.parametrize("state", ["submitted", "waiting_review", "skipped", "waiting_input", "waiting_login", "waiting_captcha"])
+@pytest.mark.parametrize("state", ["submitted", "waiting_review", "submission_uncertain", "skipped", "waiting_input", "waiting_login", "waiting_captcha"])
 def test_technical_retry_cannot_resume_protected_or_candidate_states(conn, state):
     queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/9000")])
     item = queue.claim(conn)
@@ -105,7 +105,7 @@ def test_technical_retry_cannot_resume_protected_or_candidate_states(conn, state
     assert queue.claim(conn) is None
 
 
-@pytest.mark.parametrize("state", ["submitted", "waiting_review", "skipped"])
+@pytest.mark.parametrize("state", ["submitted", "waiting_review", "submission_uncertain", "skipped"])
 def test_stale_failed_finish_cannot_downgrade_protected_application(conn, state):
     queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/9001")])
     item = queue.claim(conn)
@@ -139,3 +139,20 @@ def test_existing_queue_schema_receives_retry_metadata_without_losing_rows():
     row = db.execute("SELECT * FROM applications").fetchone()
     assert row["state"] == "submitted" and row["available_at"] == 0 and row["error_kind"] is None
     db.close()
+
+
+def test_uncertain_submission_cannot_resume_or_be_downgraded_by_stale_worker(conn):
+    candidate = job('https://job-boards.greenhouse.io/example/jobs/9090')
+    queue.enqueue(conn, [candidate])
+    item = queue.claim(conn)
+    queue.finish(conn, item['job_hash'], 'submission_uncertain', 'synthetic-attempt.json')
+    before = dict(conn.execute('SELECT * FROM applications').fetchone())
+    queue.resume(conn, item['job_hash'])
+    assert queue.enqueue(conn, [candidate]) == 0
+    for stale in ['waiting_review', 'waiting_input', 'waiting_login', 'waiting_captcha', 'failed', 'skipped']:
+        queue.finish(conn, item['job_hash'], stale, 'stale-packet.json')
+        assert dict(conn.execute('SELECT * FROM applications').fetchone()) == before
+    assert queue.claim(conn) is None
+    # Only the receipt-confirmation path may resolve the potentially sent draft.
+    queue.finish(conn, item['job_hash'], 'submitted', 'synthetic-confirmed-receipt.json')
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'submitted'

@@ -46,6 +46,30 @@ def _apply_phone_format(answers, policy):
         answers.pop("identity.phone_national", None)
 
 
+def _located_us_from_country(answers):
+    """Residence is derived from the verified contact country, never nationality.
+
+    A small explicit country vocabulary covers the supported US workflow and
+    common verified alternatives. Unrecognized/ambiguous country strings do not
+    become a new factual answer through a negative default.
+    """
+    country = answers.get("identity.country", {})
+    if (country.get("status") != "verified" or not country.get("source")
+            or not isinstance(country.get("value"), str)):
+        return None
+    value = booklet.normalize(country["value"])
+    us = {"united states", "united states of america", "us", "usa", "u.s.", "u.s.a."}
+    other = {"canada", "united kingdom", "uk", "india", "australia", "germany", "france", "ireland",
+             "netherlands", "spain", "italy", "switzerland", "sweden", "norway", "denmark", "finland",
+             "new zealand", "mexico", "brazil", "china", "japan", "south korea", "singapore",
+             "united arab emirates", "israel", "south africa", "poland", "portugal", "pakistan", "bangladesh"}
+    if value not in us | other:
+        return None
+    return booklet.answer(value in us, {"method": "verified_contact_country_residence",
+        "derived_from": "identity.country", "original_country": country["value"],
+        "original_source": country["source"], "criterion": "Contact country is the United States"})
+
+
 def _inapplicable_optional(field, answers):
     if field["required"]:
         return False
@@ -84,6 +108,11 @@ def role_for_job(job):
 async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_steps=8, cli_actions=None):
     if not demo_origin and cli_actions is None:
         raise ValueError("Live preparation requires the Browser Use CLI")
+    located = _located_us_from_country(answers)
+    if located:
+        answers["standing.located_us"] = located
+    else:
+        answers.pop("standing.located_us", None)
     actions = cli_actions or BrowserActions(page, demo_origin=demo_origin)
     if not cli_actions:
         await actions.install()
