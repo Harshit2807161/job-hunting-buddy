@@ -70,6 +70,15 @@ calendar month from assessment; a saved month never becomes an invented exact
 start date. Existing verified profile URLs can populate an optional links field.
 The exact optional cool-work prompt can receive a proposed achievement from
 the selected verified resume and verified job description, still requiring
-portal review. Travel, residency duration, exact residency start dates, degree
-focus and differently scoped screening questions remain candidate handoffs.
-These mappings are covered by synthetic tests, not new live-site validation.
+portal review. Travel and residency answers require explicit verified preferences.
+A saved full calendar date can answer the exact residency-start question; a
+month-only value cannot. Residency duration must match a unique offered range.
+Degree focus and differently scoped screening questions remain candidate handoffs.
+These mappings are covered by synthetic tests; live form results are recorded
+separately in the adapter evaluation.
+
+Full-page review captures settle the exact application at the page top with
+native Browser Use scrolling before capture, so sticky headers do not cover
+fields in the middle of the saved image. A live Ashby validation confirmed four
+retained answers unchanged before and after capture. This is screenshot and
+retention evidence, not submission evidence.
