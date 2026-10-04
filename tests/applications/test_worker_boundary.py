@@ -54,7 +54,7 @@ def test_accomplishment_prompts_use_selected_verified_experience_without_input()
     assert list(form.filled.values())==["• Improved runtime by 10%.","• Improved precision by 20%.","• Reduced circuit depth by 15%."]
 
 
-def test_screenshot_timeout_preserves_completed_review_packet(tmp_path):
+def test_screenshot_timeout_preserves_packet_but_blocks_completed_review(tmp_path):
     from jhb.applications.worker import write_packet
     import json
     class ScreenshotFailure:
@@ -64,7 +64,9 @@ def test_screenshot_timeout_preserves_completed_review_packet(tmp_path):
     packet=asyncio.run(write_packet(None,tmp_path,{'company':'Example','title':'Engineer','url':'https://example.test'},result,
                                     cli_actions=ScreenshotFailure()))
     assert packet.is_file()
-    assert json.loads((tmp_path/'packet.json').read_text())['state']=='waiting_review'
+    saved=json.loads((tmp_path/'packet.json').read_text())
+    assert saved['state']=='failed' and saved['error_kind']=='browser_capture' and saved['retryable']
+    assert saved['capture']['verified'] is False and not saved.get('missing')
 
 
 def test_screenshot_handoff_without_file_preserves_packet(tmp_path):

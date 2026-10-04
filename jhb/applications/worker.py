@@ -356,24 +356,21 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
     if "review_inventory" not in result:
         from .review_inventory import build
         result.update(build([], result.get("filled", []), {}, key_for_field))
-    data = {"job": job, **result, "submitted": False, "created_at": int(time.time())}
+    from .capture import fresh
+    from .boards import job_identity
+    capture = await fresh(directory, job, page=page, cli_actions=cli_actions)
+    captured = capture["verified"]
+    if (not captured and result["state"] == "waiting_review"
+            and (cli_actions is not None or page is not None or job_identity(job.get("url")))):
+        result.update(state="failed", retryable=True, error_kind="browser_capture",
+                      reason="Fresh review screenshot could not be verified; draft retained for technical retry")
+        result.setdefault("events", []).append({"event": "review_capture_failed", "kind": capture.get("error_kind")})
+    created_at = int(time.time())
+    capture["packet_created_at"] = created_at
+    result["capture"] = capture
+    data = {"job": job, **result, "submitted": False, "created_at": created_at}
     booklet.write_private(directory / "packet.json", data)
     booklet.write_private(directory / "events.json", result["events"])
-    captured = False
-    if cli_actions and cli_actions.target_id:
-        try:
-            await cli_actions.screenshot(directory / "browser.png")
-            captured = (directory / "browser.png").is_file()
-        except Exception:
-            pass  # A disconnected browser must not suppress the failure packet.
-    elif page is not None:
-        await page.screenshot(path=str(directory / "browser.png"), full_page=True)
-        captured = True
-    if captured:
-        try:
-            (directory / "browser.png").chmod(0o600)
-        except OSError:
-            captured = False
     esc = lambda value: html.escape(str(value), quote=True)
     notes = "".join(f"<li>{esc(note)}</li>" for note in result.get("review_notes", []))
     rows = "".join(f'<tr><td>{esc(r["question"])}</td><td><pre>{esc(r["value"])}</pre></td><td>{esc(r["source"])}</td></tr>' for r in result.get("filled", []))

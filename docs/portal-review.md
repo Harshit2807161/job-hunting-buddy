@@ -35,3 +35,14 @@ Host/client/origin checks and a same-origin CSRF token protect state-changing AP
 routes. It never serves the answer booklet, credentials or arbitrary local files.
 Tests use synthetic candidates and mock approvals; real approval must come from
 the candidate's portal interaction.
+
+New preparation packets bind a fresh screenshot to that capture attempt, job,
+packet timestamp and image SHA-256. Capture writes to a unique private temporary
+PNG and replaces `browser.png` only after file and PNG validation. A failed
+capture preserves filled answers and older evidence, parks the draft as a
+bounded technical retry, and blocks review readiness. The portal does not display
+the older image as current. Changed image bytes or a mismatched capture manifest
+also block approval. Legacy packets without a capture manifest retain their
+existing review policy until a fresh preparation pass replaces them. Capture
+regressions use synthetic files and an isolated Chromium fixture, not live
+candidate-browser validation.

@@ -123,12 +123,13 @@ class DashboardStore:
             row = conn.execute("SELECT * FROM applications WHERE job_hash=?", (job_hash,)).fetchone()
         if not row:
             raise FileNotFoundError("No application screenshot")
-        path, _ = self.packet(row, _json(row["job_json"]))
+        path, packet = self.packet(row, _json(row["job_json"]))
         if path is None:
             raise FileNotFoundError("No validated review packet")
         content = self.private_bytes(path.with_name("browser.png"), limit=15*1024*1024)
-        if not content.startswith(PNG):
-            raise ValueError("Review artifact is not a PNG")
+        from .applications.capture import valid as valid_capture
+        if not valid_capture(packet, content):
+            raise ValueError("Review artifact is not a matching current capture")
         return content
 
     def pending(self, book=None, queue_states=None):
@@ -367,7 +368,10 @@ class DashboardStore:
                         shot = False
                         if packet_path:
                             try:
-                                shot = self.private_bytes(packet_path.with_name("browser.png"), limit=15*1024*1024, read_count=8).startswith(PNG)
+                                from .applications.capture import valid as valid_capture
+                                content = self.private_bytes(packet_path.with_name("browser.png"), limit=15*1024*1024,
+                                                             read_count=None if "capture" in packet else 8)
+                                shot = valid_capture(packet, content)
                             except (ValueError, OSError):
                                 pass
                         inventory = packet.get("review_inventory", {})

@@ -1,5 +1,6 @@
 """Selected-role preparation routing with synthetic CLI observations only."""
 import asyncio
+import base64
 import json
 
 import pytest
@@ -21,7 +22,7 @@ def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_
     instances=[]
     class FixtureCLI:
         blocked_requests=0
-        target_id=None
+        target_id='synthetic-owned-tab'
         def __init__(self,url,*,board):
             assert url==URL and board=='ashby'
             self.fills={};instances.append(self)
@@ -34,6 +35,8 @@ def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_
             return {'url':URL+'/application','fields':fields,'buttons':[{'ref':'submit','label':'Submit application'}]}
         async def fill(self,field,value):self.fills[field['ref']]=value
         async def describe(self,field):return {'choices':[]}
+        async def screenshot(self,path):
+            path.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC'))
         async def click_next(self,button):raise AssertionError('Terminal action must not execute')
     monkeypatch.setattr(manual_ats,'ManualATSCLI',FixtureCLI)
     sde=tmp_path/'sde.pdf';sde.write_bytes(b'%PDF-synthetic')

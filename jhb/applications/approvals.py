@@ -207,12 +207,16 @@ def _snapshot(packet_path, book_path):
     manifest = overnight._manifest(job, packet, book)
     documents = document_manifest(manifest, packet)
     screenshot = path.with_name("browser.png")
-    if not screenshot.is_file() or screenshot.is_symlink() or not screenshot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+    if not screenshot.is_file() or screenshot.is_symlink() or screenshot.stat().st_size > 15*1024*1024:
         raise ValueError("A retained final review screenshot is required")
+    screenshot_bytes = screenshot.read_bytes()
+    from .capture import valid as valid_capture
+    if not valid_capture(packet, screenshot_bytes):
+        raise ValueError("The current review screenshot lacks matching fresh capture evidence")
     binding = {"packet_path": str(path), "packet_sha256": hashlib.sha256(packet_bytes).hexdigest(),
                "book_path": str(book_file), "facts_sha256": _facts(book, job, role), "selected_role": role,
                "document_sha256": {k: d["sha256"] for k, d in documents.items()},
-               "screenshot_sha256": hashlib.sha256(screenshot.read_bytes()).hexdigest()}
+               "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest()}
     return packet, binding, _digest(binding)
 
 
