@@ -138,15 +138,20 @@ def confirmed_application(conn, url):
     key = hashlib.sha256(json.dumps(identity[0], separators=(",", ":")).encode()).hexdigest()
     rows = conn.execute("SELECT * FROM confirmed_submissions WHERE submission_key=? OR application_url=?",
                         (key, identity[1])).fetchall()
+    hold = {"job": {"url": identity[1], "dedupe_hash": boards.application_hash(url),
+                    "historical_confirmation": {"state": "unverified", "kind": "saved_receipt_integrity"}},
+            "receipt_path": None, "verified": False}
     unverified = None
     for row in rows:
+        # The exact durable key remains replay protection even if another
+        # persisted field was damaged. A later valid receipt can still win.
+        if row["submission_key"] == key:
+            unverified = hold
         try:
             stored = ats_identity(row["application_url"])
             if stored is None or stored[0] != identity[0]:
                 continue
-            unverified = {"job": {"url": identity[1], "dedupe_hash": boards.application_hash(url),
-                                  "historical_confirmation": {"state": "unverified", "kind": "saved_receipt_integrity"}},
-                          "receipt_path": None, "verified": False}
+            unverified = hold
             job, saved = json.loads(row["job_json"]), json.loads(row["proof_json"])
             checked, confirmed_at, proof = _proof(job, saved["receipt_path"])
             if (checked[0] != identity[0] or ats_identity(row["application_url"])[0] != identity[0]

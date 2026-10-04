@@ -54,7 +54,8 @@ def test_direct_claim_reconciles_an_existing_stale_queued_row_before_browser(set
     assert conn.execute("SELECT state,attempts FROM applications").fetchone()[:] == ("submitted", 0)
 
 
-@pytest.mark.parametrize("damage", ["missing", "changed", "proof_json", "wrong_job"])
+@pytest.mark.parametrize("damage", ["missing", "changed", "proof_json", "wrong_job", "malformed_stored_url",
+                                   "mismatched_stored_url", "mismatched_job_json_url"])
 def test_unverifiable_prior_confirmation_is_a_technical_hold_never_a_new_application(setup, damage):
     conn, book = setup
     candidate, receipt = historical(conn)
@@ -63,6 +64,12 @@ def test_unverifiable_prior_confirmation_is_a_technical_hold_never_a_new_applica
         data = json.loads(receipt.read_text()); data["body"] += " changed"; booklet.write_private(receipt, data)
     elif damage == "wrong_job":
         data = json.loads(receipt.read_text()); data["url"] = ASHBY.replace("example", "another"); booklet.write_private(receipt, data)
+    elif damage == "malformed_stored_url":
+        conn.execute("UPDATE confirmed_submissions SET application_url='malformed:////'"); conn.commit()
+    elif damage == "mismatched_stored_url":
+        conn.execute("UPDATE confirmed_submissions SET application_url=?", (ASHBY.replace("example", "another"),)); conn.commit()
+    elif damage == "mismatched_job_json_url":
+        conn.execute("UPDATE confirmed_submissions SET job_json=?", (json.dumps({**candidate, "url": ASHBY.replace("example", "another")}),)); conn.commit()
     else: conn.execute("UPDATE confirmed_submissions SET proof_json='{' "); conn.commit()
     assert queue.enqueue(conn, [candidate]) == 0
     async def forbidden(*args, **kwargs): pytest.fail("Damaged prior receipt must not permit reapplication")
@@ -87,3 +94,23 @@ def test_other_exact_job_is_not_blocked_by_same_employer_confirmation(setup):
     assert queue.enqueue(conn, [job("new-role", another)]) == 1
     claimed = queue.claim(conn)
     assert claimed["job"]["url"] == another
+
+
+def test_later_valid_canonical_receipt_wins_over_damaged_exact_key_row(setup):
+    conn, _ = setup
+    historical(conn)
+    stored = conn.execute("SELECT * FROM confirmed_submissions").fetchone()
+    conn.execute("UPDATE confirmed_submissions SET application_url='malformed:////'")
+    conn.execute("INSERT INTO confirmed_submissions VALUES(?,?,?,?,?,?,?)", ("synthetic-legacy-key", *tuple(stored)[1:])); conn.commit()
+    proof = tracking.confirmed_application(conn, ASHBY)
+    assert proof["verified"] is True
+    assert queue.enqueue(conn, [job("same", ASHBY)]) == 0
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "submitted"
+
+
+def test_canonical_lookup_with_nonmatching_legacy_key_still_holds_unverifiable_proof(setup):
+    conn, _ = setup
+    candidate, _ = historical(conn)
+    conn.execute("UPDATE confirmed_submissions SET submission_key='conflicting-legacy-key',proof_json='{}'"); conn.commit()
+    assert queue.enqueue(conn, [candidate]) == 0
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "submission_uncertain"
