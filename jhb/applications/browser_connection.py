@@ -16,18 +16,28 @@ TIMEOUT = 2
 LOCAL = {"127.0.0.1", "localhost", "::1"}
 # The installed browser-use wrapper rejects doctor flags before delegation.
 # Its normal CLI access mode pre-imports the official read-only health helpers.
-HEALTH_SCRIPT = b"""import contextlib, io, json
-_health_json = io.StringIO()
-with contextlib.redirect_stdout(_health_json):
-    _health_code = run_doctor_json(require_existing_daemon=True)
-_health_report = json.loads(_health_json.getvalue())
+HEALTH_SCRIPT = b"""import json
 _health_kind = daemon_browser_kind()
-_health_report['daemon']['browser_kind'] = _health_kind
-if _health_kind not in {'local', 'cdp'}:
-    _health_report['healthy'] = False
-    _health_code = 1
+_health_verified = False
+_health_count = None
+if _health_kind in {'local', 'cdp'}:
+    try:
+        _health_targets = cdp('Target.getTargets', _response_timeout=1)
+        _health_infos = _health_targets.get('targetInfos') if isinstance(_health_targets, dict) else None
+        _health_verified = (isinstance(_health_infos, list) and len(_health_infos) <= 10000
+            and all(isinstance(t, dict) and isinstance(t.get('targetId'), str) and t['targetId']
+                    and isinstance(t.get('type'), str) and t['type'] for t in _health_infos))
+        if _health_verified:
+            _health_count = len(_health_infos)
+    except Exception:
+        pass
+_health_report = {'schema_version': 2, 'probe': 'browser_level_targets',
+    'transport_verified': bool(_health_verified),
+    'require_existing_daemon': os.environ.get('BH_REQUIRE_EXISTING_DAEMON') == '1',
+    'target_count': _health_count,
+    'daemon': {'name': NAME, 'alive': _health_kind in {'local', 'cdp'}, 'browser_kind': _health_kind}}
 print(json.dumps(_health_report))
-raise SystemExit(_health_code)
+raise SystemExit(0 if _health_verified else 1)
 """
 
 
@@ -94,10 +104,12 @@ def _existing_daemon(parsed, *, runner=None, files=None):
         return False
     report = json.loads(result.stdout)
     daemon = report.get("daemon", {}) if isinstance(report, dict) else {}
-    return (isinstance(report, dict) and type(report.get("schema_version")) is int and report["schema_version"] == 1
-            and report.get("healthy") is True and report.get("require_existing_daemon") is True
+    return (isinstance(report, dict) and type(report.get("schema_version")) is int and report["schema_version"] == 2
+            and report.get("probe") == "browser_level_targets" and report.get("transport_verified") is True
+            and report.get("require_existing_daemon") is True
+            and type(report.get("target_count")) is int and 0 <= report["target_count"] <= 10000
             and isinstance(daemon, dict) and daemon.get("name") == "default"
-            and daemon.get("alive") is True and daemon.get("browser_ready") is True
+            and daemon.get("alive") is True
             and daemon.get("browser_kind") in {"local", "cdp"}
             and _active_match(parsed, files) == before)
 

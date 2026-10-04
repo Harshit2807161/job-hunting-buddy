@@ -20,15 +20,16 @@ def active(tmp_path, monkeypatch):
 
 
 def healthy():
-    return {"schema_version": 1, "healthy": True, "require_existing_daemon": True,
-            "daemon": {"name": "default", "alive": True, "browser_ready": True, "browser_kind": "local"}}
+    return {"schema_version": 2, "probe": "browser_level_targets", "transport_verified": True,
+            "require_existing_daemon": True, "target_count": 1,
+            "daemon": {"name": "default", "alive": True, "browser_kind": "local"}}
 
 
 def process(value=None, code=0):
     return SimpleNamespace(returncode=code, stdout=json.dumps(value if value is not None else healthy()).encode())
 
 
-def test_direct_ws_uses_official_doctor_existing_default_without_http_or_autostart(active, monkeypatch):
+def test_direct_ws_uses_official_cli_transport_existing_default_without_http_or_autostart(active, monkeypatch):
     monkeypatch.setenv("BU_NAME", "unrelated")
     calls = []
     def run(command, **kwargs):
@@ -49,7 +50,7 @@ def test_direct_ws_uses_official_doctor_existing_default_without_http_or_autosta
 
 
 @pytest.mark.parametrize("variant", ["response", "exception"])
-def test_http404_falls_back_only_after_matching_current_port_and_strict_doctor(active, variant):
+def test_http404_falls_back_only_after_matching_current_port_and_strict_transport(active, variant):
     calls = []
     def reader(*args, **kwargs):
         if variant == "exception": raise HTTPError(URL,404,"NotFound",{},None)
@@ -72,14 +73,16 @@ def test_unrelated_or_invalid_profile_record_cannot_pass_healthy_default_daemon(
                                     runner=lambda *a, **kw: pytest.fail("Unbound metadata reached CLI"))
 
 
-@pytest.mark.parametrize("change", ["healthy", "strict", "name", "alive", "ready", "schema", "nonzero", "malformed", "oversize"])
-def test_healthy_report_requires_exact_default_daemon_attached_browser(active, change):
+@pytest.mark.parametrize("change", ["transport", "probe", "strict", "name", "alive", "count_bool", "count_missing", "schema", "nonzero", "malformed", "oversize"])
+def test_transport_report_requires_exact_default_daemon_and_verified_browser_response(active, change):
     report = healthy()
-    if change == "healthy": report["healthy"] = False
+    if change == "transport": report["transport_verified"] = False
+    elif change == "probe": report["probe"] = "doctor_attachment"
     elif change == "strict": report["require_existing_daemon"] = False
     elif change == "name": report["daemon"]["name"] = "other"
     elif change == "alive": report["daemon"]["alive"] = False
-    elif change == "ready": report["daemon"]["browser_ready"] = False
+    elif change == "count_bool": report["target_count"] = True
+    elif change == "count_missing": report.pop("target_count")
     elif change == "schema": report["schema_version"] = True
     result = process(report, code=1 if change == "nonzero" else 0)
     if change == "malformed": result.stdout = b"invalid json"
@@ -104,14 +107,14 @@ def test_dead_daemon_or_missing_cli_never_restarts_or_repairs(active, error):
     assert not connection.available(SOCKET, active_files=[active], runner=run)
 
 
-def test_profile_record_change_during_doctor_rejects_health(active):
+def test_profile_record_change_during_transport_probe_rejects_health(active):
     def run(*a, **kw):
         active.write_text("12345\n/devtools/browser/restarted-browser\n")
         return process()
     assert not connection.available(SOCKET, active_files=[active], runner=run)
 
 
-def test_http404_other_port_or_redirect_does_not_trust_unrelated_doctor(active):
+def test_http404_other_port_or_redirect_does_not_trust_unrelated_transport(active):
     assert not connection.available("http://127.0.0.1:33333", active_files=[active],
         opener=lambda *a, **kw: Response(status=404, url="http://127.0.0.1:33333/json/version"),
         runner=lambda *a, **kw: pytest.fail("Wrong port trusted daemon"))
@@ -146,12 +149,13 @@ def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_wi
     monkeypatch.setattr(harness, "_install_helper_trace", lambda: None)
     monkeypatch.setattr(harness, "require_existing_daemon", lambda: calls.append("existing"))
     monkeypatch.setattr(harness, "ensure_daemon", lambda: pytest.fail("Health CLI attempted daemon startup"))
-    def diagnostic(*, require_existing_daemon):
-        assert require_existing_daemon is True
-        calls.append("strict_health")
-        print(json.dumps(healthy()))
-        return 0
-    monkeypatch.setattr(harness, "run_doctor_json", diagnostic)
+    monkeypatch.setattr(harness, "run_doctor_json", lambda *a, **kw: pytest.fail("Attachment doctor is not transport health"))
+    def read_only_targets(method, **kwargs):
+        assert method == 'Target.getTargets' and kwargs == {'_response_timeout': 1}
+        calls.append('browser_targets')
+        return {'targetInfos': [{'targetId': 'synthetic', 'type': 'page', 'url': 'https://private.example/secret', 'title': 'Private title'}]}
+    monkeypatch.setattr(harness, 'cdp', read_only_targets)
+    monkeypatch.setattr(harness, 'NAME', 'default')
     def browser_kind():
         calls.append('browser_kind')
         return kind
@@ -162,10 +166,13 @@ def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_wi
     with pytest.raises(SystemExit) as exitcode:
         entry._run_browser_harness()
     assert exitcode.value.code == (0 if kind in {'local','cdp'} else 1)
-    assert calls == ["existing", "strict_health", 'browser_kind']
-    report = json.loads(capsys.readouterr().out)
-    assert report['healthy'] is (kind in {'local','cdp'})
+    assert calls == ["existing", 'browser_kind'] + (['browser_targets'] if kind in {'local','cdp'} else [])
+    stdout = capsys.readouterr().out
+    report = json.loads(stdout)
+    assert report['transport_verified'] is (kind in {'local','cdp'})
     assert report['daemon']['browser_kind'] == kind
+    assert 'private.example' not in stdout and 'Private title' not in stdout
+    assert 'healthy' not in report and 'browser_ready' not in report['daemon']
 
 
 def test_installed_wrapper_rejects_doctor_flags_before_harness_dispatch(monkeypatch, capsys):
@@ -184,3 +191,71 @@ def test_installed_wrapper_rejects_doctor_flags_before_harness_dispatch(monkeypa
         entry._run_browser_harness()
     assert exitcode.value.code == 2
     assert "doctor [--fix-snap]" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('payload', [None, {}, {'targetInfos': None}, {'targetInfos': True},
+    {'targetInfos': [{}]}, {'targetInfos': [{'targetId': 't'}]},
+    {'targetInfos': [{'targetId': '', 'type': 'page'}]},
+    {'targetInfos': [{'targetId': 't', 'type': 'page'}] * 10001}])
+def test_cli_transport_script_rejects_missing_or_malformed_cdp_targets_without_sensitive_output(payload, capsys):
+    calls = []
+    def targets(method, **kwargs):
+        calls.append(method)
+        assert kwargs == {'_response_timeout': 1}
+        return payload
+    namespace = {'daemon_browser_kind': lambda: 'cdp', 'cdp': targets, 'NAME': 'default',
+                 'os': SimpleNamespace(environ={'BH_REQUIRE_EXISTING_DAEMON': '1'})}
+    with pytest.raises(SystemExit) as result:
+        exec(connection.HEALTH_SCRIPT, namespace)
+    assert result.value.code == 1 and calls == ['Target.getTargets']
+    report = json.loads(capsys.readouterr().out)
+    assert report['transport_verified'] is False and report['target_count'] is None
+
+
+@pytest.mark.parametrize('error', [TimeoutError('private endpoint'), ConnectionError('private endpoint'),
+                                 RuntimeError('browser transport closed: private endpoint')])
+def test_cli_closed_transport_is_unavailable_and_does_not_leak_error_or_repair(error, capsys):
+    def closed(*a, **kw):raise error
+    namespace = {'daemon_browser_kind': lambda: 'local', 'cdp': closed, 'NAME': 'default',
+                 'os': SimpleNamespace(environ={'BH_REQUIRE_EXISTING_DAEMON': '1'})}
+    with pytest.raises(SystemExit) as result:
+        exec(connection.HEALTH_SCRIPT, namespace)
+    assert result.value.code == 1
+    stdout = capsys.readouterr().out
+    assert json.loads(stdout)['transport_verified'] is False
+    assert 'private endpoint' not in stdout
+
+
+def test_installed_daemon_stale_attachment_does_not_retarg_browser_level_health(active, monkeypatch, capsys):
+    """Use actual daemon dispatch with injected CDP, not a candidate browser."""
+    import asyncio
+    daemon_module = pytest.importorskip('browser_harness.daemon')
+    monkeypatch.setattr(daemon_module.ipc, 'expected_token', lambda: None)
+    calls = []
+    class SyntheticCDP:
+        async def send_raw(self, method, params, session_id=None):
+            calls.append((method, session_id))
+            if method == 'Target.getTargetInfo':raise RuntimeError('No target with given id found')
+            assert method == 'Target.getTargets' and session_id is None
+            return {'targetInfos': [{'targetId': 'existing-user-tab', 'type': 'page', 'url': 'https://private.example/'}]}
+    daemon = object.__new__(daemon_module.Daemon)
+    daemon.cdp = SyntheticCDP()
+    daemon.target_id, daemon.session = 'closed-scratch-tab', 'stale-session'
+    daemon._begin_recovery = lambda: pytest.fail('Read-only health triggered session recovery')
+    async def probe():
+        doctor_attachment = await daemon.handle({'meta': 'connection_status'})
+        assert doctor_attachment == {'error': 'cdp_disconnected'}
+        # Even an explicitly stale session is ignored for Target.* operations.
+        result = await daemon.handle({'method': 'Target.getTargets', 'params': {}, 'session_id': 'stale-session'})
+        return result['result']
+    targets = asyncio.run(probe())
+    namespace = {'daemon_browser_kind': lambda: 'cdp', 'cdp': lambda *a, **kw: targets, 'NAME': 'default',
+                 'os': SimpleNamespace(environ={'BH_REQUIRE_EXISTING_DAEMON': '1'})}
+    with pytest.raises(SystemExit) as result:
+        exec(connection.HEALTH_SCRIPT, namespace)
+    assert result.value.code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert connection.available(SOCKET, active_files=[active], runner=lambda *a, **kw: process(report))
+    assert calls == [('Target.getTargetInfo', None), ('Target.getTargets', None)]
+    assert daemon.target_id == 'closed-scratch-tab' and daemon.session == 'stale-session'
+    assert 'browser_ready' not in report['daemon']

@@ -97,12 +97,16 @@ default-profile debugging can return HTTP 404 while its direct websocket works.
 For configured direct websockets, or that HTTP 404 case, a bounded local
 `DevToolsActivePort` record must match the configured port and websocket path
 where present. The official `browser-use` CLI access mode executes the fixed
-read-only `run_doctor_json(require_existing_daemon=True)` diagnostic, with
+read-only browser-level `Target.getTargets` transport probe, with
 `BH_REQUIRE_EXISTING_DAEMON=1` and update checks disabled. This avoids version
 0.1.13's wrapper rejecting the equivalent harness doctor subcommand flags.
-The diagnostic must confirm the existing default daemon has a healthy attached browser;
-the port record must remain unchanged through that check. This strict doctor
-does not start, repair, discover, or reconnect a daemon. Redirects, proxies, remote endpoints and
+The probe requires the existing default daemon to report a local/CDP connection,
+with a valid browser target response; the port record must remain unchanged.
+It reports `transport_verified` separately from the CLI doctor's attachment
+readiness: closing an attached scratch tab can leave that doctor check false
+while the browser-level connection remains usable. Preparation reattaches only
+its own exact job target. The health probe never attaches a tab or starts,
+repairs, discovers, or reconnects a daemon. Redirects, proxies, remote endpoints and
 oversized responses are rejected. A closed or unreachable browser yields
 `blocked / local_browser_disconnected`, refreshes private dashboard status, and
 leaves job attempts untouched. This check never starts Chrome or sends email.
