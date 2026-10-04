@@ -11,6 +11,13 @@ role directory beside its resume, as the source skill requires. Private build
 artifacts do not replace that final delivery. Verify the resume variant before
 upload and retain document provenance privately.
 
+For explicitly requested manual Ashby applications, use
+`skills/prepare-ashby/SKILL.md` and the exact-job-scoped manual adapter. Manual
+preparation on another ATS requires explicit authorization for that job and
+observed controls; it does not enable scheduled preparation for that board.
+The automated Phase 1-to-Phase 2 dispatcher remains Greenhouse only. Track
+adapter evidence and limitations in `docs/board-adapter-evaluation.md`.
+
 Use `skills/browser-use/SKILL.md` and the official Browser Use CLI for live browser
 application filling. Always invoke `browser-use` through its CLI access mode, using the
 default daemon and the existing local CDP endpoint. Do not use the Python browser
@@ -27,14 +34,21 @@ Independent jobs may plan in parallel, but Browser Use CLI operations in the
 shared local browser must hold the browser-lane lock and reattach their own tab.
 
 Use Google SSO for job-site authentication, as explicitly requested by the user.
-Do not fall back to email/password registration. Reuse the existing Google
+An explicit site-specific exception recorded in the private answer booklet may
+authorize password registration; do not infer a general fallback. Save approved
+credentials in the local credential store and never emit their values. Reuse the existing Google
 session when available; an unknown account choice or Google verification needs
 an explicit handoff.
 
 Private candidate data, browser sessions, application screenshots, and credentials
 must remain in ignored local directories. Fixtures use synthetic candidates. Do
-not submit real applications in development, test, or automation. Unknown answers
-and verification challenges are explicit handoffs. Report fixture and live-site
+not submit real applications in development, test, or scheduled automation.
+A later explicit request to submit one named application authorizes only that
+interactive action after its retained answers and documents have been checked;
+record the authorization and live receipt privately. Other drafts keep their guards.
+Unknown factual answers and unresolved verification challenges are explicit handoffs.
+Explicitly authorized application email verification may use the candidate's
+existing mailbox session. Report fixture and live-site
 validation separately.
 
 Run `.venv/bin/python -m pytest -q`; browser tests require the local Chromium
