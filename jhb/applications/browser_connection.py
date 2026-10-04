@@ -14,9 +14,21 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 MAX_BYTES = 65536
 TIMEOUT = 2
 LOCAL = {"127.0.0.1", "localhost", "::1"}
-# browser-use 0.1.13 rejects doctor subcommand flags before delegation, while
-# its normal CLI access mode pre-imports this read-only harness diagnostic.
-HEALTH_SCRIPT = b"raise SystemExit(run_doctor_json(require_existing_daemon=True))\n"
+# The installed browser-use wrapper rejects doctor flags before delegation.
+# Its normal CLI access mode pre-imports the official read-only health helpers.
+HEALTH_SCRIPT = b"""import contextlib, io, json
+_health_json = io.StringIO()
+with contextlib.redirect_stdout(_health_json):
+    _health_code = run_doctor_json(require_existing_daemon=True)
+_health_report = json.loads(_health_json.getvalue())
+_health_kind = daemon_browser_kind()
+_health_report['daemon']['browser_kind'] = _health_kind
+if _health_kind not in {'local', 'cdp'}:
+    _health_report['healthy'] = False
+    _health_code = 1
+print(json.dumps(_health_report))
+raise SystemExit(_health_code)
+"""
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -86,6 +98,7 @@ def _existing_daemon(parsed, *, runner=None, files=None):
             and report.get("healthy") is True and report.get("require_existing_daemon") is True
             and isinstance(daemon, dict) and daemon.get("name") == "default"
             and daemon.get("alive") is True and daemon.get("browser_ready") is True
+            and daemon.get("browser_kind") in {"local", "cdp"}
             and _active_match(parsed, files) == before)
 
 

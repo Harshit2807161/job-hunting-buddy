@@ -21,7 +21,7 @@ def active(tmp_path, monkeypatch):
 
 def healthy():
     return {"schema_version": 1, "healthy": True, "require_existing_daemon": True,
-            "daemon": {"name": "default", "alive": True, "browser_ready": True}}
+            "daemon": {"name": "default", "alive": True, "browser_ready": True, "browser_kind": "local"}}
 
 
 def process(value=None, code=0):
@@ -87,6 +87,17 @@ def test_healthy_report_requires_exact_default_daemon_attached_browser(active, c
     assert not connection.available(SOCKET, active_files=[active], runner=lambda *a, **kw: result)
 
 
+@pytest.mark.parametrize('kind,accepted', [('local',True),('cdp',True),('cloud',False),(None,False),('unknown',False)])
+def test_loopback_profile_cannot_authorize_cloud_or_unknown_default_daemon(active, kind, accepted):
+    report = healthy(); report['daemon']['browser_kind'] = kind
+    assert connection.available(SOCKET, active_files=[active], runner=lambda *a, **kw: process(report)) is accepted
+
+
+def test_old_report_without_browser_kind_fails_closed(active):
+    report = healthy(); report['daemon'].pop('browser_kind')
+    assert not connection.available(SOCKET, active_files=[active], runner=lambda *a, **kw: process(report))
+
+
 @pytest.mark.parametrize("error", [FileNotFoundError(), subprocess.TimeoutExpired("browser-use",2)])
 def test_dead_daemon_or_missing_cli_never_restarts_or_repairs(active, error):
     def run(*a, **kw): raise error
@@ -116,7 +127,8 @@ def test_ws_setting_takes_precedence_like_installed_harness(active, monkeypatch)
                                 opener=lambda *a, **kw: pytest.fail("Ignored configured WS"))
 
 
-def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_without_startup(monkeypatch, capsys):
+@pytest.mark.parametrize('kind', ['local','cdp','cloud',None])
+def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_without_startup(monkeypatch, capsys, kind):
     """Exercise real wrapper + harness parsers, with only transport injected."""
     from io import StringIO
     import sys
@@ -140,14 +152,20 @@ def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_wi
         print(json.dumps(healthy()))
         return 0
     monkeypatch.setattr(harness, "run_doctor_json", diagnostic)
+    def browser_kind():
+        calls.append('browser_kind')
+        return kind
+    monkeypatch.setattr(harness, 'daemon_browser_kind', browser_kind)
     monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
     monkeypatch.setattr(sys, "argv", ["browser-use"])
     monkeypatch.setattr(sys, "stdin", StringIO(connection.HEALTH_SCRIPT.decode()))
     with pytest.raises(SystemExit) as exitcode:
         entry._run_browser_harness()
-    assert exitcode.value.code == 0
-    assert calls == ["existing", "strict_health"]
-    assert json.loads(capsys.readouterr().out)["healthy"] is True
+    assert exitcode.value.code == (0 if kind in {'local','cdp'} else 1)
+    assert calls == ["existing", "strict_health", 'browser_kind']
+    report = json.loads(capsys.readouterr().out)
+    assert report['healthy'] is (kind in {'local','cdp'})
+    assert report['daemon']['browser_kind'] == kind
 
 
 def test_installed_wrapper_rejects_doctor_flags_before_harness_dispatch(monkeypatch, capsys):
