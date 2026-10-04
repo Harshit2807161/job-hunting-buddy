@@ -79,6 +79,7 @@ class OwnedTabs:
         self.tabs = self.ledger["tabs"]
         self.unclaimed = self.ledger.setdefault("unclaimed_destinations", {})
         self._apply_before, self._apply_source = None, None
+        self._apply_clicked = False
         if not isinstance(self.unclaimed, dict):
             raise ValueError("Browser tab ownership ledger is invalid")
 
@@ -115,6 +116,9 @@ class OwnedTabs:
                                              for target, row in self.unclaimed.items()):
             raise TabCapacityReached(CAPACITY_MESSAGE)
 
+    def after_apply_click(self):
+        self._apply_clicked = True
+
     def observe_unclaimed_popups(self):
         if self._apply_before is None:
             return
@@ -123,7 +127,8 @@ class OwnedTabs:
                 continue
             try:
                 info = self.helpers["cdp"]("Target.getTargetInfo", targetId=target)["targetInfo"]
-                possible = info.get("openerId") == self._apply_source
+                possible = (info.get("openerId") == self._apply_source or self._apply_clicked
+                            and not info.get("openerId") and boards.job_identity(tab.get("url")) is not None)
             except Exception:
                 # Preserve uncertain destinations and pause more source clicks;
                 # lack of opener evidence never establishes ownership.
@@ -375,7 +380,18 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     purpose = "source" if dispatcher_name == "jhb.applications.linkedin_runtime" else "application"
     scoped["new_tab"] = lambda url="about:blank": owner.new_tab(url, purpose=purpose)
     scoped["jhb_before_apply_click"] = owner.before_apply_click
-    result = dispatcher(request, scoped)
+    scoped["jhb_after_apply_click"] = owner.after_apply_click
+    try:
+        result = dispatcher(request, scoped)
+    except BaseException:
+        # A navigation/read failure after a native source click must not lose
+        # track of its new destinations. Observation never closes these tabs.
+        try:
+            if dispatcher_name == "jhb.applications.linkedin_runtime" and operation == "resolve":
+                owner.observe_unclaimed_popups()
+        except Exception:
+            pass  # Preserve the original browser failure for its repair handoff.
+        raise
     owner.refresh()
     if operation == "screenshot" and isinstance(result, dict) and not result.get("error"):
         owner.retain_review(request)

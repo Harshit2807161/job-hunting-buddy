@@ -101,6 +101,8 @@ def dispatch(request, helpers):
     if helpers.get("jhb_before_apply_click"):
         helpers["jhb_before_apply_click"]()
     _settled_click(node["backendDOMNodeId"], cdp, wait, helpers["click_at_xy"])
+    if helpers.get("jhb_after_apply_click"):
+        helpers["jhb_after_apply_click"]()
     found = None
     for _ in range(20):
         wait(0.25)
@@ -123,6 +125,8 @@ def dispatch(request, helpers):
         if helpers.get("jhb_before_apply_click"):
             helpers["jhb_before_apply_click"]()
         _settled_click(node["backendDOMNodeId"], cdp, wait, helpers["click_at_xy"])
+        if helpers.get("jhb_after_apply_click"):
+            helpers["jhb_after_apply_click"]()
         for _ in range(40):
             wait(0.25)
             changed = [tab for tab in helpers["list_tabs"]() if tab["targetId"] not in before]

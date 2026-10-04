@@ -328,6 +328,39 @@ def test_late_related_popup_blocks_second_native_apply_click_without_claiming_it
     assert browser.closed==[]
 
 
+@pytest.mark.parametrize('opener', [True, False])
+def test_dispatch_failure_after_native_source_click_retains_popup_and_blocks_more_creation(owned,opener):
+    _,browser,root=owned
+    failure=RuntimeError('Synthetic wait_for_load failure after native action')
+    def runtime(request,helpers):
+        source=helpers['new_tab'](SOURCE)
+        helpers['jhb_before_apply_click']()
+        destination=browser.new(URL)
+        if opener:browser.tabs[destination]['openerId']=source
+        helpers['jhb_after_apply_click']()
+        raise failure
+    with pytest.raises(RuntimeError) as caught:
+        dispatch_owned({'operation':'resolve','approved_url':SOURCE},browser.helpers(),runtime,
+                       dispatcher_name='jhb.applications.linkedin_runtime',root=root)
+    assert caught.value is failure
+    owner=OwnedTabs(browser.helpers(),root)
+    destination=browser.created[-1]
+    assert destination not in owner.tabs and owner.unclaimed[destination]['state']=='active'
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab('https://www.linkedin.com/jobs/view/9876543210/',purpose='source')
+    assert browser.closed==[] and 'user' in browser.tabs and destination in browser.tabs
+
+
+def test_unrelated_popup_with_different_known_opener_is_preserved_without_false_source_backpressure(owned):
+    owner,browser,_=owned
+    source=owner.new_tab(SOURCE,purpose='source')
+    owner.before_apply_click()
+    destination=browser.new(URL);browser.tabs[destination]['openerId']='user'
+    owner.after_apply_click();owner.observe_unclaimed_popups()
+    assert destination not in owner.tabs and destination not in owner.unclaimed
+    assert browser.closed==[]
+
+
 def test_cleanup_dispatch_has_fixed_namespace_and_never_invokes_application_dispatch(owned):
     _,browser,root=owned
     def forbidden(*args):raise AssertionError('Cleanup cannot execute filling or final clicks')
