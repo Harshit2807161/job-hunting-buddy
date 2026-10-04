@@ -105,7 +105,29 @@ def key_for_field(field, answers):
                 continue
             if item.get("country_context") and item["country_context"] != field.get("country_context"):
                 continue
+            if key.startswith("custom.profile."):
+                source = item.get("source", {})
+                if not isinstance(source, dict):
+                    continue
+                if any(base in answers and (answers[base].get("value") != value
+                       or answers[base].get("status") != "verified" or not answers[base].get("source"))
+                       for base, value in source.get("basis_values", {}).items()):
+                    continue  # a fresh explicit fact supersedes an earlier projection
+                if field.get("type") in {"radio", "multiselect", "select", "combobox"}:
+                    options = field.get("options", [])
+                    offered = [o["label"] for o in options if isinstance(o, dict) and not o.get("disabled")]
+                    selected = item.get("value") if isinstance(item.get("value"), list) else [item.get("value")]
+                    if (sorted(offered) != sorted(source.get("observed_choices", []))
+                            or not selected or any(value not in offered for value in selected)):
+                        continue
             return key
+    if label in {"your current location", "current location"}:
+        location = answers.get("preferences.application_city", {})
+        if location.get("status") == "verified" and location.get("source"):
+            return "preferences.application_city"
+    derived_key = _observed_profile_key(field, answers)
+    if derived_key:
+        return derived_key
     # Workday's observed repeater metadata maps original records by index;
     # generated DOM row ids need not be consecutive or start at zero.
     kind, index, column = (field.get("record_kind"), field.get("record_index"), field.get("record_column"))
@@ -264,6 +286,132 @@ def key_for_field(field, answers):
             return "documents.resume"
         if re.fullmatch(r"(?:upload |attach )?cover letter", label):
             return "documents.cover_letter"
+    return None
+
+
+
+def _observed_profile_key(field, answers):
+    """Bind narrow known-fact prompts; observed choices never invent a fact."""
+    label, kind = normalize(field["label"]), field.get("type")
+    mappings = {
+        "university": "standing.current_education_school",
+        "current university": "standing.current_education_school",
+        "where was your last internship?": "standing.latest_internship",
+        "what are some ai specific technologies you are comfortable with?": "standing.ai_technologies",
+    }
+    if kind in {"text", "textarea"} and label in mappings:
+        item = answers.get(mappings[label], {})
+        if item.get("status") == "verified" and item.get("source"):
+            return mappings[label]
+    if label == "preferred last name" and field.get("required") and kind == "text":
+        item = answers.get("standing.required_preferred_last_name", {})
+        if item.get("status") == "verified" and item.get("source"):
+            return "standing.required_preferred_last_name"
+    options = field.get("options")
+    choices = ([item["label"] for item in options if isinstance(item, dict) and isinstance(item.get("label"), str)
+                and not item.get("disabled")] if isinstance(options, list) else field.get("choices", []))
+    if not isinstance(choices, list) or any(not isinstance(x, str) for x in choices):
+        return None
+    def verified(key):
+        item = answers.get(key, {})
+        return item if item.get("status") == "verified" and item.get("source") else None
+    def save(value, source):
+        key = "custom.profile." + uuid.uuid5(uuid.NAMESPACE_URL, field["ref"] + "\n" + label).hex
+        bases = {"verified_expected_graduation_date_format": ["education.expected_graduation_date", "standing.current_education_school"],
+                 "current_expected_degree_type_catalog": ["standing.current_education_degree"],
+                 "verified_start_month_to_observed_quarter": ["preferences.start_date"],
+                 "explicit_anywhere_relocation_to_observed_city_choices": ["standing.relocate_anywhere"],
+                 "verified_current_city_and_anywhere_relocation": ["preferences.application_city", "standing.relocate_anywhere", "standing.observed_relocation_locations"],
+                 "verified_present_or_future_sponsorship_observed_choice": ["eligibility.sponsorship"]}
+        source = {**source, "observed_choices": list(choices), "basis_values": {base: answers[base]["value"] for base in bases.get(source.get("method"), []) if base in answers}}
+        answers[key] = {**answer(value, source), "question": field["label"], "field_ref": field["ref"],
+                        **({"country_context": field["country_context"]} if field.get("country_context") else {})}
+        return key
+    if (label == "will you now or will you in the future require employment visa sponsorship?"
+            and kind == "radio" and normalize(str(field.get("country_context") or "")) == "united states"):
+        item = verified("eligibility.sponsorship")
+        if item and isinstance(item["value"], bool):
+            pattern = (r"yes, i will require [^,?]+ to sponsor my employment" if item["value"]
+                       else r"no, i do not require sponsorship to work in the country where this role is located")
+            matches = [x for x in choices if re.fullmatch(pattern, normalize(x))]
+            if len(matches) == 1:
+                return save(matches[0], {"method": "verified_present_or_future_sponsorship_observed_choice",
+                    "country_context": "united states", "original_source": item["source"], "original_value": item["value"]})
+    if label == "graduation date" and kind in {"text", "date"}:
+        item = verified("education.expected_graduation_date")
+        if item and verified("standing.current_education_school"):
+            try:
+                graduation = date.fromisoformat(item["value"])
+            except (TypeError, ValueError):
+                return None
+            current = verified("standing.current_education_school")
+            end = current.get("source", {}).get("original_record", {}).get("end_date") if isinstance(current.get("source"), dict) else None
+            if not isinstance(end, str) or not graduation.isoformat().startswith(end[:7]):
+                return None  # the explicit day must belong to the same current degree
+            return save(graduation.strftime("%m/%d/%Y") if kind == "text" else graduation.isoformat(), {
+                "method": "verified_expected_graduation_date_format", "original_source": item["source"],
+                "original_date": item["value"], "expected": True})
+    if label == "degree type" and kind in {"multiselect", "radio", "select", "combobox"}:
+        item = verified("standing.current_education_degree")
+        if item:
+            degree = normalize(str(item["value"]))
+            degree_type = next((prefix for prefix in ("master", "bachelor", "doctor") if degree.startswith(prefix)), None)
+            names = {"master": {"master's", "masters", "master"}, "bachelor": {"undergraduate/bachelor's", "bachelor's", "bachelors"},
+                     "doctor": {"phd", "doctorate"}}
+            matches = [x for x in choices if normalize(x) in names.get(degree_type, set())]
+            if len(matches) == 1:
+                return save(matches if kind == "multiselect" else matches[0], {
+                    "method": "current_expected_degree_type_catalog", "original_source": item["source"],
+                    "earned_degree_claim": False, "observed_choice": matches[0]})
+    if label == "how many prior internships have you had?" and kind in {"radio", "select", "combobox"}:
+        item = verified("standing.prior_internships")
+        if item and str(item["value"]).isdigit():
+            count = int(item["value"])
+            target = str(count) if count < 3 else "3+"
+            if target in choices:
+                return save(target, {"method": "verified_documented_internship_count_choice", "original_source": item["source"]})
+    if label == "please indicate which quarter you would be able to start work for this position." and kind == "multiselect":
+        item = verified("preferences.start_date")
+        if item:
+            try:
+                available = datetime.strptime(item["value"], "%B %Y").date()
+            except (TypeError, ValueError):
+                return None
+            matches = []
+            for choice in choices:
+                match = re.fullmatch(r"Q([1-4]): ([A-Za-z]+ \d{4}) - ([A-Za-z]+ \d{4})", choice)
+                if not match:
+                    continue
+                try:
+                    start, end = [datetime.strptime(x, "%B %Y").date() for x in match.groups()[1:]]
+                except ValueError:
+                    continue
+                if start.year == end.year and end.month - start.month == 2 and start.month == (int(match[1])-1)*3+1 and start <= available <= end:
+                    matches.append(choice)
+            if len(matches) == 1:
+                return save(matches, {"method": "verified_start_month_to_observed_quarter", "original_source": item["source"],
+                                      "original_value": item["value"], "observed_choice": matches[0]})
+    if label == "please indicate all locations that you would be interested in relocating to for this position." and kind == "multiselect":
+        item = verified("standing.relocate_anywhere")
+        if item and item["value"] is True and choices and all(re.fullmatch(r"[A-Za-z .'-]+, [A-Z]{2}", x) for x in choices):
+            answers["standing.observed_relocation_locations"] = answer(list(choices), {
+                "method": "explicit_anywhere_relocation_to_observed_city_choices", "original_source": item["source"]})
+            return save(list(choices), answers["standing.observed_relocation_locations"]["source"])
+    # This is a factual location + willingness choice, not a blanket Yes to
+    # current residence. Need the same form's verified offered location list.
+    hybrid = (r"this role is tied to the office location listed in the job posting\. team members are expected to work from the office "
+              r"3 days per week as part of [^?]+ hybrid work model\. are you currently based in the listed location and able to work in person 3 days per week\?")
+    if kind == "radio" and re.fullmatch(hybrid, label):
+        location = verified("preferences.application_city")
+        locations = verified("standing.observed_relocation_locations")
+        relocation = verified("standing.relocate_anywhere")
+        if (location and locations and relocation and isinstance(locations["value"], list)
+                and re.fullmatch(r"[A-Za-z .'-]+, [A-Z]{2}", str(location["value"]))):
+            if normalize(str(location["value"])) not in {normalize(x) for x in locations["value"]}:
+                matches = [x for x in choices if normalize(x).replace("’", "'") == "no, i'm not based in this location but willing to relocate"]
+                if len(matches) == 1:
+                    return save(matches[0], {"method": "verified_current_city_and_anywhere_relocation", "location_source": location["source"],
+                        "offered_locations_source": locations["source"], "relocation_source": relocation["source"]})
     return None
 
 

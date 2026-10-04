@@ -196,10 +196,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             await actions.ensure_education(max(indexes)+1)
     async def observe():
         snapshot = await actions.observe()
-        if job.get("work_country"):
-            for field in snapshot.get("fields", []):
-                if booklet.normalize(field["label"]) in {"are you authorized to work lawfully in the location posted for this position?", "work authorization"}:
-                    field["country_context"] = booklet.normalize(job["work_country"])
+        booklet.annotate_work_country(snapshot, job)
         for field in snapshot.get("fields", []):
             observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         return snapshot
@@ -292,6 +289,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 education_row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"],
+                    **({"country_context": field["country_context"]} if field.get("country_context") else {}),
                     **({"proposed": True} if record.get("proposed") else {})}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
             except ValueError as exc:

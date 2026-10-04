@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .authorized_submission import audit_hash, load_gate, private_file
-from .booklet import answer, normalize, write_private
+from .booklet import answer, normalize, write_private, annotate_work_country
 from .browser import GUARD_SCRIPT
 from .cli_runtime import _settled_click, dispatch as guarded_dispatch, option_matches
 from .planner import key_for_field
@@ -179,10 +179,7 @@ def _checks(request, helpers, packet, attempt):
             if len(matches) != 1:
                 return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
                         "click_started": False}
-    if packet.get("job", {}).get("work_country"):
-        for field in snapshot["fields"]:
-            if normalize(field["label"]) in {"are you authorized to work lawfully in the location posted for this position?", "work authorization"}:
-                field["country_context"] = normalize(packet["job"]["work_country"])
+    annotate_work_country(snapshot, packet.get("job", {}))
     if helpers["js"]("[...document.querySelectorAll('input[type=password]')].some(e=>e.getClientRects().length)"):
         return {"state": "waiting_login", "reason": "Website authentication is required", "click_started": False}
     records = packet.get("filled", [])
@@ -190,6 +187,8 @@ def _checks(request, helpers, packet, attempt):
     for r in records:
         if str(r["key"]).startswith("custom."):
             approved[r["key"]].update(question=r["question"], field_ref=r["ref"])
+            if r.get("country_context"):
+                approved[r["key"]]["country_context"] = r["country_context"]
     documents = request.get("documents", {})
     checked, retained = [], []
     attached_labels = {normalize(f["label"]) for f in snapshot["fields"] if f["ref"].startswith("uploaded:")}
