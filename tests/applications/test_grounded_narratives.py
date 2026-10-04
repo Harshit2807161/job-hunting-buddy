@@ -37,9 +37,12 @@ def model(calls, mutate=None):
     def execute(command, **kwargs):
         inputs = json.loads(kwargs["input"].split("\nINPUT:\n", 1)[1])
         calls.append((command, kwargs, inputs))
+        company = inputs['job_description']['units'][0]
+        candidate_units = inputs['facts']['role.experience']['units']
+        candidate = next((unit for unit in candidate_units if 'Improved retrieval' in unit['text']), candidate_units[0])
         recipe = {"field_ref": inputs["field_ref"], "state": "proposed", "framing": "focus", "closing": "contribute",
-            "company_quote": "reliable retrieval APIs for useful search results", "candidate_key": "role.experience",
-            "candidate_quote": "Improved retrieval quality by 20% through measured evaluation.", "answer": ""}
+            "company_quote": company['text'], 'company_unit_id': company['id'], "candidate_key": "role.experience",
+            "candidate_quote": candidate['text'], 'candidate_unit_id': candidate['id'], "answer": ""}
         recipe["answer"] = drafts.render(inputs, recipe)
         if mutate: mutate(recipe)
         Path(command[command.index("--output-last-message")+1]).write_text(json.dumps(recipe))
@@ -81,6 +84,9 @@ def test_brief_company_focused_proposal_preserves_exact_selected_facts_and_has_r
     "Why do you want to leave your current role?", "What motivates you outside work?",
     "Why would you join our team? Don't use AI.",
     "Why would you join our team? Please no AI.", "Why would you join our team? Without AI assistance.",
+    "Why would you join our team? Please do not use generative AI.",
+    "Why this company? Without using large language models.",
+    "What motivates you? Refrain from using artificial intelligence.",
 ])
 def test_factual_unknown_history_and_candidate_only_prompts_never_call_a_model(context, label):
     field, job, answers = context; field["label"] = label
@@ -89,11 +95,59 @@ def test_factual_unknown_history_and_candidate_only_prompts_never_call_a_model(c
     assert calls == []
 
 
+@pytest.mark.parametrize('source,shortened', [('job_description', 'cryptocurrency'),
+                                            ('role.experience', 'built production ML systems')])
+def test_exact_substring_cannot_strip_negation_from_a_complete_unit(context, source, shortened):
+    field, job, answers = context
+    text = 'This role does not work on cryptocurrency.'
+    job['verified_job_description'].update(text=text, sha256=hashlib.sha256(text.encode()).hexdigest())
+    answers['role.experience'] = booklet.answer('I have not built production ML systems.', 'Synthetic verified factual statement')
+    original = model([])
+    def execute(command, **kwargs):
+        result = original(command, **kwargs)
+        inputs = json.loads(kwargs['input'].split('\nINPUT:\n', 1)[1])
+        output = Path(command[command.index('--output-last-message')+1])
+        recipe = json.loads(output.read_text())
+        recipe['company_quote' if source == 'job_description' else 'candidate_quote'] = shortened
+        recipe['answer'] = drafts.render(inputs, recipe)
+        output.write_text(json.dumps(recipe))
+        return result
+    assert drafts.draft(field, job, answers, execute=execute)['state'] == 'needs_input'
+
+
+@pytest.mark.parametrize('text', ['If licensed, you may build models. Otherwise, you cannot represent clients.',
+                                 'I have not\nbuilt production ML systems.',
+                                 'Do not:\n• Build cryptocurrency services.\n• Represent clients.'])
+def test_semantic_units_preserve_wrapped_negation_and_leading_conditions(text):
+    units = drafts.semantic_units(text, 'synthetic', 35)
+    assert len(units) == 1 and units[0]['text'] == text
+    assert drafts.semantic_units(text, 'synthetic', 2) == []
+
+
+def test_complete_achievement_bullet_excludes_header_but_keeps_wrapped_context():
+    text = 'Synthetic Lab\nResearch Engineer\n• Improved retrieval by 20%\n  using measured evaluation.\n• Built Python APIs.'
+    units = drafts.semantic_units(text, 'role.experience', 35)
+    assert [unit['text'] for unit in units] == ['Synthetic Lab\nResearch Engineer',
+            'Improved retrieval by 20%\n  using measured evaluation.', 'Built Python APIs.']
+    assert all(unit['text'] in text for unit in units)
+
+
+def test_oversized_indivisible_company_context_hands_off_without_model(context):
+    field, job, answers = context
+    text = 'Only after receiving required approval may this role ' + 'perform complex engineering work '*10 + '.'
+    job['verified_job_description'].update(text=text, sha256=hashlib.sha256(text.encode()).hexdigest())
+    calls = []
+    assert drafts.draft(field, job, answers, execute=model(calls))['state'] == 'needs_input'
+    assert calls == []
+
+
 @pytest.mark.parametrize("mutation", [
     lambda r: r.update(field_ref="another-control"),
     lambda r: r.update(company_quote="industry-leading quantum hardware"),
     lambda r: r.update(candidate_quote="Improved retrieval quality by 99% through measured evaluation."),
     lambda r: r.update(candidate_key="other_role.experience"),
+    lambda r: r.update(company_unit_id='wrong-unit'),
+    lambda r: r.update(candidate_unit_id='wrong-unit'),
     lambda r: r.update(answer=r["answer"]+" I led a team of ten engineers."),
     lambda r: r.update(answer=r["answer"]+" Synthetic Search is the global market leader."),
     lambda r: r.update(state="needs_input"),

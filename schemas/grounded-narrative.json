@@ -1,14 +1,16 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["field_ref", "state", "answer", "company_quote", "candidate_key", "candidate_quote", "framing", "closing"],
+  "required": ["field_ref", "state", "answer", "company_quote", "company_unit_id", "candidate_key", "candidate_quote", "candidate_unit_id", "framing", "closing"],
   "properties": {
     "field_ref": {"type": "string", "minLength": 1, "maxLength": 300},
     "state": {"enum": ["proposed", "needs_input"]},
     "answer": {"type": "string", "maxLength": 2000},
     "company_quote": {"type": "string", "maxLength": 500},
+    "company_unit_id": {"type": "string", "maxLength": 100},
     "candidate_key": {"enum": ["", "role.experience", "role.projects", "role.skills"]},
     "candidate_quote": {"type": "string", "maxLength": 1000},
+    "candidate_unit_id": {"type": "string", "maxLength": 100},
     "framing": {"enum": ["focus", "contribute"]},
     "closing": {"enum": ["none", "contribute", "learn"]}
   }

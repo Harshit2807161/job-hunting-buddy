@@ -21,9 +21,13 @@ style preferences. Other resume variants, contact/disclosure details and file
 paths are excluded from inference. A missing verified PDF, unknown role, or
 unverified job-description identity prevents drafting.
 
-Codex selects relevant exact evidence and concise framing; Python reconstructs
+Codex selects allowlisted complete evidence units by ID and concise framing; Python reconstructs
 the answer and rejects extra factual prose. An answer may quote at most 25 words
-from the official description and uses only selected verified resume excerpts.
+from the official description and uses only selected verified resume units of at
+most 35 words. Units are whole short paragraphs or complete bullets, preserving
+wrapped lines, leading negation and conditions. A governing list introduction
+remains attached to its bullets. Arbitrary substring selection and shortened
+quotes are rejected; an oversized indivisible unit causes a handoff.
 This first iteration deliberately uses controlled paraphrase frames, rather
 than trusting free-form generated factual claims merely because citations exist.
 It handles brief interest, motivation, role-fit and proud-work prompt variants;

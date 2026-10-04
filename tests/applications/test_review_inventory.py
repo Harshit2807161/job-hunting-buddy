@@ -7,9 +7,25 @@ import pytest
 from jhb.applications import booklet,narratives
 from jhb.applications.planner import deterministic_plan,key_for_field
 from jhb.applications.worker import prepare,write_packet
+from jhb.applications.review_inventory import candidate_wording_requested
 
 WHY='Why Example? Please, no AI text'
 OPINION='What is your opinion on the right use of AI tools in both coding and code review?'
+
+@pytest.mark.parametrize('label', ['Why this company? Please do not use generative AI.',
+                                 'Tell us why, without using large language models.',
+                                 'Write your answer without the use of AI.',
+                                 'Answer without use of generative AI.',
+                                 'Write this without help from a language model.',
+                                 'Refrain from using artificial intelligence in this answer.',
+                                 'Do not rely on LLMs for your answer.',
+                                 'Don’t use ChatGPT for your response.',
+                                 'No LLMs please.'])
+def test_explicit_ai_prohibition_preserves_candidate_only_requirement(label):
+    assert candidate_wording_requested(label)
+
+def test_ordinary_opinion_on_ai_tools_does_not_prohibit_candidate_or_grounded_wording():
+    assert candidate_wording_requested(OPINION) is False
 
 class Form:
     blocked_requests=0

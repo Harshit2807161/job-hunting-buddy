@@ -8,8 +8,11 @@ from .booklet import normalize
 
 
 def candidate_wording_requested(label):
-    return bool(re.search(r'\b(?:no|without(?: using)?|do not use|don\x27t use)\s+(?:ai|artificial intelligence|chatgpt)\b|'
-                         r'\b(?:your|my|their) own (?:words|wording)\b|\bhuman[- ]written\b', normalize(label)))
+    text = normalize(label).replace('’', "'")
+    tools = r'(?:generative\s+)?(?:ai|artificial intelligence)|(?:large\s+)?language models?|llms?|chatgpt'
+    prohibition = r'(?:no|without(?:\s+(?:using|(?:the )?use of|(?:assistance|help) from))?|do not (?:use|utilize|rely on)|don\x27t (?:use|utilize|rely on)|refrain from(?: using)?|avoid(?: using)?)'
+    return bool(re.search(r'\b'+prohibition+r'\s+(?:(?:any|a|an|the)\s+)?(?:'+tools+r')\b|'
+                         r'\b(?:your|my|their) own (?:words|wording)\b|\bhuman[- ]written\b', text))
 
 
 def candidate_response(record):
