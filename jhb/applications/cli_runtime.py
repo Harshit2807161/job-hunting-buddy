@@ -216,7 +216,7 @@ def dispatch(request, helpers):
 
     def find(field):
         for node in ax():
-            if node.get("role", {}).get("value") not in {"textbox", "combobox", "checkbox", "radio"}:
+            if node.get("role", {}).get("value") not in {"textbox", "combobox", "checkbox", "radio", "spinbutton"}:
                 continue
             if identifier(node) == field["ref"]:
                 return node["backendDOMNodeId"]

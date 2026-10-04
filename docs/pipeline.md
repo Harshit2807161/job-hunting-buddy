@@ -271,3 +271,10 @@ and salary-category retention. They do not prove universal ATS compatibility or
 CAPTCHA solving. Unsupported controls and genuinely unknown factual answers
 remain explicit handoffs; the pipeline never changes an answer to improve
 screening results and never submits scheduled applications.
+
+
+A subsequent live education audit verified four indexed year fields across two
+education records. Chrome exposes these numeric inputs as AX `spinbutton`
+controls. The adapter now recognizes that role and extracts calendar years only
+from verified valid original dates, retaining expected-graduation provenance.
+Malformed dates and different record indexes cannot receive a guessed year.

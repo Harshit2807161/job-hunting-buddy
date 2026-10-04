@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+from datetime import date
 from pathlib import Path
 
 from ..config import ROOT
@@ -115,6 +116,18 @@ def load(path=DEFAULT_PATH) -> dict:
     return book
 
 
+def _education_year(value):
+    """Extract a year only from a valid, explicitly supplied calendar date."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}(?:-[0-9]{2}(?:-[0-9]{2})?)?", value):
+        return None
+    parts = [int(part) for part in value.split("-")]
+    try:
+        date(parts[0], parts[1] if len(parts) > 1 else 1, parts[2] if len(parts) > 2 else 1)
+    except ValueError:
+        return None
+    return value[:4]
+
+
 def for_role(book: dict, role: str) -> dict:
     if role not in {"sde", "ml"}:
         raise ValueError("Choose sde or ml explicitly for ambiguous jobs")
@@ -141,6 +154,16 @@ def for_role(book: dict, role: str) -> dict:
                     values[f"education.{index}.{field}"] = answer(record[field], record["source"])
                     if index == 0:
                         values["education."+field] = values[f"education.{index}.{field}"]
+            for column in ("start", "end"):
+                date_key = column + "_date"
+                original = record.get(date_key)
+                year = _education_year(original)
+                if year is not None and record.get("source"):
+                    values[f"education.{index}.{column}_year"] = answer(year, {
+                        "rule": "Calendar year extracted from verified original education date",
+                        "derived_from": f"education.{index}.{date_key}", "original_date": original,
+                        "original_source": record["source"], "expected": record.get("expected"),
+                    })
     return values
 
 

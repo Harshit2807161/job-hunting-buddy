@@ -96,6 +96,12 @@ def key_for_field(field, answers):
         key = f"education.{education[2]}.{column}"
         if key in answers:
             return key
+    education_year = re.fullmatch(r"(start|end)-year--(\d+)", field["ref"])
+    if (education_year and field.get("type") == "number"
+            and label == education_year[1] + " date year"):
+        key = f"education.{education_year[2]}.{education_year[1]}_year"
+        if key in answers:
+            return key
     if (label in {"how did you hear about this job?", "how did you hear about us?"}
             and answers.get("screening.referral", {}).get("status") != "verified"
             and "standing.discovery_source" in answers):
