@@ -14,6 +14,9 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 MAX_BYTES = 65536
 TIMEOUT = 2
 LOCAL = {"127.0.0.1", "localhost", "::1"}
+# browser-use 0.1.13 rejects doctor subcommand flags before delegation, while
+# its normal CLI access mode pre-imports this read-only harness diagnostic.
+HEALTH_SCRIPT = b"raise SystemExit(run_doctor_json(require_existing_daemon=True))\n"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -72,8 +75,8 @@ def _existing_daemon(parsed, *, runner=None, files=None):
     env = dict(os.environ)
     env.pop("BU_NAME", None)
     env.update(BH_HOME=str(config.ROOT / "private" / "browser-use-harness"),
-               BH_REQUIRE_EXISTING_DAEMON="1", BH_TELEMETRY="0")
-    result = (runner or subprocess.run)(["browser-use", "doctor", "--json", "--require-existing-daemon"],
+               BH_REQUIRE_EXISTING_DAEMON="1", BH_TELEMETRY="0", BH_UPDATE_CHECK="0")
+    result = (runner or subprocess.run)(["browser-use"], input=HEALTH_SCRIPT,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT, check=False, env=env)
     if result.returncode != 0 or not isinstance(result.stdout, bytes) or len(result.stdout) > MAX_BYTES:
         return False

@@ -96,8 +96,11 @@ to identify Chrome and a matching local browser websocket. Chrome's newer
 default-profile debugging can return HTTP 404 while its direct websocket works.
 For configured direct websockets, or that HTTP 404 case, a bounded local
 `DevToolsActivePort` record must match the configured port and websocket path
-where present. The official `browser-use doctor --json --require-existing-daemon`
-must then confirm the existing default daemon has a healthy attached browser;
+where present. The official `browser-use` CLI access mode executes the fixed
+read-only `run_doctor_json(require_existing_daemon=True)` diagnostic, with
+`BH_REQUIRE_EXISTING_DAEMON=1` and update checks disabled. This avoids version
+0.1.13's wrapper rejecting the equivalent harness doctor subcommand flags.
+The diagnostic must confirm the existing default daemon has a healthy attached browser;
 the port record must remain unchanged through that check. This strict doctor
 does not start, repair, discover, or reconnect a daemon. Redirects, proxies, remote endpoints and
 oversized responses are rejected. A closed or unreachable browser yields

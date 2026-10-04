@@ -33,12 +33,14 @@ def test_direct_ws_uses_official_doctor_existing_default_without_http_or_autosta
     calls = []
     def run(command, **kwargs):
         calls.append(command)
-        assert command == ["browser-use", "doctor", "--json", "--require-existing-daemon"]
+        assert command == ["browser-use"]
+        assert kwargs["input"] == connection.HEALTH_SCRIPT
         assert kwargs["timeout"] == 2 and kwargs["stdout"] == subprocess.PIPE
         assert kwargs["stderr"] == subprocess.DEVNULL and kwargs["check"] is False
         assert "BU_NAME" not in kwargs["env"]
         assert kwargs["env"]["BH_REQUIRE_EXISTING_DAEMON"] == "1"
         assert kwargs["env"]["BH_TELEMETRY"] == "0"
+        assert kwargs["env"]["BH_UPDATE_CHECK"] == "0"
         assert kwargs["env"]["BH_HOME"] == str(config.ROOT/"private"/"browser-use-harness")
         return process()
     assert connection.available(SOCKET, active_files=[active], runner=run,
@@ -112,3 +114,55 @@ def test_ws_setting_takes_precedence_like_installed_harness(active, monkeypatch)
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:33333")
     assert connection.available(active_files=[active], runner=lambda *a, **kw: process(),
                                 opener=lambda *a, **kw: pytest.fail("Ignored configured WS"))
+
+
+def test_installed_browser_use_entry_supports_fixed_access_mode_health_script_without_startup(monkeypatch, capsys):
+    """Exercise real wrapper + harness parsers, with only transport injected."""
+    from io import StringIO
+    import sys
+    dotenv = pytest.importorskip("dotenv")
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: False)
+    monkeypatch.setenv("BH_TELEMETRY", "0")
+    monkeypatch.setenv("ANONYMIZED_TELEMETRY", "false")
+    entry = pytest.importorskip("browser_use.cli")
+    harness = pytest.importorskip("browser_harness.run")
+    calls = []
+    monkeypatch.setattr(entry, "_set_harness_client_env", lambda: None)
+    monkeypatch.setattr(entry, "_patch_browser_harness_cli_text", lambda: None)
+    monkeypatch.setattr(entry, "_delegated_to_harness", False)
+    monkeypatch.setattr(harness, "print_update_banner", lambda: None)
+    monkeypatch.setattr(harness, "_install_helper_trace", lambda: None)
+    monkeypatch.setattr(harness, "require_existing_daemon", lambda: calls.append("existing"))
+    monkeypatch.setattr(harness, "ensure_daemon", lambda: pytest.fail("Health CLI attempted daemon startup"))
+    def diagnostic(*, require_existing_daemon):
+        assert require_existing_daemon is True
+        calls.append("strict_health")
+        print(json.dumps(healthy()))
+        return 0
+    monkeypatch.setattr(harness, "run_doctor_json", diagnostic)
+    monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
+    monkeypatch.setattr(sys, "argv", ["browser-use"])
+    monkeypatch.setattr(sys, "stdin", StringIO(connection.HEALTH_SCRIPT.decode()))
+    with pytest.raises(SystemExit) as exitcode:
+        entry._run_browser_harness()
+    assert exitcode.value.code == 0
+    assert calls == ["existing", "strict_health"]
+    assert json.loads(capsys.readouterr().out)["healthy"] is True
+
+
+def test_installed_wrapper_rejects_doctor_flags_before_harness_dispatch(monkeypatch, capsys):
+    import sys
+    dotenv = pytest.importorskip("dotenv")
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: False)
+    monkeypatch.setenv("BH_TELEMETRY", "0")
+    monkeypatch.setenv("ANONYMIZED_TELEMETRY", "false")
+    entry = pytest.importorskip("browser_use.cli")
+    harness = pytest.importorskip("browser_harness.run")
+    monkeypatch.setattr(entry, "_set_harness_client_env", lambda: None)
+    monkeypatch.setattr(entry, "_patch_browser_harness_cli_text", lambda: None)
+    monkeypatch.setattr(harness, "main", lambda: pytest.fail("Rejected flags entered browser harness"))
+    monkeypatch.setattr(sys, "argv", ["browser-use", "doctor", "--json", "--require-existing-daemon"])
+    with pytest.raises(SystemExit) as exitcode:
+        entry._run_browser_harness()
+    assert exitcode.value.code == 2
+    assert "doctor [--fix-snap]" in capsys.readouterr().err
