@@ -377,11 +377,12 @@ def _observed_profile_key(field, answers):
     if label == "please indicate which quarter you would be able to start work for this position." and kind == "multiselect":
         item = verified("preferences.start_date")
         if item:
-            try:
-                available = datetime.strptime(item["value"], "%B %Y").date()
-            except (TypeError, ValueError):
+            from .known_answers import _bounds
+            bounds = _bounds(item["value"])
+            if bounds is None:
                 return None
-            matches = []
+            available = bounds[0].replace(day=1)
+            offered = []
             for choice in choices:
                 match = re.fullmatch(r"Q([1-4]): ([A-Za-z]+ \d{4}) - ([A-Za-z]+ \d{4})", choice)
                 if not match:
@@ -390,11 +391,17 @@ def _observed_profile_key(field, answers):
                     start, end = [datetime.strptime(x, "%B %Y").date() for x in match.groups()[1:]]
                 except ValueError:
                     continue
-                if start.year == end.year and end.month - start.month == 2 and start.month == (int(match[1])-1)*3+1 and start <= available <= end:
-                    matches.append(choice)
+                if (start.year == end.year and end.month - start.month == 2
+                        and start.month == (int(match[1])-1)*3+1 and available <= end):
+                    offered.append((start, choice))
+            # Availability is the earliest possible start, not a deadline. Pick
+            # the first offered quarter at or after it, never an earlier one.
+            first = min((start for start, _ in offered), default=None)
+            matches = [choice for start, choice in offered if start == first]
             if len(matches) == 1:
                 return save(matches, {"method": "verified_start_month_to_observed_quarter", "original_source": item["source"],
-                                      "original_value": item["value"], "observed_choice": matches[0]})
+                                      "original_value": item["value"], "observed_choice": matches[0],
+                                      "criterion": "Earliest offered quarter compatible with verified availability"})
     if label == "please indicate all locations that you would be interested in relocating to for this position." and kind == "multiselect":
         item = verified("standing.relocate_anywhere")
         if item and item["value"] is True and choices and all(re.fullmatch(r"[A-Za-z .'-]+, [A-Z]{2}", x) for x in choices):

@@ -432,6 +432,16 @@ def notify_pending(conn, *, send_email=False):
     conn.commit()
 
 
+def _recorded_discovery(job):
+    name = {"simplify": "Simplify", "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor",
+            "jobspy:linkedin": "LinkedIn", "jobspy:indeed": "Indeed", "jobspy:glassdoor": "Glassdoor"}.get(job.get("source"))
+    if name is None:
+        return None
+    return {**booklet.answer(name, {"method": "recorded_phase1_discovery", "source": job["source"],
+        "source_url": job.get("source_url", job["url"]), "source_job_hash": job.get("source_job_hash")}),
+        "company_question": f"How did you hear about {job['company']}?"}
+
+
 async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
                   interactive=False, review_seconds=0, role=None, artifacts=None):
     choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
@@ -476,12 +486,9 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
     start_month = _verified_start_month(answers.get("preferences.start_date", {}))
     if start_month:
         answers["standing.start_month"] = start_month
-    discovery = {"simplify": "Simplify", "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor"}.get(job.get("source"))
+    discovery = _recorded_discovery(job)
     if discovery:
-        answers["standing.discovery_source"] = booklet.answer(discovery,
-            {"method": "recorded_phase1_discovery", "source": job["source"],
-             "source_url": job.get("source_url", job["url"]), "source_job_hash": job.get("source_job_hash")})
-        answers["standing.discovery_source"]["company_question"] = f"How did you hear about {job['company']}?"
+        answers["standing.discovery_source"] = discovery
     completed_cs = completed_cs_degree_answer(book.get("education_records", []))
     if completed_cs is not None:
         answers["standing.completed_cs_degree"] = completed_cs

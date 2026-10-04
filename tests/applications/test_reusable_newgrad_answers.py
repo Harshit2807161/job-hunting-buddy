@@ -273,3 +273,29 @@ def test_final_runtime_checks_retained_newgrad_and_scoped_authorization_without_
         assert result["fields"][-1]["country_context"] == "united states"
     else:
         assert result["state"] == "waiting_review" and result["click_started"] is False
+
+
+@pytest.mark.parametrize('availability,expected', [
+    ('2029-12-14', 'Q1: January 2030 - March 2030'),
+    ('2030-03-31', 'Q1: January 2030 - March 2030'),
+    ('2030-04-01', 'Q2: April 2030 - June 2030'),
+    ('2030-06', 'Q2: April 2030 - June 2030'),
+    ('2030-07-01', None), ('2030-02-30', None), ('December 14', None),
+])
+def test_first_offered_quarter_respects_full_date_or_month_earliest_availability(availability, expected):
+    answers = booklet.for_role(book(), 'sde')
+    answers['preferences.start_date'] = booklet.answer(availability, 'synthetic earliest availability')
+    control = field('Please indicate which quarter you would be able to start work for this position.', 'multiselect',
+                    choices=['Q2: April 2030 - June 2030', 'Other', 'Q1: January 2030 - March 2030'])
+    assert value(control, answers) == ([expected] if expected else None)
+    assert answers['preferences.start_date']['value'] == availability
+
+
+def test_duplicate_or_invalid_earliest_quarter_is_not_guessed():
+    answers = booklet.for_role(book(), 'sde')
+    answers['preferences.start_date'] = booklet.answer('2029-12-14', 'synthetic earliest availability')
+    control = field('Please indicate which quarter you would be able to start work for this position.', 'multiselect',
+                    choices=['Q1: January 2030 - March 2030'] * 2)
+    assert value(control, answers) is None
+    control['options'] = [{'label': 'Q1: April 2030 - June 2030', 'disabled': False}]
+    assert value(control, answers) is None

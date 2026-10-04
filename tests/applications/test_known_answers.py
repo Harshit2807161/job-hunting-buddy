@@ -235,3 +235,25 @@ def test_commitment_never_expands_or_guesses_an_unapproved_or_ambiguous_range(ch
     values = facts();values["preferences.residency_commitment"] = booklet.answer(value, "synthetic approved reply")
     question = field("How many months in a row can you commit to?", kind="multiselect", choices=choices)
     assert known_answers.enrich(question, {}, values) is None
+
+
+@pytest.mark.parametrize('source,expected', [
+    ('jobspy:indeed', ['Job Board (Indeed, Glassdoor, etc.)']),
+    ('jobspy:glassdoor', ['Job Board (Indeed, Glassdoor, etc.)']),
+    ('jobspy:linkedin', ['LinkedIn']),
+    ('jobspy:unknown', None), ('jobspy:indeed:untrusted', None), ('user_provided', None),
+])
+def test_phase1_jobspy_source_survives_worker_catalog_into_observed_discovery_choice(source, expected):
+    from jhb.applications.worker import _recorded_discovery
+    job = {'source': source, 'company': 'Example', 'url': 'https://example.com/role',
+           'source_url': 'https://example.com/source', 'source_job_hash': 'a' * 64}
+    record = _recorded_discovery(job)
+    values = {'standing.discovery_source': record} if record else {}
+    question = field(known_answers._DISCOVERY, kind='multiselect',
+        choices=['LinkedIn', 'Job Board (Indeed, Glassdoor, etc.)', 'Referral', 'Other'])
+    key = known_answers.enrich(question, job, values, as_of=date(2026, 10, 4))
+    assert (values[key]['value'] if key else None) == expected
+    if record:
+        assert record['source']['source'] == source
+        assert record['source']['source_job_hash'] == job['source_job_hash']
+        assert record['source']['source_url'] == job['source_url']
