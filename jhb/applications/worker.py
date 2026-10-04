@@ -220,10 +220,12 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     continue
             return outcome({"state": snapshot["handoff"], "reason": snapshot["reason"], "events": events, "filled": list(filled.values())}), actions
         answers.pop("standing.relocation_choice", None)
+        from .known_answers import enrich as enrich_known_answer
         for field in snapshot["fields"]:
             relocation = _observed_relocation_choice(field, answers)
             if relocation:
                 answers["standing.relocation_choice"] = relocation
+            enrich_known_answer(field, job, answers)
         if answers.get("standing.salary_policy", {}).get("value") is True:
             ranges = snapshot.get("salary_ranges") or job.get("advertised_salary_ranges", [])
             if len(ranges) == 1:

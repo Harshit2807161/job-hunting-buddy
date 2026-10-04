@@ -130,3 +130,19 @@ def test_unverified_description_cannot_supply_company_facts(change):
 def test_narratives_never_fill_a_boolean_control():
     prompt = field(narratives.ACCOMPLISHMENTS_PROMPT);prompt['type'] = 'combobox'
     assert narratives.proposal(prompt, job(), role_answers()) is None
+
+
+@pytest.mark.parametrize('apostrophe', ["'", "\u2019"])
+def test_optional_cool_work_prompt_reuses_only_verified_selected_resume_achievement(apostrophe):
+    prompt = field(f"Tell us about something you{apostrophe}ve built/done that you think is genuinely cool, big or small, work or personal.")
+    prompt['required'] = False
+    item = with_description('This engineering role builds infrastructure APIs and deployment tools.')
+    record = narratives.proposal(prompt, item, role_answers())
+    assert record['proposed'] is True
+    assert record['source']['method'] == 'verified_resume_achievement'
+    assert record['source']['selected_role_facts']['source'] == 'synthetic selected SDE resume'
+    assert '4+ hours' in record['value'] and '30 minutes' in record['value']
+    assert '99%' not in record['value']
+    assert narratives.proposal(prompt, job(), role_answers()) is None
+    prompt['label'] += ' Please respond in your own words without AI.'
+    assert narratives.proposal(prompt, item, role_answers()) is None

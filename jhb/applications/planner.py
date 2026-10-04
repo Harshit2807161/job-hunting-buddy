@@ -128,6 +128,10 @@ def key_for_field(field, answers):
     derived_key = _observed_profile_key(field, answers)
     if derived_key:
         return derived_key
+    from .known_answers import key_for_field as observed_known_key
+    known_key = observed_known_key(field, answers)
+    if known_key:
+        return known_key
     # Workday's observed repeater metadata maps original records by index;
     # generated DOM row ids need not be consecutive or start at zero.
     kind, index, column = (field.get("record_kind"), field.get("record_index"), field.get("record_column"))

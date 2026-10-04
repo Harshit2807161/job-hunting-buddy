@@ -138,7 +138,9 @@ def proposal(field, job, answers):
 
 def _proud_work(field, job, answers):
     if normalize(field['label']) not in {"what's something you worked on that you were proud of?",
-                                         "what is something you worked on that you were proud of?"}:
+                                         "what is something you worked on that you were proud of?",
+                                         "tell us about something you’ve built/done that you think is genuinely cool, big or small, work or personal.",
+                                         "tell us about something you've built/done that you think is genuinely cool, big or small, work or personal."}:
         return None
     description = verified_description(job)
     if not description:

@@ -52,3 +52,24 @@ Identical start/end year labels produce separate indexed questions and explicit
 answers apply only to that row. Older answers without a degree reference remain
 in the audit history but cannot override every degree's verified dates. A fresh
 verified fill resolves old technical handoffs without deleting their history.
+
+Observed-form mappings reuse verified standing facts without creating new
+candidate answers. Explicit US authorization, combined present/future US visa
+assistance, relocation and employment restrictions have narrow question
+templates; an unspecified or multi-country job does not inherit US eligibility.
+Contact residence is separate from the job country. Verified current graduate
+Computer Science study can satisfy the exact graduate-study question without
+claiming completion or a particular degree focus.
+
+Choice derivations bind the observed question, field reference and option list.
+Recorded discovery through Simplify can select a unique observed Job Board
+category. Office choices use only observed US locations when the job is in the
+US and both relocation and office willingness are verified. Calendar availability
+may select “One month +” only when its earliest possible date exceeds one
+calendar month from assessment; a saved month never becomes an invented exact
+start date. Existing verified profile URLs can populate an optional links field.
+The exact optional cool-work prompt can receive a proposed achievement from
+the selected verified resume and verified job description, still requiring
+portal review. Travel, residency duration, exact residency start dates, degree
+focus and differently scoped screening questions remain candidate handoffs.
+These mappings are covered by synthetic tests, not new live-site validation.
