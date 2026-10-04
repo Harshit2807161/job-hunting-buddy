@@ -154,6 +154,8 @@ def test_service_recovers_without_pending_approved_rows_only_under_both_locks(co
     stalled(context, False)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
+    from jhb.applications import browser_connection
+    monkeypatch.setattr(browser_connection, "available", lambda *args, **kwargs: True)
     original = approvals.recover_stalled
     calls = []
     def recover(connection):
