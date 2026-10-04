@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -149,7 +150,7 @@ def test_source_errors_backoff_and_verification_handoffs_do_not_prepare(setup):
     assert pipeline.run_cycle(db, path, resolver=resolver, runner=lambda *a, **kw: None)["sources_checked"] == 0
 
 
-def test_source_notification_delivery_retries_without_rechecking_browser(setup, monkeypatch):
+def test_isolated_source_handoffs_remain_local_without_candidate_email(setup, monkeypatch):
     db, _ = setup
     candidate = job("private", "https://example.test/login")
     source_queue.enqueue(db, [candidate])
@@ -160,8 +161,9 @@ def test_source_notification_delivery_retries_without_rechecking_browser(setup, 
     assert db.execute("SELECT notified_at FROM application_sources").fetchone()[0] is None
     pipeline.notify_source_handoffs(db, send_email=True)
     pipeline.notify_source_handoffs(db, send_email=True)
-    assert len(attempts) == 2
-    assert db.execute("SELECT notified_at FROM application_sources").fetchone()[0]
+    assert attempts == []
+    assert db.execute("SELECT notified_at FROM application_sources").fetchone()[0] is None
+    assert list((config.ROOT / "private" / "notifications").glob("source-*.json"))
 
 
 def test_stale_running_leases_do_not_block_recovery_at_capacity(setup):
@@ -182,10 +184,10 @@ def test_preparation_timeout_is_bounded_and_writes_failure_packet(setup):
     async def runner(candidate, book, **kwargs):
         await asyncio.sleep(30)
     result = pipeline.run_cycle(db, path, resolver=lambda *a, **kw: None, runner=runner, application_timeout=1)
-    assert result["states"] == {"failed": 1}
+    assert result["states"] == {"retry": 1}
     row = db.execute("SELECT state,packet FROM applications").fetchone()
-    assert row["state"] == "failed"
-    assert "TimeoutError" in __import__('pathlib').Path(row["packet"]).read_text()
+    assert row["state"] == "retry"
+    assert "TimeoutError" in Path(row["packet"]).read_text()
 
 
 def test_synthetic_demo_discovery_question_answer_resume_and_review(setup, capsys):
@@ -263,3 +265,103 @@ def test_incompatible_answer_handoff_does_not_retry_without_new_input(setup):
     assert first["auto_requeued"] == 0
     assert db.execute("SELECT state FROM applications").fetchone()[0] == "waiting_input"
     assert pipeline.run_cycle(db, path, resolver=lambda *a, **kw: None, runner=runner)["applications_prepared"] == 0
+
+
+def test_transient_preparation_recovers_after_backoff_without_reprocessing_review(setup):
+    db, path = setup
+    queue.enqueue(db, [job('transient', 'https://job-boards.greenhouse.io/example/jobs/900')])
+    seen = []
+    async def runner(candidate, book, **kwargs):
+        seen.append(candidate['dedupe_hash'])
+        if len(seen) == 1:
+            raise ConnectionError('Private exception text must never appear')
+        return {'state': 'waiting_review', 'filled': [], 'events': []}, path.parent/'review.html'
+    first = pipeline.run_cycle(db, path, runner=runner)
+    assert first['states'] == {'retry': 1}
+    assert first['technical_retries'] == 1
+    row = db.execute('SELECT * FROM applications').fetchone()
+    assert row['attempts'] == 1 and row['error_kind'] == 'ConnectionError'
+    assert 'Private exception text' not in Path(row['packet']).read_text()
+    assert pipeline.run_cycle(db, path, runner=runner)['applications_prepared'] == 0
+    db.execute('UPDATE applications SET available_at=0')
+    db.commit()
+    assert pipeline.run_cycle(db, path, runner=runner)['states'] == {'waiting_review': 1}
+    assert seen[0] == seen[1]
+    assert pipeline.run_cycle(db, path, runner=runner)['applications_prepared'] == 0
+
+
+def test_technical_retry_budget_is_durable_and_never_reset_by_cron(setup):
+    db, path = setup
+    queue.enqueue(db, [job('always-transient', 'https://job-boards.greenhouse.io/example/jobs/901')])
+    async def runner(*args, **kwargs):
+        return {'state': 'failed', 'retryable': True, 'error_kind': 'browser_mechanics',
+                'filled': [], 'events': []}, path.parent/'review.html'
+    for attempt in range(1, 4):
+        summary = pipeline.run_cycle(db, path, runner=runner)
+        assert summary['states'] == ({'retry': 1} if attempt < 3 else {'failed': 1})
+        assert db.execute('SELECT attempts FROM applications').fetchone()[0] == attempt
+        db.execute('UPDATE applications SET available_at=0')
+        db.commit()
+    assert pipeline.run_cycle(db, path, runner=runner)['applications_prepared'] == 0
+    assert db.execute('SELECT state FROM applications').fetchone()[0] == 'failed'
+
+
+def test_legacy_technical_packet_recovery_does_not_reinterpret_safety_failures(setup):
+    db, path = setup
+    queue.enqueue(db, [job('old-transient', 'https://job-boards.greenhouse.io/example/jobs/902'),
+                       job('old-rejected', 'https://job-boards.greenhouse.io/example/jobs/903')])
+    items = [queue.claim(db), queue.claim(db)]
+    for item, exception in zip(items, ['FileNotFoundError', 'ValueError']):
+        directory = config.ROOT/'private'/'applications'/item['job_hash']
+        booklet.write_private(directory/'packet.json', {'state': 'failed', 'reason': f'Preparation failed: {exception}',
+                                                       'filled': [], 'events': [], 'submitted': False})
+        queue.finish(db, item['job_hash'], 'failed', directory/'review.html')
+    assert pipeline.recover_technical_failures(db) == 1
+    assert pipeline.recover_technical_failures(db) == 0
+    states = {r['job_hash']:r['state'] for r in db.execute('SELECT * FROM applications')}
+    assert states[items[0]['job_hash']] == 'retry'
+    assert states[items[1]['job_hash']] == 'failed'
+    assert queue.claim(db)['attempts'] == 2
+
+
+def test_capacity_backlog_is_reported_without_reopening_protected_drafts(setup):
+    db, path = setup
+    queue.enqueue(db, [job('review', 'https://job-boards.greenhouse.io/example/jobs/904'),
+                       job('queued', 'https://job-boards.greenhouse.io/example/jobs/905')])
+    item = queue.claim(db)
+    queue.finish(db, item['job_hash'], 'waiting_review')
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Capacity full; no protected draft may be re-opened')
+    summary = pipeline.run_cycle(db, path, runner=forbidden, max_active_drafts=1)
+    assert summary['capacity_blocked'] is True
+    assert summary['backlog']['applications'] == 1
+    assert summary['backlog']['active_drafts'] == 1
+    assert summary['applications_prepared'] == 0
+
+
+@pytest.mark.parametrize("extra", [{"missing": [{"question": "A new factual answer"}]},
+                                   {"verification": "email-code"}, {"submitted": True}])
+def test_technical_packet_with_candidate_handoff_or_submission_never_auto_recovers(setup, extra):
+    db, _ = setup
+    queue.enqueue(db, [job("protected-failure", "https://job-boards.greenhouse.io/example/jobs/906")])
+    item = queue.claim(db)
+    directory = config.ROOT / "private" / "applications" / item["job_hash"]
+    booklet.write_private(directory / "packet.json", {
+        "state": "failed", "retryable": True, "error_kind": "TimeoutError", **extra,
+    })
+    queue.finish(db, item["job_hash"], "failed", directory / "review.html")
+    assert pipeline.recover_technical_failures(db) == 0
+    assert db.execute("SELECT state FROM applications").fetchone()[0] == "failed"
+
+
+def test_source_null_lease_recovers_without_resetting_budget(setup):
+    db, _ = setup
+    source_queue.enqueue(db, [job("orphaned-source", "https://example.test/job")])
+    source_queue.claim(db)
+    db.execute("UPDATE application_sources SET lease_until=NULL")
+    db.commit()
+    assert source_queue.claim(db)["attempts"] == 2
+    db.execute("UPDATE application_sources SET lease_until=NULL,attempts=3")
+    db.commit()
+    assert source_queue.claim(db) is None
+    assert db.execute("SELECT state FROM application_sources").fetchone()[0] == "failed"

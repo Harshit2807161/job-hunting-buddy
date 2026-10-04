@@ -93,3 +93,49 @@ def test_stale_preparation_finish_preserves_confirmed_submission(conn, stale_sta
 
     assert dict(conn.execute("SELECT * FROM applications").fetchone()) == before
     assert queue.claim(conn) is None
+
+
+@pytest.mark.parametrize("state", ["submitted", "waiting_review", "skipped", "waiting_input", "waiting_login", "waiting_captcha"])
+def test_technical_retry_cannot_resume_protected_or_candidate_states(conn, state):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/9000")])
+    item = queue.claim(conn)
+    queue.finish(conn, item["job_hash"], state)
+    assert queue.retry(conn, item["job_hash"], error_kind="TimeoutError", retry_seconds=0) is False
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == state
+    assert queue.claim(conn) is None
+
+
+@pytest.mark.parametrize("state", ["submitted", "waiting_review", "skipped"])
+def test_stale_failed_finish_cannot_downgrade_protected_application(conn, state):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/9001")])
+    item = queue.claim(conn)
+    queue.finish(conn, item["job_hash"], state, "protected.html")
+    before = dict(conn.execute("SELECT * FROM applications").fetchone())
+    queue.finish(conn, item["job_hash"], "failed", "stale.html")
+    assert dict(conn.execute("SELECT * FROM applications").fetchone()) == before
+
+
+def test_null_running_lease_recovers_and_budget_stops(conn):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/9002")])
+    queue.claim(conn)
+    conn.execute("UPDATE applications SET lease_until=NULL")
+    conn.commit()
+    assert queue.claim(conn)["attempts"] == 2
+    conn.execute("UPDATE applications SET lease_until=NULL,attempts=3")
+    conn.commit()
+    assert queue.claim(conn) is None
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "failed"
+
+
+def test_existing_queue_schema_receives_retry_metadata_without_losing_rows():
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE applications(job_hash TEXT PRIMARY KEY,job_json TEXT NOT NULL,"
+               "state TEXT DEFAULT 'queued',lease_until INTEGER,attempts INTEGER DEFAULT 0,"
+               "updated_at INTEGER NOT NULL,packet TEXT,notified_at INTEGER)")
+    db.execute("INSERT INTO applications(job_hash,job_json,state,updated_at) VALUES('legacy','{}','submitted',1)")
+    db.commit()
+    queue.initialize(db)
+    row = db.execute("SELECT * FROM applications").fetchone()
+    assert row["state"] == "submitted" and row["available_at"] == 0 and row["error_kind"] is None
+    db.close()

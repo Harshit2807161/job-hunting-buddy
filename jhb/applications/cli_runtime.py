@@ -57,7 +57,9 @@ def _settled_click(backend, cdp, wait, click_at_xy):
                 arguments=[{"value": value} for value in (x, y, viewport["clientWidth"], viewport["clientHeight"])],
                 functionDeclaration=r"""function(x,y,width,height){
                   const doc=this.ownerDocument, view=doc.defaultView, blocker=doc.elementFromPoint(x,y);
+                  const valueContainer=this.getAttribute('role')==='combobox'?this.closest('.select__value-container'):null;
                   const correct=!!blocker&&(blocker===this||this.contains(blocker)||
+                    (valueContainer?.contains(blocker)&&!blocker.closest('button,a,[role=option]'))||
                     [...(this.labels||[])].some(label=>label===blocker||label.contains(blocker)));
                   if(correct)return {hit:true};
                   const candidates=[[width/2,height/2],[x,height/2],[width/2,height*.35],[width/2,height*.65]];
@@ -112,13 +114,25 @@ FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}))"""
 
 
-def option_matches(label, value, *, field_id=""):
+def option_matches(label, value, *, field_id="", field_label=""):
     """Closed, auditable display translations; no fuzzy screening answers."""
     label = normalize(label)
     if isinstance(value, bool):
         if field_id == "veteran_status" and value is False:
             return label in {"i am not a protected veteran", "i am not a veteran", "not a veteran"}
         return label in ({"yes", "true"} if value else {"no", "false", "no, i am not a veteran or active member"})
+    if (normalize(field_label) in {"salary expectations", "desired salary", "what are your salary expectations?",
+                                  "what are your base salary expectations?", "what are your yearly salary expectations?"}
+            and isinstance(value, (int, float)) and 20000 <= value <= 1000000):
+        # Salary categories share endpoints. Use the conventional lower-inclusive,
+        # upper-exclusive bucket; the requested amount itself stays unchanged.
+        band = re.fullmatch(r"\$([\d,]+)\s*[-–]\s*\$([\d,]+)", label)
+        if band:
+            low, high = (int(v.replace(',', '')) for v in band.groups())
+            return 20000 <= low < high <= 1000000 and low <= value < high
+        above = re.fullmatch(r"\$([\d,]+)\s*-?\s*\+", label)
+        if above:
+            return 20000 <= int(above[1].replace(',', '')) <= value
     expected = normalize(str(value))
     if label == expected:
         return True
@@ -144,17 +158,61 @@ def option_matches(label, value, *, field_id=""):
 
 
 def dispatch(request, helpers):
-    cdp, js, wait = helpers["cdp"], helpers["js"], helpers["wait"]
+    raw_cdp, js, wait = helpers["cdp"], helpers["js"], helpers["wait"]
+    woke_for_scroll = False
+    def cdp(method, **params):
+        nonlocal woke_for_scroll
+        if helpers.get("jhb_cdp_timeout") and method.startswith("Input."):
+            params["_response_timeout"] = helpers["jhb_cdp_timeout"]
+        try:
+            return raw_cdp(method, **params)
+        except (TimeoutError, RuntimeError) as exc:
+            scroll_timeout = (method == "Input.dispatchMouseEvent" and params.get("type") == "mouseWheel"
+                              and (isinstance(exc, TimeoutError) or "timed out" in str(exc)))
+            if not scroll_timeout or woke_for_scroll or not request.get("target_id"):
+                raise
+            owned = helpers["current_tab"]()
+            if (owned["targetId"] != request["target_id"] or not is_greenhouse(owned["url"])
+                    or request.get("expected_url") and greenhouse_identity(owned["url"]) != greenhouse_identity(request["expected_url"])):
+                raise ValueError("Owned application tab changed during recovery")
+            # The official skill permits waking a hidden tab after a timed-out
+            # native scroll. Retry once, then let settled geometry verify it.
+            helpers["activate_tab"](owned["targetId"])
+            wait(0.5)
+            woke_for_scroll = True
+            return raw_cdp(method, **params)
 
     def ax():
         return cdp("Accessibility.getFullAXTree")["nodes"]
 
     def click(backend):
-        _settled_click(backend, cdp, wait, helpers["click_at_xy"])
+        def native_click(x, y):
+            # Clear a pointer press retained across CLI calls before the normal
+            # coordinate click. Move first so React receives pointer entry.
+            cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y,
+                button="left", buttons=0, clickCount=1)
+            cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y, buttons=0)
+            cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y,
+                button="left", buttons=1, clickCount=1)
+            cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y,
+                button="left", buttons=0, clickCount=1)
+        _settled_click(backend, cdp, wait, native_click)
 
     def identifier(node):
         attrs = cdp("DOM.describeNode", backendNodeId=node["backendDOMNodeId"])["node"].get("attributes", [])
         return dict(zip(attrs[0::2], attrs[1::2])).get("id")
+
+    def dismiss_other_dropdowns(ref):
+        # Recover menus left expanded by an earlier interrupted action. Escape
+        # closes the transient menu without selecting or clearing an answer.
+        expanded = js("[...document.querySelectorAll('input[role=combobox][aria-expanded=true]')].map(e=>e.id)")
+        for node in ax() if expanded else []:
+            if node.get("role", {}).get("value") != "combobox":
+                continue
+            identity = identifier(node)
+            if identity in expanded and identity != ref:
+                cdp("DOM.focus", backendNodeId=node["backendDOMNodeId"])
+                keypress("Escape")
 
     def find(field):
         for node in ax():
@@ -251,13 +309,37 @@ def dispatch(request, helpers):
             helpers["new_tab"](url)
             helpers["wait_for_load"]()
             wait(1)
+        woke_tab = False
+        try:
+            js("document.readyState")
+        except (TimeoutError, RuntimeError) as exc:
+            if not isinstance(exc, TimeoutError) and "Runtime.evaluate timed out" not in str(exc):
+                raise
+            # A discarded/background-frozen page can still exist in Target's
+            # list while all page commands time out. Wake only this exact job,
+            # once, without resetting Chrome or closing any candidate draft.
+            owned = helpers["current_tab"]()
+            if greenhouse_identity(owned["url"]) != identity:
+                raise ValueError("Owned application tab changed during recovery")
+            helpers["activate_tab"](owned["targetId"])
+            wait(0.5)
+            js("document.readyState")
+            woke_tab = True
+        actual_url = js("location.href")
+        if greenhouse_identity(actual_url) != identity:
+            return {"url": actual_url, "target_id": helpers["current_tab"]()["targetId"],
+                    "guarded": False, "redirected": True}
         cdp("Page.addScriptToEvaluateOnNewDocument", source=GUARD_SCRIPT)
         js(GUARD_SCRIPT)
-        return {"url": js("location.href"), "reused_tab": bool(matching), "guarded": True,
+        if not js("window.__jhbGuard === true"):
+            raise ValueError("Application submission guard was not installed")
+        return {"url": js("location.href"), "reused_tab": bool(matching), "guarded": True, "woke_tab": woke_tab,
                 "target_id": helpers["current_tab"]()["targetId"]}
 
     if not is_greenhouse(js("location.href")):
         return {"handoff": "unsupported", "reason": "Current page is outside the Greenhouse v1 scope"}
+    if request.get("expected_url") and greenhouse_identity(js("location.href")) != greenhouse_identity(request["expected_url"]):
+        raise ValueError("Owned application tab changed during recovery")
     if operation == "education":
         count = request["count"]
         if not isinstance(count, int) or not 1 <= count <= 5:
@@ -340,6 +422,11 @@ def dispatch(request, helpers):
         try:
             click(backend)
             wait(0.2)
+            if not options_for(field):
+                # React Select can focus its input without expanding on a click.
+                # Native ArrowDown opens that focused combobox without choosing.
+                keypress("ArrowDown")
+                wait(0.2)
             labels = [n.get("name", {}).get("value", "") for n in options_for(field)]
             return {"choices": list(dict.fromkeys(labels))[:50], "truncated": len(labels)>50, "type": kind}
         finally:
@@ -387,6 +474,7 @@ def dispatch(request, helpers):
                     return {"verified": True, "filename": path.name, "upload_receipt": mark_upload(field["label"])}
                 wait(0.25)
             raise ValueError("Uploaded filename did not appear in the form")
+        dismiss_other_dropdowns(ref)
         backend = find(field)
         if kind == "checkbox":
             if not isinstance(value, bool):
@@ -404,7 +492,7 @@ def dispatch(request, helpers):
         if kind == "select":
             item = next((item for item in js(FIELD_DATA) if item["id"] == ref), None)
             options = [o for o in (item or {}).get("options", []) if not o["disabled"]]
-            matches = [i for i, o in enumerate(options) if option_matches(o["label"], value, field_id=ref)]
+            matches = [i for i, o in enumerate(options) if option_matches(o["label"], value, field_id=ref, field_label=field["label"])]
             if len(matches) != 1:
                 raise ValueError("Stored answer does not uniquely match a native select option")
             selected = options[matches[0]]
@@ -435,12 +523,16 @@ def dispatch(request, helpers):
             before = control_value(ref)
             if ref == "country" and value == "United States" and before and "iti__us" in before["countryCode"]:
                 return {"verified": True, "selected": "United States (+1)"}
-            if before and option_matches(before["selected"], value, field_id=ref) and not before["invalid"]:
+            if before and option_matches(before["selected"], value, field_id=ref, field_label=field["label"]) and not before["invalid"]:
                 return {"verified": True}
             click(backend)
             wait(0.15)
             options = options_for(field)
-            match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref)]
+            if not options:
+                keypress("ArrowDown")
+                wait(0.2)
+                options = options_for(field)
+            match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref, field_label=field["label"])]
             if not match:
                 query = ("Yes" if value else "No") if isinstance(value, bool) else (str(value).split(",")[0] if ref == "candidate-location" else str(value))
                 queries = [query]
@@ -451,7 +543,7 @@ def dispatch(request, helpers):
                     for _ in range(12):
                         wait(0.25)
                         options = options_for(field)
-                        match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref)]
+                        match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref, field_label=field["label"])]
                         if match:
                             break
                     if match:

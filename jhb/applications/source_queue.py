@@ -59,11 +59,11 @@ def claim(conn, *, lease_seconds=300, max_attempts=3):
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE application_sources SET state='failed',lease_until=NULL,updated_at=? "
-                     "WHERE state='running' AND lease_until < ? AND attempts >= ?", (now, now, max_attempts))
+                     "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ?", (now, now, max_attempts))
         row = conn.execute(
             "SELECT * FROM application_sources WHERE attempts < ? AND "
             "((state IN ('queued','retry') AND available_at <= ?) OR "
-            "(state='running' AND lease_until < ?)) ORDER BY updated_at,source_job_hash LIMIT 1",
+            "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) ORDER BY updated_at,source_job_hash LIMIT 1",
             (max_attempts, now, now),
         ).fetchone()
         if row is None:

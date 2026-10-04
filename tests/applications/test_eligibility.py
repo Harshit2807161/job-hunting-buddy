@@ -56,6 +56,52 @@ def test_negated_citizenship_does_not_hide_separate_clearance_requirement():
     assert {item["category"] for item in findings} == {"security_clearance"}
 
 
+@pytest.mark.parametrize("heading", ["Required:", "Minimum requirements:", "Basic Qualifications", "Qualifications"])
+def test_bare_clearance_bullet_under_required_heading_is_excluded(heading):
+    text = f"<h2>{heading}</h2><ul><li>TS/SCI with Polygraph</li><li>No prior experience required</li></ul>"
+    findings = eligibility.restrictions(text)
+    assert {item["category"] for item in findings} == {"security_clearance", "polygraph"}
+    assert all(item["evidence"] == "TS/SCI with Polygraph" for item in findings)
+
+
+@pytest.mark.parametrize("heading", ["Desired:", "Preferred Qualifications", "Nice-to-Have"])
+def test_optional_clearance_section_is_not_a_mandatory_condition(heading):
+    assert eligibility.restrictions(f"Required:\nPython experience\n{heading}\nCurrent TS/SCI clearance\nAbility to obtain security clearance") == []
+
+
+def test_required_heading_does_not_turn_customer_description_into_condition():
+    assert eligibility.restrictions("Required:\nExperience supporting security-cleared customers\nDesired:\nTS/SCI with Polygraph") == []
+
+
+def test_itar_enumerated_residency_and_export_license_alternatives_are_preserved():
+    text = ("To conform to US Government export regulations, applicant must be a (i) US citizen or national, "
+            "(ii) US lawful, permanent resident (aka green card holder), (iii) Refugee under 8 U.S.C. § 1157, "
+            "or (iv) Asylee under 8 U.S.C. § 1158, or be eligible to obtain the required authorizations "
+            "from the US Department of State.")
+    assert eligibility.restrictions(text) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Applicant must be a US citizen or otherwise eligible for an export control license.",
+    "Applicant must be a US citizen, lawful permanent resident, or refugee.",
+])
+def test_export_alternatives_do_not_become_citizenship_only_requirements(text):
+    assert eligibility.restrictions(text) == []
+
+
+def test_alternative_citizenship_does_not_mask_separate_mandatory_clearance():
+    assert {x['category'] for x in eligibility.restrictions(
+        "Applicants must be US citizens or permanent residents, security clearance required."
+    )} == {"security_clearance"}
+
+
+def test_required_clearance_bullet_stops_worker_before_browser(tmp_path, monkeypatch):
+    monkeypatch.setattr("jhb.applications.cli_browser.BrowserUseCLI", lambda: pytest.fail("Excluded job opened browser"))
+    result, _ = asyncio.run(worker.run_job(job("Required:\nTS/SCI with Polygraph\nDesired:\nCloud experience"),
+                                          {"roles": {"sde": {}, "ml": {}}}, artifacts=tmp_path))
+    assert result['state'] == 'skipped'
+
+
 def job(description="Ordinary application development position."):
     item = {"dedupe_hash": "a"*64, "title": "Software Engineer", "company": "Synthetic",
             "url": "https://job-boards.greenhouse.io/example/jobs/123", "role_classes": "swe"}

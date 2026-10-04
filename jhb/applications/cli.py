@@ -192,6 +192,8 @@ def main(argv=None):
             notify_pending(conn, send_email=send_email)
             result = drain_once(conn, args.booklet, planner_name=args.planner, headless=args.headless,
                                 interactive=args.interactive, review_seconds=args.review_seconds)
+            from .questions import notify_new
+            notify_new(conn, args.booklet, send_email=send_email)
             notify_pending(conn, send_email=send_email)
             print(result["state"] if result else "No queued applications")
     finally:

@@ -14,12 +14,14 @@ CREATE TABLE IF NOT EXISTS applications (
  state TEXT NOT NULL DEFAULT 'queued',
  lease_until INTEGER,
  attempts INTEGER NOT NULL DEFAULT 0,
+ available_at INTEGER NOT NULL DEFAULT 0,
+ error_kind TEXT,
  updated_at INTEGER NOT NULL,
  packet TEXT,
  notified_at INTEGER
 );
 """
-STATES = {"queued", "running", "waiting_review", "waiting_input", "waiting_login",
+STATES = {"queued", "running", "retry", "waiting_review", "waiting_input", "waiting_login",
           "waiting_captcha", "unsupported", "failed", "submitted", "skipped"}
 
 
@@ -52,6 +54,11 @@ def greenhouse_identity(url: str):
 
 def initialize(conn):
     conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(applications)")}
+    for name, declaration in [("available_at", "INTEGER NOT NULL DEFAULT 0"), ("error_kind", "TEXT")]:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE applications ADD COLUMN {name} {declaration}")
+    conn.commit()
 
 
 def enqueue(conn, jobs) -> int:
@@ -77,40 +84,56 @@ def enqueue(conn, jobs) -> int:
     return count
 
 
-def claim(conn, lease_seconds=1200):
+def claim(conn, lease_seconds=1200, *, max_attempts=3):
     initialize(conn)
     now = int(time.time())
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE applications SET state='failed',lease_until=NULL,updated_at=? "
-                     "WHERE state='running' AND lease_until < ? AND attempts >= 3", (now, now))
-        row = conn.execute("SELECT * FROM applications WHERE (state='queued' OR "
-                           "(state='running' AND lease_until < ?)) AND attempts < 3 "
-                           "ORDER BY updated_at LIMIT 1", (now,)).fetchone()
+                     "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ?",
+                     (now, now, max_attempts))
+        row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
+                           "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
+                           "ORDER BY updated_at,job_hash LIMIT 1", (now, now, max_attempts)).fetchone()
         if not row:
             conn.commit()
             return None
         conn.execute("UPDATE applications SET state='running',lease_until=?,attempts=attempts+1,updated_at=? WHERE job_hash=?",
                      (now + lease_seconds, now, row["job_hash"]))
         conn.commit()
-        return {**dict(row), "job": json.loads(row["job_json"])}
+        return {**dict(row), "attempts": row["attempts"]+1, "job": json.loads(row["job_json"])}
     except BaseException:
         conn.rollback()
         raise
 
 
 def finish(conn, job_hash, state, packet=None):
-    if state not in STATES - {"queued", "running"}:
+    if state not in STATES - {"queued", "running", "retry"}:
         raise ValueError("Invalid terminal/handoff state")
     # A preparation worker can finish from an older snapshot after an
     # interactive submission was confirmed. Preserve that terminal record.
-    conn.execute("UPDATE applications SET state=?,lease_until=NULL,updated_at=?,packet=?,notified_at=NULL "
-                 "WHERE job_hash=? AND (state!='submitted' OR ?='submitted')",
-                 (state, int(time.time()), str(packet) if packet else None, job_hash, state))
+    conn.execute("UPDATE applications SET state=?,lease_until=NULL,available_at=0,error_kind=NULL,"
+                 "updated_at=?,packet=?,notified_at=NULL "
+                 "WHERE job_hash=? AND (state NOT IN ('submitted','waiting_review','skipped') OR state=? "
+                 "OR ?='submitted' OR (state='waiting_review' AND ?='skipped'))",
+                 (state, int(time.time()), str(packet) if packet else None, job_hash, state, state, state))
     conn.commit()
 
 
 def resume(conn, job_hash):
-    conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,updated_at=? "
+    conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,updated_at=? "
                  "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submitted','skipped')", (int(time.time()), job_hash))
     conn.commit()
+
+
+def retry(conn, job_hash, *, error_kind, packet=None, retry_seconds=300, max_attempts=3):
+    """Retry only classified technical failures; protected handoffs never qualify."""
+    now = int(time.time())
+    changed = conn.execute(
+        "UPDATE applications SET state='retry',available_at=?,error_kind=?,lease_until=NULL,"
+        "updated_at=?,packet=COALESCE(?,packet),notified_at=NULL WHERE job_hash=? "
+        "AND state IN ('running','failed') AND attempts < ?",
+        (now+retry_seconds, error_kind, now, str(packet) if packet else None, job_hash, max_attempts),
+    ).rowcount
+    conn.commit()
+    return bool(changed)

@@ -21,10 +21,11 @@ hands them to the candidate; it never submits them.
   A manager lock prevents overlapping batches; independent planners and jobs
   run with bounded concurrency. Each CLI operation serializes the browser lane
   and attaches to its job's own tab.
-- A signed-in `codex exec` instance proposes schema-constrained field bindings.
-  It receives field labels and answer keys, without answer values or credentials.
-  Python validates the plan and performs the approved actions. A deterministic
-  planner is also available for fixtures and troubleshooting.
+- Approved field/key pairs use validated deterministic bindings by default,
+  avoiding a model round trip for already-known facts. An optional signed-in
+  `codex exec` audit receives labels and keys without values or credentials;
+  its failures fall back to the same validated plan. Python owns the values
+  and browser actions in both modes.
 - The live adapter handles verified text input, Greenhouse-style custom
   comboboxes and PDF uploads. A displayed filename alone does not distinguish
   resume variants; an existing upload is replaced from the selected source.

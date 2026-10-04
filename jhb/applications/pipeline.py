@@ -12,11 +12,62 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 
 from .. import config, notify
 from . import booklet, queue, source_queue
+
+TRANSIENT_KINDS = {"TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
+                   "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError",
+                   "browser_transport", "browser_mechanics", "planner_transport"}
+
+
+def _exception_recovery(exc):
+    kind = type(exc).__name__
+    if kind in TRANSIENT_KINDS:
+        return {"retryable": True, "error_kind": kind}
+    # Transport wrappers deliberately expose fixed messages, not site content.
+    if isinstance(exc, RuntimeError):
+        if str(exc) in {"Browser Use CLI failed; run browser-use --doctor",
+                        "Browser Use CLI returned no structured result"}:
+            return {"retryable": True, "error_kind": "browser_transport"}
+        if str(exc) in {"Codex planning failed; check local sign-in, usage limits, and network access",
+                        "Codex produced no structured plan"}:
+            return {"retryable": True, "error_kind": "planner_transport"}
+    return {"retryable": False, "error_kind": kind}
+
+
+def _recoverable(result):
+    return (result.get("state") == "failed" and result.get("retryable") is True
+            and result.get("error_kind") in TRANSIENT_KINDS and not result.get("missing")
+            and not result.get("verification") and not result.get("submitted"))
+
+
+def recover_technical_failures(conn):
+    """Migrate old sanitized technical packets once, without resetting attempts."""
+    changed = 0
+    for row in conn.execute("SELECT job_hash,packet FROM applications WHERE state='failed' AND attempts < 3").fetchall():
+        if not row["packet"]:
+            continue
+        path = Path(row["packet"]).parent / "packet.json"
+        try:
+            if not path.resolve().is_relative_to((config.ROOT / "private" / "applications").resolve()) or path.stat().st_size > 2_000_000:
+                continue
+            result = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(result, dict):
+            continue
+        # Prior workers stored only the class name. Generic ValueError or
+        # RuntimeError could be a deliberate safety rejection and stays stopped.
+        legacy = re.fullmatch(r"Preparation failed: (\w+)", str(result.get("reason", "")))
+        if legacy and legacy[1] in TRANSIENT_KINDS and "retryable" not in result:
+            result = {**result, "retryable": True, "error_kind": legacy[1]}
+        if _recoverable(result):
+            changed += queue.retry(conn, row["job_hash"], error_kind=result["error_kind"], retry_seconds=0)
+    return changed
 
 
 def _limit(name, fallback, maximum):
@@ -46,28 +97,36 @@ def _source_artifact(item, outcome):
 
 
 def notify_source_handoffs(conn, *, send_email=False):
-    """Persist every source verification/error handoff and retry failed delivery."""
+    """Keep technical source outcomes local; digest sustained auth challenges."""
     source_queue.initialize(conn)
     rows = conn.execute("SELECT * FROM application_sources WHERE state IN "
                         "('waiting_login','waiting_captcha','unknown','failed') AND notified_at IS NULL").fetchall()
     for row in rows:
-        job = json.loads(row["job_json"])
         notification = {"source_job_hash": row["source_job_hash"], "state": row["state"],
                         "board": row["board"], "evidence_path": row["evidence_path"], "submitted": False}
         filename = "source-" + hashlib.sha256(row["source_job_hash"].encode()).hexdigest() + ".json"
         booklet.write_private(config.ROOT / "private" / "notifications" / filename, notification)
-        if send_email:
-            details = (f"Application source status: {row['state']}\nDetected board: {row['board']}\n"
-                       f"Local evidence: {row['evidence_path']}\nSource ID: {row['source_job_hash']}\n"
-                       "The source checker needs review or verification. No application was submitted.\n"
-                       "Resolve the issue, then use jhb-apply source-resume <Source ID> to retry.")
-            if not notify.send([job], subject_prefix=f"[source {row['state']}] ", details=details):
-                continue
-        if not send_email:
-            continue
-        conn.execute("UPDATE application_sources SET notified_at=? WHERE source_job_hash=?",
-                     (int(time.time()), row["source_job_hash"]))
-        conn.commit()
+    if not send_email:
+        return
+    now = int(time.time())
+    aged = [row for row in rows if row["state"] in {"waiting_login", "waiting_captcha"}
+            and row["updated_at"] <= now - 3600]
+    by_key = {f"source-auth:{row['source_job_hash']}:{row['state']}": row for row in aged}
+    if not by_key:
+        return
+    from . import notices
+    def send(keys):
+        jobs = [json.loads(by_key[key]["job_json"]) for key in sorted(keys)]
+        return notify.send(jobs, subject_prefix="[Source access review] ", details=(
+            "These source checks have remained blocked by site authentication or a verification "
+            "challenge for at least one hour. The isolated source checker does not reuse your "
+            "personal browser session. No application was submitted. Details remain in "
+            "private/source-checks; use source-status to inspect and source-resume after resolving access."))
+    delivered = notices.deliver(conn, by_key, "source_auth_digest", send, now=now)
+    for key in delivered:
+        conn.execute("UPDATE application_sources SET notified_at=? WHERE source_job_hash=? AND state=?",
+                     (now, by_key[key]["source_job_hash"], by_key[key]["state"]))
+    conn.commit()
 
 
 def _requeue_answered_handoff(conn, job, result, book_path):
@@ -116,12 +175,13 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
     async with semaphore:
         try:
             result, packet = await asyncio.wait_for(runner(item["job"], book, planner_name=planner_name), timeout=timeout)
-            if not isinstance(result, dict) or result.get("state") not in queue.STATES - {"queued", "running", "submitted"}:
+            if not isinstance(result, dict) or result.get("state") not in queue.STATES - {"queued", "running", "retry", "submitted"}:
                 raise ValueError("Invalid preparation outcome")
             return result, packet
         except Exception as exc:
             from .worker import write_packet
-            result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}", "events": [], "filled": []}
+            result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
+                      "events": [], "filled": [], **_exception_recovery(exc)}
             directory = config.ROOT / "private" / "applications" / item["job_hash"]
             packet = await write_packet(None, directory, item["job"], result)
             return result, packet
@@ -154,10 +214,12 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
 
     queue.initialize(conn)
     source_queue.initialize(conn)
+    recovered = recover_technical_failures(conn)
     notify_pending(conn, send_email=send_email)
     notify_source_handoffs(conn, send_email=send_email)
     summary = {"sources_checked": 0, "boards": {}, "applications_queued": 0,
-               "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": 0}
+               "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": 0,
+               "technical_recovered": recovered, "technical_retries": 0}
     sources = []
     source_lease = math.ceil(source_limit / concurrency) * (source_timeout + 10) + 120
     for _ in range(source_limit):
@@ -227,10 +289,13 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                 collect(item["job"], result, book_path, observed_book=book)
                 reconcile(item["job"], result, book_path)
                 queue.finish(conn, item["job_hash"], result["state"], packet)
+                if _recoverable(result) and queue.retry(conn, item["job_hash"], error_kind=result["error_kind"],
+                                                       packet=packet, retry_seconds=300 * 2 ** (item["attempts"]-1)):
+                    summary["technical_retries"] += 1
                 if _requeue_answered_handoff(conn, item["job"], result, book_path):
                     summary["auto_requeued"] += 1
                 summary["applications_prepared"] += 1
-                state = result["state"]
+                state = conn.execute("SELECT state FROM applications WHERE job_hash=?", (item["job_hash"],)).fetchone()[0]
                 summary["states"][state] = summary["states"].get(state, 0) + 1
                 if state == "waiting_input":
                     summary["question_handoffs"] += 1
@@ -259,6 +324,16 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     # outcomes and submitted markers cannot create tracker entries here.
     from .tracking import sync_pending
     summary["submission_tracking"] = sync_pending(conn)
+    summary["backlog"] = {
+        "sources": conn.execute("SELECT COUNT(*) FROM application_sources WHERE state IN ('queued','retry')").fetchone()[0],
+        "applications": conn.execute("SELECT COUNT(*) FROM applications WHERE state IN ('queued','retry')").fetchone()[0],
+        "active_drafts": conn.execute("SELECT COUNT(*) FROM applications WHERE state IN "
+                                      "('waiting_review','waiting_input','waiting_login','waiting_captcha') OR "
+                                      "(state='running' AND lease_until > ?)", (int(time.time()),)).fetchone()[0],
+        "draft_limit": max_active_drafts,
+    }
+    summary["capacity_blocked"] = (summary["backlog"]["applications"] > 0
+                                   and summary["backlog"]["active_drafts"] >= max_active_drafts)
     return summary
 
 

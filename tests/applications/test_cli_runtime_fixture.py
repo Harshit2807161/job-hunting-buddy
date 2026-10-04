@@ -30,6 +30,38 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElement
 </script></html>'''
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_frozen_owned_tab_wakes_once_without_touching_other_tabs(changed):
+    from jhb.applications.cli_runtime import GUARD_SCRIPT
+    url = "https://job-boards.greenhouse.io/example/jobs/123"
+    activated, scripts, reads = [], [], []
+    def js(expression):
+        if expression == "document.readyState":
+            reads.append(expression)
+            if not activated:
+                raise RuntimeError("Runtime.evaluate timed out; expression: document.readyState")
+            return "complete"
+        if expression == GUARD_SCRIPT:
+            scripts.append(expression)
+        if expression == "window.__jhbGuard === true":
+            return bool(scripts)
+        if expression == "location.href":
+            return url
+    helpers = {"cdp":lambda *args,**kwargs:{}, "js":js, "wait":lambda seconds:None,
+               "click_at_xy":lambda *args:pytest.fail("Unexpected click"),
+               "list_tabs":lambda:[{"targetId":"owned-job","url":url},{"targetId":"unrelated","url":"https://example.test"}],
+               "switch_tab":lambda target:None, "activate_tab":lambda target:activated.append(target),
+               "current_tab":lambda:{"targetId":"owned-job","url":url if not changed else "https://example.test"}}
+    if changed:
+        with pytest.raises(ValueError,match="changed during recovery"):
+            dispatch({"operation":"open","url":url},helpers)
+        assert activated == scripts == []
+    else:
+        result=dispatch({"operation":"open","url":url},helpers)
+        assert result["guarded"] and result["woke_tab"] and result["reused_tab"]
+        assert activated == ["owned-job"] and len(reads)==2 and len(scripts)==1
+
+
 def test_cli_runtime_verifies_custom_dropdown_upload_and_blocks_submit(tmp_path):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(config.ROOT / ".local-browsers"))
     from playwright.sync_api import sync_playwright

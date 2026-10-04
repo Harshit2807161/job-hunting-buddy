@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -14,7 +15,26 @@ from .. import config, notify
 from . import booklet, queue
 from .browser import BrowserActions
 from .credentials import CredentialStore
-from .planner import CodexPlanner, deterministic_plan, key_for_field, validate_plan
+from .planner import CodexPlanner, completed_cs_degree_answer, deterministic_plan, key_for_field, validate_plan
+
+
+def failure_result(exc, actions=None):
+    """Classify transport/mechanics separately from unknown answers, without secrets."""
+    from .cli_browser import BrowserOperationError
+    kind = type(exc).__name__
+    retryable = isinstance(exc, (TimeoutError, ConnectionError, subprocess.TimeoutExpired, FileNotFoundError))
+    if isinstance(exc, BrowserOperationError) and exc.retryable:
+        kind, retryable = "browser_mechanics", True
+    elif isinstance(exc, RuntimeError) and str(exc) in {
+        "Browser Use CLI failed; run browser-use --doctor", "Browser Use CLI returned no structured result"
+    }:
+        kind, retryable = "browser_transport", True
+    event = {"event": "technical_failure", "kind": kind}
+    observed = getattr(actions, "last_failure", None)
+    if observed:
+        event.update({k: observed[k] for k in ("operation", "kind", "elapsed_seconds") if k in observed})
+    return {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
+            "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
 
 
 def _apply_phone_format(answers, policy):
@@ -54,7 +74,8 @@ def _question(field, key, reason=""):
 
 
 def role_for_job(job):
-    classes = set(str(job.get("role_classes", "")).split(","))
+    value = job.get("role_classes", "")
+    classes = set(value if isinstance(value, list) else str(value).split(","))
     if classes == {"swe"}: return "sde"
     if classes == {"ml"}: return "ml"
     return None
@@ -125,6 +146,19 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     school = re.sub(r"[^a-z0-9]", "", match[1])
                     answers["standing.school."+school] = booklet.answer(school in schools,
                         "Verified education records and explicit user instruction to reuse education history")
+        from .narratives import proposal
+        narrative_job = {**job, "observed_application_questions": [f["label"] for f in snapshot["fields"]]}
+        for field in snapshot["fields"]:
+            existing = answers.get(key_for_field(field, answers), {})
+            if existing.get("status") in {"verified", "declined"}:
+                continue
+            record = proposal(field, narrative_job, answers)
+            if record:
+                # Exact observed prompts and verified selected-role facts give
+                # these qualitative answers provenance, without new screening
+                # assumptions or a model round trip for known accomplishments.
+                answers["custom.grounded." + field["ref"]] = {
+                    **record, "question": field["label"], "field_ref": field["ref"]}
         fingerprint = json.dumps(snapshot, sort_keys=True)
         if fingerprint == previous:
             return {"state": "unsupported", "reason": "Continue did not reveal a new supported step; check blocked draft-save requests", "events": events, "filled": list(filled.values())}, actions
@@ -150,6 +184,11 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"]}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
             except ValueError as exc:
+                from .cli_browser import BrowserOperationError
+                if isinstance(exc, BrowserOperationError) and exc.retryable:
+                    # A stale control or interrupted widget is a technical retry,
+                    # never a new factual question for the candidate.
+                    raise
                 education = re.fullmatch(r"education\.(\d+)\.(school|major)", key or "")
                 fallback_key = f"standing.catalog.{education[1]}.{education[2]}" if education else None
                 fallback = answers.get(fallback_key, {})
@@ -209,14 +248,17 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
     if cli_actions and cli_actions.target_id:
         try:
             await cli_actions.screenshot(directory / "browser.png")
-            captured = True
-        except (RuntimeError, ValueError):
+            captured = (directory / "browser.png").is_file()
+        except Exception:
             pass  # A disconnected browser must not suppress the failure packet.
     elif page is not None:
         await page.screenshot(path=str(directory / "browser.png"), full_page=True)
         captured = True
     if captured:
-        (directory / "browser.png").chmod(0o600)
+        try:
+            (directory / "browser.png").chmod(0o600)
+        except OSError:
+            captured = False
     esc = lambda value: html.escape(str(value), quote=True)
     notes = "".join(f"<li>{esc(note)}</li>" for note in result.get("review_notes", []))
     rows = "".join(f'<tr><td>{esc(r["question"])}</td><td><pre>{esc(r["value"])}</pre></td><td>{esc(r["source"])}</td></tr>' for r in result.get("filled", []))
@@ -238,21 +280,38 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
 
 def notify_pending(conn, *, send_email=False):
     queue.initialize(conn)
+    from .notices import deliver, initialize as initialize_notices
+    initialize_notices(conn)
+    # Preserve delivery history when upgrading an existing installation, before
+    # a later worker rewrite can clear the older queue notification marker.
+    conn.execute("INSERT OR IGNORE INTO application_notice_delivery(notice_key,category,delivered_at) "
+                 "SELECT 'application-review:' || job_hash,'ready_reviews',notified_at FROM applications "
+                 "WHERE state='waiting_review' AND notified_at IS NOT NULL")
+    conn.commit()
+    ready = {}
     for row in conn.execute("SELECT * FROM applications WHERE state NOT IN ('queued','running','submitted') AND notified_at IS NULL").fetchall():
         job = json.loads(row["job_json"])
         notification = {"job_hash": row["job_hash"], "state": row["state"], "packet": row["packet"], "submitted": False}
         path = config.ROOT / "private" / "notifications" / (row["job_hash"] + ".json")
         booklet.write_private(path, notification)
-        if send_email:
-            details = f"Application status: {row['state']}\nLocal review packet: {row['packet']}\n" \
-                      f"Application ID: {row['job_hash']}\nNo application was submitted.\n" \
-                      "Open the local packet and use jhb-apply review <ID> to refill and take over."
-            if not notify.send([job], subject_prefix=f"[application {row['state']}] ", details=details):
-                continue
-        if not send_email:
-            continue
-        conn.execute("UPDATE applications SET notified_at=? WHERE job_hash=?", (int(time.time()), row["job_hash"]))
-        conn.commit()
+        # Operational failures, filters, authentication and field errors remain
+        # local. Required questions have their own deduplicated aggregate email.
+        if row["state"] == "waiting_review":
+            ready["application-review:" + row["job_hash"]] = (row, job)
+    if not send_email or not ready:
+        return
+    def send(keys):
+        selected = [ready[key] for key in sorted(keys)]
+        details = ["Applications are ready for your review. No application was submitted."]
+        for row, job in selected:
+            details += ["", f"{job['title']} · {job['company']}", f"Local review packet: {row['packet']}",
+                        f"Application ID: {row['job_hash']}", f"Take over: jhb-apply review {row['job_hash']}"]
+        return notify.send([job for row, job in selected], subject_prefix="[applications ready for review] ", details="\n".join(details))
+    for key in deliver(conn, ready, "ready_reviews", send):
+        row, _ = ready[key]
+        conn.execute("UPDATE applications SET notified_at=? WHERE job_hash=? AND state='waiting_review'",
+                     (int(time.time()), row["job_hash"]))
+    conn.commit()
 
 
 async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
@@ -273,11 +332,26 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
                       "eligibility": eligibility, "events": [{"event": "eligibility_handoff", "policy": eligibility["policy"]}],
                       "filled": [], "missing": []}
             return result, await write_packet(None, directory, job, result)
+        if eligibility.get("description"):
+            job = {**job, "verified_job_description": eligibility["description"]}
     if not selected_role:
         result = {"state": "waiting_input", "reason": "Ambiguous role; choose --role sde or --role ml",
                   "missing": [{"question": "Choose the SDE or ML resume variant"}], "events": [], "filled": []}
         return result, await write_packet(None, directory, job, result)
     answers = booklet.for_role(book, selected_role)
+    discovery = {"simplify": "Simplify", "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor"}.get(job.get("source"))
+    if discovery:
+        answers["standing.discovery_source"] = booklet.answer(discovery,
+            {"method": "recorded_phase1_discovery", "source": job["source"],
+             "source_url": job.get("source_url", job["url"]), "source_job_hash": job.get("source_job_hash")})
+    completed_cs = completed_cs_degree_answer(book.get("education_records", []))
+    if completed_cs is not None:
+        answers["standing.completed_cs_degree"] = completed_cs
+    address_keys = ["identity.address", "identity.city", "identity.state", "identity.postal_code", "identity.country"]
+    if all(answers.get(key, {}).get("status") == "verified" and answers[key].get("value") for key in address_keys):
+        answers["standing.mailing_address"] = booklet.answer(
+            ", ".join(str(answers[key]["value"]) for key in address_keys),
+            {"method": "verified_mailing_address_components", "sources": {key: answers[key]["source"] for key in address_keys}})
     policy = book.get("workflow_preferences", {})
     _apply_phone_format(answers, policy)
     if policy.get("salary_when_no_range"):
@@ -338,7 +412,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         try:
             result, actions = await prepare(None, job, answers, planner, None, cli_actions=actions)
         except Exception as exc:
-            result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}", "events": [], "filled": []}
+            result = failure_result(exc, actions)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
         # Keep the persistent browser and the unsaved draft open at handoff.
         packet = await write_packet(None, directory, job, result, cli_actions=actions)

@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from jhb.applications import booklet, pipeline, questions, queue, source_queue, worker
+from jhb.applications import booklet, notices, pipeline, questions, queue, source_queue, worker
 
 
 def job():
@@ -15,6 +15,8 @@ def job():
 @pytest.mark.parametrize("kind", ["application", "source"])
 def test_local_notice_keeps_email_pending_until_success(monkeypatch, tmp_path, kind):
     monkeypatch.setattr("jhb.config.ROOT", tmp_path)
+    clock = [1000]
+    monkeypatch.setattr(notices.time, "time", lambda: clock[0])
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     row = job()
@@ -40,9 +42,16 @@ def test_local_notice_keeps_email_pending_until_success(monkeypatch, tmp_path, k
     assert sends == []
     assert conn.execute(f"SELECT notified_at FROM {table}").fetchone()[0] is None
     deliver(conn, send_email=True)
+    if kind == "source":
+        assert sends == []  # Source auth/challenges coalesce for an hour.
+        clock[0] += 3600
+        deliver(conn, send_email=True)
     assert len(sends) == 1
     assert conn.execute(f"SELECT notified_at FROM {table}").fetchone()[0] is None
     succeed = True
+    deliver(conn, send_email=True)
+    assert len(sends) == 1  # SMTP retry cannot happen every cron minute.
+    clock[0] += notices.RETRY_BASE_SECONDS
     deliver(conn, send_email=True)
     assert len(sends) == 2
     assert conn.execute(f"SELECT notified_at FROM {table}").fetchone()[0] is not None
@@ -56,6 +65,8 @@ def test_local_notice_keeps_email_pending_until_success(monkeypatch, tmp_path, k
 
 def test_question_local_notice_keeps_email_pending_until_success(monkeypatch, tmp_path):
     monkeypatch.setattr("jhb.config.ROOT", tmp_path)
+    clock = [1000]
+    monkeypatch.setattr(notices.time, "time", lambda: clock[0])
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     queue.initialize(conn)
@@ -82,6 +93,9 @@ def test_question_local_notice_keeps_email_pending_until_success(monkeypatch, tm
     assert len(sends) == 1
     assert len(questions.pending(path, unnotified=True)) == 1
     succeed = True
+    assert questions.notify_new(conn, path, send_email=True) == 0
+    assert len(sends) == 1
+    clock[0] += notices.RETRY_BASE_SECONDS
     assert questions.notify_new(conn, path, send_email=True) == 1
     assert len(sends) == 2
     assert questions.pending(path, unnotified=True) == []

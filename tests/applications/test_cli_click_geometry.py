@@ -174,7 +174,14 @@ def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkey
         def delayed_click(x, y):
             page.wait_for_timeout(100)
             page.mouse.click(x, y)
-        helpers = {"cdp": lambda method, **params: session.send(method, params),
+        def transport(method, **params):
+            # Runtime now sends native input through the CLI's CDP transport.
+            # Model latency at the actual press boundary, preserving the
+            # scroll/reflow race this regression protects against.
+            if method == "Input.dispatchMouseEvent" and params.get("type") == "mousePressed":
+                page.wait_for_timeout(100)
+            return session.send(method, params)
+        helpers = {"cdp": transport,
                    "js": page.evaluate, "wait": lambda seconds: page.wait_for_timeout(seconds*1000),
                    "click_at_xy": delayed_click, "list_tabs": lambda: [{"url": url, "targetId": "fixture-tab"}],
                    "switch_tab": lambda target: None, "current_tab": lambda: {"targetId": "fixture-tab"}}

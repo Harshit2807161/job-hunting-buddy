@@ -17,6 +17,25 @@ from ..config import ROOT
 MARKER = "JHB_BROWSER_RESULT="
 
 
+class BrowserOperationError(ValueError):
+    """A bounded browser mechanic failed; this is not a missing candidate fact."""
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+MECHANICAL_ERRORS = {
+    "Observed control has invalid click geometry", "Observed control has no clickable area",
+    "Observed control is obstructed at its click position",
+    "Observed control remains obstructed after scrolling", "Observed control did not settle in the viewport",
+    "Observed field is no longer available", "Education add-record control is ambiguous",
+    "Another education row did not appear", "Upload input is unavailable",
+    "Uploaded filename did not appear in the form", "Checkbox did not retain the approved answer",
+    "Native select did not retain the approved answer", "Dropdown did not retain the selected answer",
+    "Form did not retain the exact answer", "Observed continuation button is unavailable",
+}
+
+
 class BrowserUseCLI:
     _dispatch_module = "jhb.applications.cli_runtime"
 
@@ -25,6 +44,7 @@ class BrowserUseCLI:
             raise ValueError("Browser operation timeout must be between 0 and 300 seconds")
         self.executable, self.timeout = executable, timeout
         self.target_id = None
+        self.expected_url = None
         self.last_failure = None
         self._uploads = {}
 
@@ -74,6 +94,8 @@ class BrowserUseCLI:
         cancelled = _cancelled or threading.Event()
         if operation != "open" and self.target_id:
             payload["target_id"] = self.target_id
+            if self.expected_url:
+                payload["expected_url"] = self.expected_url
         request = json.dumps({"operation": operation, **payload}, ensure_ascii=False)
         if self._dispatch_module not in {"jhb.applications.cli_runtime", "jhb.applications.manual_runtime"}:
             raise ValueError("Unsupported browser dispatcher")
@@ -83,7 +105,8 @@ class BrowserUseCLI:
             f"sys.path.insert(0,{str(ROOT)!r})\n"
             f"from {self._dispatch_module} import dispatch\n"
             "try:\n"
-            f"    result=dispatch(json.loads({request!r}),globals())\n"
+            "    helpers=dict(globals());helpers['jhb_cdp_timeout']=15\n"
+            f"    result=dispatch(json.loads({request!r}),helpers)\n"
             "except ValueError as exc:\n"
             "    result={'error':str(exc)}\n"
             f"print({MARKER!r}+json.dumps(result,ensure_ascii=False))\n"
@@ -122,16 +145,29 @@ class BrowserUseCLI:
             os.close(fd)
         # CLI errors may contain private page content; never echo them in routine logs.
         if result.returncode:
+            self.last_failure = {"operation": operation, "kind": "browser_transport",
+                                 "elapsed_seconds": round(time.monotonic()-started, 3)}
+            # Preserve diagnostics locally for repair without sending captured
+            # browser content or credentials to routine logs or email.
+            from .booklet import write_private
+            diagnostic = ROOT / "private" / "browser-errors" / f"{time.time_ns()}.json"
+            write_private(diagnostic, {"operation": operation, "returncode": result.returncode,
+                                       "stderr": result.stderr[-131072:], "stdout": result.stdout[-131072:]})
+            self.last_failure["diagnostic_path"] = str(diagnostic)
             raise RuntimeError("Browser Use CLI failed; run browser-use --doctor")
         for line in reversed(result.stdout.splitlines()):
             if line.startswith(MARKER):
                 response = json.loads(line[len(MARKER):])
                 if isinstance(response, dict) and response.get("error"):
-                    raise ValueError(response["error"])
+                    message = response["error"]
+                    self.last_failure = {"operation": operation,
+                                         "kind": "browser_mechanics" if message in MECHANICAL_ERRORS else "invalid_operation"}
+                    raise BrowserOperationError(message, retryable=message in MECHANICAL_ERRORS)
                 return response
+        self.last_failure = {"operation": operation, "kind": "browser_transport"}
         raise RuntimeError("Browser Use CLI returned no structured result")
 
-    async def invoke(self, operation, **payload):
+    async def _invoke_once(self, operation, **payload):
         cancelled = threading.Event()
         work = asyncio.create_task(asyncio.to_thread(self.call, operation, _cancelled=cancelled, **payload))
         try:
@@ -151,9 +187,28 @@ class BrowserUseCLI:
                 work.exception()
             raise
 
+    async def invoke(self, operation, **payload):
+        # Reconnect through the official CLI after an interrupted read. Mutation
+        # failures return to the bounded job retry, where retained state is read
+        # afresh; they are never blindly repeated at this transport layer.
+        for attempt in range(2):
+            try:
+                return await self._invoke_once(operation, **payload)
+            except RuntimeError as exc:
+                if (attempt or operation not in {"open", "observe", "screenshot"}
+                        or str(exc) not in {"Browser Use CLI failed; run browser-use --doctor",
+                                            "Browser Use CLI returned no structured result"}):
+                    raise
+                await asyncio.sleep(0.25)
+
     async def open(self, url):
         response = await self.invoke("open", url=url)
         self.target_id = response["target_id"]
+        from .queue import greenhouse_identity
+        if greenhouse_identity(response.get("url")) != greenhouse_identity(url):
+            self.redirected_to = response.get("url")
+            raise ValueError("Employer application redirected outside the requested job")
+        self.expected_url = url
         return response
 
     async def observe(self):

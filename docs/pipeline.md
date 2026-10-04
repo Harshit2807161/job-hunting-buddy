@@ -69,7 +69,7 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" .venv/bin/python -m playwright i
 # Read-only isolated source classification; no application filling.
 .venv/bin/python -m jhb.applications.cli classify 'https://example.com/careers/job'
 
-# Explicitly run a bounded batch with the saved local Codex sign-in.
+# Explicitly run a bounded batch using approved field/key bindings.
 .venv/bin/python -m jhb.applications.cli pipeline
 
 # Same opt-in gate used by the launchd wrapper.
@@ -121,10 +121,13 @@ alias; it does not substitute a different campus. Employer catalog mappings such
 as `Other` never replace the actual institution in the booklet or resume.
 
 Private evidence and notifications live in `private/source-checks`,
-`private/applications`, and `private/notifications`. Application emails and
-source handoff emails use the existing configured recipient when
-`JHB_APPLICATION_EMAIL=1`. Failed email delivery retries independently of browser
-preparation. The pending question outbox reflects the current private ledger,
+`private/applications`, and `private/notifications`. Review-ready drafts and new
+required questions use the configured recipient when `JHB_APPLICATION_EMAIL=1`.
+Technical failures and optional questions remain local. Sustained source access
+blocks produce one grouped digest after an hour. Delivery keys persist across
+worker restarts; category-wide email backoff starts at five minutes and grows to
+six hours, so newly discovered jobs cannot bypass a failing mail channel.
+Failed email delivery retries independently of browser preparation. The pending question outbox reflects the current private ledger,
 including earlier batches and questions that have since been answered.
 
 ## Scheduled limits and recovery
@@ -145,7 +148,10 @@ the pipeline in `.venv`. The existing launchd agent runs this wrapper every
 Work exceeding a batch or draft limit stays queued. One manager lock prevents
 overlapping cron and manual workers. Claims have leases; expired claims recover,
 and repeated crashed claims stop after three attempts. Transient source errors
-use bounded exponential backoff. Review and verification handoffs do not retry
+use bounded exponential backoff. Classified application transport/mechanics
+failures retry after five minutes, then ten minutes, with at most three preparation
+attempts. Generic validation errors do not qualify for automatic recovery.
+Review and verification handoffs do not retry
 without explicit intervention. Closing or submitting a draft manually does not
 automatically change its ledger state; update the recorded state before reusing
 capacity. Record actual submission evidence with `confirm-submission` rather than
@@ -237,3 +243,31 @@ explicit candidate authorization. They are not enabled by the example profile.
 GitHub's Ubuntu runner restricts Chromium user namespaces. CI explicitly opts
 into a sandbox override for the trusted localhost-only MCP fixture. The same
 flag has no effect on live source checks; those retain MCP's browser sandbox.
+
+
+### Reliability validation, 2026-10-04
+
+The live repair reproduced a slow planning call, inactive-tab input timeouts,
+interrupted dropdown overlays, and a screenshot failure after a job redirect.
+Known answer bindings now avoid model calls. The CLI can wake its exact owned
+job after a frozen-page/native-scroll timeout, close an interrupted dropdown
+without changing its selection, and recheck retained values. A redirected job
+is handed off before further filling. Screenshots are optional evidence and
+cannot turn a valid preparation result into a file-not-found failure.
+
+One existing Phase 1 Greenhouse job completed through the real connected
+pipeline using the local Browser Use CLI: 22 retained fields/documents, zero
+missing required answers, a working final submit control, and its submission
+guard still enabled. SMTP accepted its review notification; the delivery key
+was persisted. Two recovered jobs redirected outside supported individual forms
+and stopped as unsupported. A fresh scheduled wrapper cycle exited successfully
+without another review or failure email. Exact job and browser evidence stay in
+ignored private artifacts. These live checks are separate from synthetic tests.
+
+Additional fixture regressions cover minimal launchd PATH, persistent mail
+backoff and concurrent delivery claims, retry leases and attempt limits,
+required clearance headings, export-control alternatives, menu/geometry recovery,
+and salary-category retention. They do not prove universal ATS compatibility or
+CAPTCHA solving. Unsupported controls and genuinely unknown factual answers
+remain explicit handoffs; the pipeline never changes an answer to improve
+screening results and never submits scheduled applications.

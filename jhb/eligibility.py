@@ -24,7 +24,59 @@ _NEGATED_NOUN = r"(?:(?:US|United\s+States|British|Canadian|UK)\s+)?(?:active\s+
 _NEGATED = re.compile(r"\b(?:not\s+required|not\s+necessary|not\s+needed|need\s+not|(?:do|does)\s+not\s+(?:need|require)|no\s+" + _NEGATED_NOUN + r"(?:\s+or\s+" + _NEGATED_NOUN + r")*(?:\s+(?:is|are))?\s+required|no\s+" + _NEGATED_NOUN + r"\s+requirement|without\s+(?:a\s+)?(?:security\s+)?clearance|optional|preferred|not\s+a\s+requirement)\b", re.I)
 _NONDISCRIMINATION = re.compile(r"without\s+regard\s+to|regardless\s+of|(?:do|does|will|shall)\s+not\s+discriminate|non[- ]discrimination", re.I)
 _DISCLOSURE = re.compile(r"\b(?:disclosure|demographic|survey|citizenship\s+status\s+(?:question|information|response)|(?:disclose|report|indicate|select|state)\b[^.;]{0,35}\bcitizenship)\b", re.I)
-_RESIDENCY_ALTERNATIVE = re.compile(r"\bor\s+(?:(?:a|an|lawful|legal|US)\s+)*(?:permanent\s+residents?|green\s+card\s+holders?|protected\s+(?:persons?|individuals?)|US\s+nationals?)\b", re.I)
+_RESIDENCY_ALTERNATIVE = re.compile(
+    r"(?:\bor\s+|,\s*(?:\([ivx]+\)\s*)?)(?:(?:a|an|lawful|legal|US)\s+)*"
+    r"(?:permanent\s+residents?|green\s+card\s+holders?|protected\s+(?:persons?|individuals?)|"
+    r"refugees?|asylees?|US\s+nationals?)\b|"
+    r"\bor\s+(?:(?:be|otherwise)\s+)*(?:eligible\s+(?:to\s+obtain|for)|obtain)\b"
+    r"[^.;]{0,100}\b(?:export\s+(?:control\s+)?(?:licen[cs]e|authorization)|"
+    r"authorizations?\s+from\s+the\s+US\s+Department\s+of\s+State)\b", re.I)
+_REQUIRED_HEADING = re.compile(r"(?:required|requirements|minimum requirements|basic qualifications|"
+                               r"required qualifications|qualifications|what you (?:need|must have))\s*:?", re.I)
+_OTHER_HEADING = re.compile(r"(?:desired|preferred(?: qualifications)?|nice[- ]to[- ]have|nice to have|"
+                            r"responsibilities|benefits|compensation(?: and benefits)?|equal opportunity|"
+                            r"about (?:us|the company|the role)|what you(?:'|’)ll do)\s*:?", re.I)
+_OPTIONAL_HEADING = re.compile(r"(?:desired(?: qualifications)?|preferred(?: qualifications)?|"
+                               r"nice[- ]to[- ]have|nice to have)\s*:?", re.I)
+_BARE_QUALIFICATION = re.compile(
+    r"(?:(?:US|United States|British|Canadian|UK)\s+citizenship|"
+    r"(?:(?:active|current)\s+)?(?:TS\s*/\s*SCI|TS[- ]SCI|top\s*secret|secret|confidential)"
+    r"(?:\s+(?:security\s+)?clearance)?(?:\s+with\s+(?:a\s+)?polygraph)?|"
+    r"(?:active|current)\s+(?:security\s+)?clearance|polygraph(?:\s+examination)?)\s*", re.I)
+
+
+def _clauses(text):
+    """Retain qualification headings and complete alternative lists.
+
+    Commas within export eligibility lists are not sentence boundaries. Split
+    independent requirements at commas only when a new condition begins, so
+    an optional citizenship clause cannot mask a separate required clearance.
+    """
+    required = optional = False
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip(" *#:-")
+        if not line:
+            continue
+        if _REQUIRED_HEADING.fullmatch(line):
+            required = True
+            optional = False
+            continue
+        if _OPTIONAL_HEADING.fullmatch(line) or _OTHER_HEADING.fullmatch(line):
+            required = False
+            optional = bool(_OPTIONAL_HEADING.fullmatch(line))
+            continue
+        # Dots in common abbreviations and numeric legal citations must not
+        # sever an ITAR list before its non-citizenship alternatives.
+        line = re.sub(r"\b(?:i\.e\.|e\.g\.|C\.F\.R\.)|(?<=\d)\.(?=\d)",
+                      lambda m: m[0].replace(".", "\x00"), line, flags=re.I)
+        parts = re.split(
+            r"[.;]|\bbut\b|\bhowever\b|,\s*(?=(?:security\s+|active\s+)?clearance\b|"
+            r"(?:US\s+)?citizenship\b|polygraph\b)|"
+            r"\band\s+(?=(?:you\s+)?(?:must|shall|need|require|ability|able|willing|eligible|"
+            r"obtain|maintain|possess|hold)|(?:US\s+)?citizenship|(?:security\s+|active\s+)?clearance|polygraph)",
+            line, flags=re.I)
+        for clause in parts:
+            yield clause.replace("\x00", "."), required, optional
 
 
 def plain_text(value):
@@ -39,8 +91,7 @@ def restrictions(text, *, title=False):
     """Return auditable requirement snippets, not blanket keyword exclusions."""
     text = plain_text(text)
     hits = []
-    clauses = re.split(r"\n|[.;,]|\bbut\b|\bhowever\b|\band\s+(?=(?:you\s+)?(?:must|shall|need|require|ability|able|willing|eligible|obtain|maintain|possess|hold)|(?:US\s+)?citizenship|(?:security\s+|active\s+)?clearance|polygraph)", text, flags=re.I)
-    for clause in clauses:
+    for clause, required_section, optional_section in _clauses(text):
         clause = re.sub(r"\s+", " ", clause).strip(" :,-")
         if not clause:
             continue
@@ -51,6 +102,8 @@ def restrictions(text, *, title=False):
             if kind == "security_clearance" and re.search(r"\b(?:medical|drug|health|credit)\s+clearance\b", clause, re.I) and not re.search(r"security\s+clearance|top\s*secret|ts\s*/\s*sci", clause, re.I):
                 continue
             if _NEGATED.search(clause):
+                continue
+            if optional_section and not re.search(r"\b(?:must|shall|require[ds]?|mandatory)\b", clause, re.I):
                 continue
             if kind == "citizenship" and (_NONDISCRIMINATION.search(clause) or _DISCLOSURE.search(clause)):
                 continue
@@ -63,7 +116,8 @@ def restrictions(text, *, title=False):
             inactive_label = bool(re.search(r":\s*(?:none|no|n/a|not applicable)\b", clause, re.I))
             active = kind == "security_clearance" and bool(re.search(r"\b(?:active|current)\b", clause, re.I))
             specific_title = title and (kind != "citizenship" or bool(re.search(r"citizens?\s+only|citizenship\s+required", clause, re.I)))
-            if not inactive_label and (explicit or label or active or specific_title):
+            required_bullet = required_section and bool(_BARE_QUALIFICATION.fullmatch(clause))
+            if not inactive_label and (explicit or label or active or specific_title or required_bullet):
                 hits.append({"category": kind, "evidence": clause[:600]})
     return hits
 

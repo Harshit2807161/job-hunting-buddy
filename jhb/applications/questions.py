@@ -188,7 +188,7 @@ def pending(bookpath=booklet.DEFAULT_PATH, *, unnotified=False) -> list[dict]:
                   key=lambda q: (q["created_at"], q["id"]))
 
 
-def mark_notified(question_ids: list[str], bookpath=booklet.DEFAULT_PATH):
+def mark_notified(question_ids: list[str], bookpath=booklet.DEFAULT_PATH, *, revisions=None):
     """Mark a successfully delivered aggregate handoff, never before delivery."""
     with _locked(bookpath):
         book = booklet.load(bookpath)
@@ -196,6 +196,8 @@ def mark_notified(question_ids: list[str], bookpath=booklet.DEFAULT_PATH):
         if any(qid not in ledger for qid in question_ids):
             raise ValueError("Unknown question ID")
         for qid in question_ids:
+            if revisions is not None and sum(item.get("event") == "reopened" for item in ledger[qid]["history"]) != revisions[qid]:
+                continue  # The candidate corrected/reopened this question during SMTP delivery.
             ledger[qid]["notified_at"] = _now()
         booklet.write_private(Path(bookpath), book)
 
@@ -219,30 +221,40 @@ def notify_new(connection, bookpath=booklet.DEFAULT_PATH, *, send_email=False):
     booklet.write_private(config.ROOT / "private" / "notifications" / "new-questions.json", payload)
     if not send_email:
         return 0
+    # Optional choices stay visible in the local booklet/outbox. Routine email
+    # asks only genuinely new required candidate questions.
+    records = [record for record in records if any(context["required"] for context in record["contexts"].values())]
+    if not records:
+        return 0
     hashes = {job_hash for record in records for job_hash in record["contexts"]}
-    jobs = []
+    jobs = {}
     for job_hash in sorted(hashes):
         row = connection.execute("SELECT job_json FROM applications WHERE job_hash=?", (job_hash,)).fetchone()
         if row:
-            jobs.append(json.loads(row[0]))
+            jobs[job_hash] = json.loads(row[0])
     if not jobs:
         return 0
-    lines = ["New application questions need your explicit answers. No application was submitted."]
-    for record in records:
-        required = any(context["required"] for context in record["contexts"].values())
-        lines += ["", f"{'Required' if required else 'Optional'}: {record['question']}",
-                  f"Question ID: {record['id']}", f"Employer scope: {record['scope']['board']}"]
-        choices = sorted({str(choice) for context in record["contexts"].values() for choice in context.get("choices", [])})
-        if choices:
-            lines.append("Observed choices: " + "; ".join(choices))
-        lines.append(f"Answer locally: jhb-apply answer-question {record['id']}")
-        if not required:
-            lines.append(f"Or leave blank: jhb-apply answer-question {record['id']} --decline")
-    lines.append("You can also reply with these question IDs and answers in the ongoing Codex conversation.")
-    if not notify.send(jobs, subject_prefix="[application questions] ", details="\n".join(lines)):
-        return 0
-    mark_notified([record["id"] for record in records], bookpath)
-    return len(records)
+    from .notices import deliver
+    keyed = {f"question:{record['id']}:{sum(item.get('event') == 'reopened' for item in record['history'])}": record
+             for record in records}
+    def send(keys):
+        selected = [keyed[key] for key in sorted(keys)]
+        contexts = {job_hash for record in selected for job_hash in record["contexts"]}
+        selected_jobs = [jobs[job_hash] for job_hash in sorted(contexts) if job_hash in jobs]
+        lines = ["New application questions need your explicit answers. No application was submitted."]
+        for record in selected:
+            lines += ["", f"Required: {record['question']}", f"Question ID: {record['id']}",
+                      f"Employer scope: {record['scope']['board']}"]
+            choices = sorted({str(choice) for context in record["contexts"].values() for choice in context.get("choices", [])})
+            if choices:
+                lines.append("Observed choices: " + "; ".join(choices))
+            lines.append(f"Answer locally: jhb-apply answer-question {record['id']}")
+        lines.append("You can also reply with these question IDs and answers in the ongoing Codex conversation.")
+        return notify.send(selected_jobs, subject_prefix="[application questions] ", details="\n".join(lines))
+    sent = deliver(connection, keyed, "required_questions", send)
+    mark_notified([keyed[key]["id"] for key in sent], bookpath,
+                  revisions={keyed[key]["id"]: int(key.rsplit(":", 1)[1]) for key in sent})
+    return len(sent)
 
 
 def _validate_value(value):

@@ -11,6 +11,35 @@ from jhb.applications.cli_browser import BrowserUseCLI, MARKER
 from jhb.applications.cli_runtime import option_matches
 
 
+def test_salary_categories_represent_approved_amount_only_for_salary_fields():
+    bands = ["$75,000 - $100,000", "$100,000 - $125,000", "$125,000 - $150,000", "$250,000 - +"]
+    label = "What are your salary expectations?*"
+    assert [band for band in bands if option_matches(band, 100000, field_label=label)] == [bands[1]]
+    assert option_matches(bands[2], 131000, field_label=label)
+    assert option_matches(bands[3], 300000, field_label=label)
+    assert not option_matches(bands[1], True, field_label=label)
+    assert not option_matches(bands[1], 100000, field_label="Investment holdings")
+    for unsupported in ["CAD $100,000 - $125,000", "$100,000 - $125,000 per hour", "$125,000 - $100,000", "$100,000 or less"]:
+        assert not option_matches(unsupported, 110000, field_label=label)
+
+
+def test_read_transport_reconnects_once_but_does_not_repeat_mutation(monkeypatch):
+    client = BrowserUseCLI()
+    calls = []
+    async def once(operation, **payload):
+        calls.append(operation)
+        if len(calls) == 1:
+            raise RuntimeError("Browser Use CLI failed; run browser-use --doctor")
+        return {"verified": True}
+    monkeypatch.setattr(client, "_invoke_once", once)
+    assert asyncio.run(client.invoke("observe")) == {"verified": True}
+    assert calls == ["observe", "observe"]
+    calls.clear()
+    with pytest.raises(RuntimeError):
+        asyncio.run(client.invoke("fill", value="synthetic"))
+    assert calls == ["fill"]
+
+
 def test_cli_uses_stdin_default_daemon_and_preserves_target(monkeypatch, tmp_path):
     monkeypatch.setattr("jhb.applications.cli_browser.ROOT", tmp_path)
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
