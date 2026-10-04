@@ -103,6 +103,12 @@ def answer(value=None, source="user input required", status=None):
             "status": status or ("verified" if value is not None else "needs_input")}
 
 
+def job_excluded(book, job):
+    """A verified, sourced user exclusion is bound to this exact application."""
+    record = book.get("job_exclusions", {}).get(job.get("dedupe_hash"), {})
+    return isinstance(record, dict) and record.get("status") == "verified" and bool(record.get("source"))
+
+
 def load(path=DEFAULT_PATH) -> dict:
     book = json.loads(Path(path).read_text())
     if book.get("schema_version") != 1 or set(book.get("roles", {})) != {"sde", "ml"}:
@@ -164,7 +170,62 @@ def for_role(book: dict, role: str) -> dict:
                         "derived_from": f"education.{index}.{date_key}", "original_date": original,
                         "original_source": record["source"], "expected": record.get("expected"),
                     })
+    for index, record in enumerate(experience_records(book, role)):
+        for field in ("company", "title", "location", "start_date", "end_date", "summary", "current"):
+            values[f"experience.{index}.{field}"] = answer(record[field], record["source"])
     return values
+
+
+def experience_records(book, role):
+    """Parse only verified, structured resume sections without inventing days.
+
+    Dates retain month precision. PDF-wrapped bullet text is joined within its
+    original bullet; separate achievement bullets remain separate lines.
+    """
+    from datetime import datetime
+    item = book.get("roles", {}).get(role, {}).get("role.experience", {})
+    if item.get("status") != "verified" or not item.get("source") or not isinstance(item.get("value"), str):
+        return []
+    header = re.compile(r"^(.+?)\s{2,}([A-Za-z]{3,9} \d{4})\s*[–—-]\s*([A-Za-z]{3,9} \d{4}|Present|Current)$", re.I)
+    sections, current = [], None
+    for raw in item["value"].splitlines():
+        line = raw.strip()
+        match = header.fullmatch(line)
+        if match:
+            current = {"company": match[1].strip(), "dates": (match[2], match[3]), "title_line": None, "bullets": []}
+            sections.append(current)
+        elif current and line.startswith('•'):
+            current['bullets'].append('• ' + line.lstrip('• ').strip())
+        elif current and line:
+            if current['bullets']:
+                current['bullets'][-1] += ' ' + line
+            elif current['title_line'] is None:
+                current['title_line'] = line
+    records = []
+    def month(value):
+        for fmt in ('%b %Y', '%B %Y'):
+            try: return datetime.strptime(value, fmt).strftime('%Y-%m')
+            except ValueError: pass
+        raise ValueError('Unsupported original resume date')
+    for section in sections:
+        parts = re.split(r'\s{2,}', section['title_line'] or '')
+        if len(parts) != 2 or not section['bullets']:
+            continue
+        try:
+            start = month(section['dates'][0])
+            current = section['dates'][1].casefold() in {'present', 'current'}
+            end = '' if current else month(section['dates'][1])
+        except ValueError:
+            continue
+        if end and end < start:
+            continue
+        records.append({"company": section['company'], "title": re.sub(r'\s*[—–-]\s*\[Code\].*$', '', parts[0]).strip(),
+                        "location": parts[1], "start_date": start, "end_date": end,
+                        "current": current, "summary": '\n'.join(section['bullets']), "status": "verified",
+                        "source": {"method": "verified_resume_experience_section", "resume_role": role,
+                                   "original_source": item['source'], "section": section['company'],
+                                   "date_precision": "month", "source_text_sha256": hashlib.sha256(item['value'].encode()).hexdigest()}})
+    return records
 
 
 def missing(book: dict) -> list[str]:

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import json
 import re
+import time
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 from .mcp_client import PlaywrightMCPClient, is_public_url
@@ -38,7 +41,23 @@ _OBSERVE = r"""() => ({
   fields: document.querySelectorAll('input:not([type="hidden"]),textarea,select').length,
   buttons: [...document.querySelectorAll('button,[role="button"]')].slice(0,80).map(x => (x.innerText || x.getAttribute('aria-label') || '').trim()),
   data: [...document.querySelectorAll('[data-gh-job-id],[data-gh-board],[data-greenhouse-job-id]')].slice(0,10).map(x => ({
-    job: x.getAttribute('data-gh-job-id') || x.getAttribute('data-greenhouse-job-id'), board: x.getAttribute('data-gh-board')}))
+    job: x.getAttribute('data-gh-job-id') || x.getAttribute('data-greenhouse-job-id'), board: x.getAttribute('data-gh-board')})),
+  descriptions: (()=>{const title=document.querySelector('h1')?.innerText||document.title;
+    if(location.hostname==='apply.workable.com'){
+      const description=document.querySelector('[data-ui="job-description"]');
+      if(!description)return [];
+      const root=description.closest('main');
+      const requirements=root?.querySelector('[data-ui="job-requirements"]');
+      return [{text:[description.innerText,requirements?.innerText].filter(Boolean).join('\n'),url:location.href,title}]}
+    return [...document.querySelectorAll('.ashby-job-posting-description,.posting-content,[data-automation-id="jobPostingDescription"],[data-testid="job-description"]')]
+      .slice(0,5).map(e=>({text:e.innerText,url:location.href,title}))})(),
+  job_postings: (()=>{const jobs=[];const visit=(value,depth=0)=>{if(!value||depth>5||jobs.length>=20)return;
+    if(Array.isArray(value)){for(const item of value)visit(item,depth+1);return}
+    if(typeof value!=='object')return;
+    if(value['@type']==='JobPosting'||Array.isArray(value['@type'])&&value['@type'].includes('JobPosting'))jobs.push({title:value.title,description:value.description,url:value.url||value.mainEntityOfPage?.['@id']||location.href});
+    if(value['@graph'])visit(value['@graph'],depth+1)};
+    for(const e of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(e.textContent))}catch(_){}}
+    return jobs})()
 })"""
 
 
@@ -51,6 +70,37 @@ def classify_ats(url: str) -> str:
         if any(host == s or host.endswith("." + s) for s in suffixes):
             return name
     return "unknown"
+
+
+def _observed_description(observation):
+    """Only an exact official job and an observed JD container/JobPosting qualify."""
+    from .boards import job_identity
+    url = observation.get("url", "")
+    identity = job_identity(url)
+    if not identity or identity[0] in {"greenhouse", "linkedin"}:
+        return None
+    candidates = []
+    postings = observation.get("job_postings", [])
+    # Exact JobPosting is the primary description. Its HTML and the rendered
+    # container can differ in whitespace, headings and site chrome without
+    # describing different jobs; never combine them as competing postings.
+    records = postings if postings else observation.get("descriptions", [])
+    for record in records:
+        if not isinstance(record, dict) or job_identity(record.get("url", "")) != identity:
+            continue
+        title = record.get("title")
+        content = record.get("description", record.get("text"))
+        if not isinstance(content, str) or not isinstance(title, str) or not title.strip():
+            continue
+        text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", content))).strip()
+        if len(text) < 100 or len(text.encode()) > 1024*1024:
+            continue
+        candidates.append({"status": "verified", "source_url": url, "job_identity": list(identity),
+                           "retrieved_at": time.time(), "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                           "title": title.strip()})
+    # Conflicting JobPosting records are not an invitation to choose one role.
+    unique = {(item["title"], item["sha256"]): item for item in candidates}
+    return next(iter(unique.values())) if len(unique) == 1 else None
 
 
 def canonical_greenhouse(url: str, *, context_url="") -> str | None:
@@ -181,6 +231,21 @@ class ApplicationSourceResolver:
             await self.transport.call_tool("browser_navigate", {"url": current})
             await self.transport.call_tool("browser_snapshot", {})
             observation = _json_result(await self.transport.call_tool("browser_evaluate", {"function": _OBSERVE}))
+            # Workable initially renders its exact job title before the public
+            # description/requirements sections arrive. Wait once, bounded,
+            # then verify the same observed job before using late content.
+            if (classify_ats(observation.get("url", "")) == "workable"
+                    and not _observed_description(observation)):
+                from .boards import job_identity
+                before_identity = job_identity(observation.get("url", ""))
+                if before_identity:
+                    await asyncio.sleep(2)
+                    late = _json_result(await self.transport.call_tool("browser_evaluate", {"function": _OBSERVE}))
+                    if job_identity(late.get("url", "")) != before_identity:
+                        result.update(state="ambiguous", final_url=late.get("url"),
+                                      reason="Workable job changed while its description loaded")
+                        return result
+                    observation = late
             final = observation.get("url", current)
             if not is_public_url(final, allow_localhost=self.allow_localhost):
                 result.update(state="blocked", reason="Redirect reached an unsafe or local target", handoff="waiting_input")
@@ -206,6 +271,9 @@ class ApplicationSourceResolver:
             if challenge:
                 result.update(state="blocked", handoff=challenge[0], reason=challenge[1])
                 return result
+            description = _observed_description(observation)
+            if description:
+                result["verified_job_description"] = description
             canonical = canonical_greenhouse(final)
             if canonical:
                 expected = canonical_greenhouse(current)
@@ -294,7 +362,26 @@ class ApplicationSourceResolver:
             unique = list(dict.fromkeys(candidates))
             # Known final ATSs are enough to classify; Greenhouse preparation is intentionally restricted.
             if result["ats"] not in {"unknown", "linkedin", "indeed", "greenhouse"}:
-                result.update(state="not_greenhouse", application_url=final, reason="Observed job page uses " + result["ats"])
+                from .boards import canonical_url, job_identity
+                observed_identity = job_identity(final)
+                original_identity = job_identity(url)
+                if not observed_identity:
+                    result.update(state="ambiguous", reason="Observed ATS page lacks an individual job identity")
+                    result.pop("verified_job_description", None)
+                    return result
+                if original_identity and original_identity[0] not in {"linkedin", "greenhouse"} and original_identity != observed_identity:
+                    result.update(state="ambiguous", reason="Redirect changed the explicitly identified ATS job")
+                    result.pop("verified_job_description", None)
+                    return result
+                posting_url = canonical_url(final)
+                if not result.get("verified_job_description") and posting_url and posting_url != final and posting_url not in visited and hop+1 < self.max_hops:
+                    result["evidence"].append({"kind": "exact_job_posting_description_check", "url": posting_url,
+                                               "from_url": final, "identity": list(observed_identity)})
+                    current = posting_url
+                    continue
+                result.update(state="not_greenhouse", application_url=final,
+                              identity=list(observed_identity) if observed_identity else None,
+                              reason="Observed job page uses " + result["ats"])
                 return result
             if len(unique) > 1:
                 result.update(state="ambiguous", reason="Several outbound application targets were observed; review is required")

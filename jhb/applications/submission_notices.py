@@ -10,7 +10,7 @@ import json
 import re
 
 from .. import config, notify
-from . import booklet, notices, overnight, queue
+from . import boards, booklet, notices, overnight
 
 CATEGORY = "submission_outcome_review"
 
@@ -21,7 +21,7 @@ def _pending(conn):
         return {}
     confirmed = set()
     if "confirmed_submissions" in tables:
-        confirmed = {queue.greenhouse_identity(row[0]) for row in
+        confirmed = {boards.job_identity(row[0]) for row in
                      conn.execute("SELECT application_url FROM confirmed_submissions")}
     records = {}
     for row in conn.execute("SELECT t.job_hash,t.authorization_id,t.application_url,t.attempt_path,a.job_json "
@@ -31,16 +31,16 @@ def _pending(conn):
         if not all(isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)
                    for value in (job_hash, authorization_id)):
             continue
-        identity = queue.greenhouse_identity(url)
-        if identity is None or identity in confirmed:
+        identity = boards.job_identity(url)
+        if identity is None or job_hash != boards.application_hash(url) or identity in confirmed:
             continue
         try:
             path, attempt, _ = overnight._read_private(attempt_path)
             job = json.loads(job_json)
             if (not isinstance(job, dict) or attempt.get("runtime_click_started") is not True
                     or attempt.get("job_hash") != job_hash or attempt.get("authorization_id") != authorization_id
-                    or queue.greenhouse_identity(attempt.get("application_url")) != identity
-                    or queue.greenhouse_identity(job.get("url")) != identity):
+                    or boards.job_identity(attempt.get("application_url")) != identity
+                    or boards.job_identity(job.get("url")) != identity):
                 continue
         except (OSError, ValueError, TypeError):
             continue

@@ -91,6 +91,48 @@ def test_separate_runtime_gate_is_off_by_default(setup, monkeypatch):
     assert overnight.load_authorization() is None
 
 
+def test_new_user_exclusion_blocks_old_ready_draft_before_any_submit_attempt(setup):
+    db, bookpath, _, _ = setup
+    job = candidate(setup)
+    book = booklet.load(bookpath)
+    book["job_exclusions"] = {job["dedupe_hash"]: {"status": "verified", "source": "Synthetic explicit user rejection",
+                                                 "reason": "This exact job is unsuitable"}}
+    booklet.write_private(bookpath, book)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Rejected job must not enter live submission dispatcher")
+    result = asyncio.run(overnight.drain(db, bookpath, submitter=forbidden))
+    assert result["attempted"] == 0
+    assert db.execute("SELECT COUNT(*) FROM authorized_submission_attempts").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("change,allowed", [(None, True), ("resume_evidence", False), ("deterministic", False), ("role", False)])
+def test_modern_submit_requires_current_independent_role_fit_evidence(setup, monkeypatch, change, allowed):
+    from jhb.applications import role_fit
+    db, bookpath, _, _ = setup
+    job = candidate(setup)
+    book = booklet.load(bookpath)
+    book["roles"]["sde"]["role.experience"] = booklet.answer("Synthetic backend internship", "Synthetic original resume")
+    booklet.write_private(bookpath, book)
+    directory = config.ROOT / "private" / "applications" / job["dedupe_hash"]
+    description = json.loads((directory / "eligibility.json").read_text())["description"]
+    fit = {"state": "eligible", "source": role_fit.POLICY, "selected_role": "sde", "mode": "independent_codex",
+           "evidence_hash": role_fit.evidence_hash({**job, "verified_job_description": description}, book, "sde")}
+    if change == "deterministic": fit["mode"] = "deterministic"
+    if change == "role": fit["selected_role"] = "ml"
+    if change == "resume_evidence":
+        book["roles"]["sde"]["role.experience"] = booklet.answer("Different verified resume", "Synthetic changed original source")
+        booklet.write_private(bookpath, book)
+    booklet.write_private(directory / "role-fit.json", fit)
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    called = []
+    async def submitter(job, packet, answers, *, authorization, attempt):
+        called.append(job["dedupe_hash"])
+        return success(job, attempt)
+    result = asyncio.run(overnight.drain(db, bookpath, submitter=submitter))
+    assert result["attempted"] == int(allowed)
+    assert bool(called) is allowed
+
+
 def test_new_job_attempt_is_durable_before_submit_and_receipt_tracks_once(setup):
     db, bookpath, _, _ = setup
     job = candidate(setup)

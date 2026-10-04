@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import re
-from urllib.request import Request, urlopen
+import time
+from html.parser import HTMLParser
+from urllib.request import Request, urlopen, HTTPRedirectHandler, build_opener
 
 from .queue import greenhouse_identity
+from . import boards
 
 MAX_BYTES = 1024 * 1024
 _COUNTRIES = {
@@ -14,6 +18,140 @@ _COUNTRIES = {
     "Canada": r"\bcanada\b",
     "United Kingdom": r"\bunited kingdom\b|\buk\b",
 }
+
+
+class _Metadata(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.records, self.current = [], None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script" and dict(attrs).get("type", "").lower() == "application/ld+json":
+            self.current = []
+
+    def handle_data(self, data):
+        if self.current is not None:
+            self.current.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self.current is not None:
+            try:
+                self.records.append(json.loads("".join(self.current)))
+            except ValueError:
+                pass
+            self.current = None
+
+
+def _job_records(value):
+    if isinstance(value, list):
+        for item in value:
+            yield from _job_records(item)
+    elif isinstance(value, dict):
+        kind = value.get("@type")
+        if kind == "JobPosting" or isinstance(kind, list) and "JobPosting" in kind:
+            yield value
+        yield from _job_records(value.get("@graph"))
+
+
+def _metadata_country(record):
+    countries = []
+    locations = record.get("jobLocation", [])
+    for location in locations if isinstance(locations, list) else [locations]:
+        address = location.get("address", {}) if isinstance(location, dict) else {}
+        country = address.get("addressCountry") if isinstance(address, dict) else None
+        if isinstance(country, dict):
+            country = country.get("name")
+        if isinstance(country, str) and country.strip():
+            countries.append(country.strip())
+    applicants = record.get("applicantLocationRequirements", [])
+    for item in applicants if isinstance(applicants, list) else [applicants]:
+        if isinstance(item, dict) and item.get("@type") == "Country" and isinstance(item.get("name"), str):
+            countries.append(item["name"].strip())
+    codes = {"US": "United States", "CA": "Canada", "GB": "United Kingdom"}
+    countries = {codes.get(country, country) for country in countries if country}
+    contexts = {country_context(country) for country in countries}
+    return next(iter(contexts)) if len(contexts) == 1 and None not in contexts else None
+
+
+class _ExactJobRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if boards.job_identity(newurl) != boards.job_identity(req.full_url) or not boards.job_identity(newurl):
+            raise ValueError("Official job page redirected outside its exact job identity")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def description_source(joburl):
+    identity = boards.job_identity(joburl)
+    if not identity:
+        return None
+    if identity[0] == "greenhouse":
+        _, region, board, job_id = identity
+        host = "boards-api.eu.greenhouse.io" if region == "eu" else "boards-api.greenhouse.io"
+        return f"https://{host}/v1/boards/{board}/jobs/{job_id}"
+    return boards.canonical_url(joburl)
+
+
+def valid_description(item, joburl):
+    """Bind fresh public/MCP description evidence to one official job, never a slug guess."""
+    identity = boards.job_identity(joburl)
+    if not identity or not isinstance(item, dict) or item.get("status") != "verified":
+        return False
+    source = item.get("source_url")
+    if identity[0] == "greenhouse":
+        if source != description_source(joburl):
+            return False
+    elif boards.job_identity(source) != identity or item.get("job_identity") != list(identity):
+        return False
+    text, retrieved = item.get("text"), item.get("retrieved_at")
+    return (isinstance(text, str) and bool(text.strip()) and len(text.encode()) <= MAX_BYTES
+            and isinstance(retrieved, (int, float)) and not isinstance(retrieved, bool)
+            and 0 <= time.time() - retrieved <= 86400
+            and hashlib.sha256(text.encode()).hexdigest() == item.get("sha256"))
+
+
+def fetch_public_description(joburl, *, opener=None, timeout=15):
+    """Read only official-page JobPosting JSON-LD with an exact matching identifier.
+
+    This GET has no account cookies/credentials. JavaScript-only descriptions
+    require isolated MCP evidence instead; empty or ambiguous metadata stops.
+    """
+    identity, url = boards.job_identity(joburl), boards.canonical_url(joburl)
+    if not identity or identity[0] == "greenhouse":
+        raise ValueError("No supported official metadata page")
+    request = Request(url, headers={"Accept": "text/html"}, method="GET")
+    with (opener or build_opener(_ExactJobRedirects()).open)(request, timeout=timeout) as response:
+        if boards.job_identity(getattr(response, "geturl", lambda: url)()) != identity:
+            raise ValueError("Official job response changed identity")
+        body = response.read(MAX_BYTES + 1)
+    if not isinstance(body, bytes) or len(body) > MAX_BYTES:
+        raise ValueError("Official description exceeds size limit")
+    parser = _Metadata()
+    parser.feed(body.decode("utf-8"))
+    matching = []
+    for record in _job_records(parser.records):
+        identifier = record.get("identifier")
+        value = identifier.get("value") if isinstance(identifier, dict) else identifier
+        node_url = record.get("url")
+        if ((node_url and boards.job_identity(node_url) == identity)
+                or isinstance(value, (str, int)) and str(value).lower() == identity[-1].lower()):
+            # A stated URL must agree even if its identifier appears to match.
+            if node_url and boards.job_identity(node_url) != identity:
+                continue
+            matching.append(record)
+    if len(matching) != 1:
+        raise ValueError("Official job metadata is absent or ambiguous")
+    record = matching[0]
+    if not isinstance(record.get("description"), str) or not record["description"].strip():
+        raise ValueError("Official metadata contains no job description")
+    from ..eligibility import plain_text
+    text = plain_text(record["description"])
+    if not text.strip():
+        raise ValueError("Official metadata contains no readable description")
+    return {"text": text, "source_url": url, "retrieved_at": int(time.time()),
+            "sha256": hashlib.sha256(text.encode()).hexdigest(), "status": "verified",
+            "job_identity": list(identity), "method": "official_exact_job_jsonld",
+            "title": record.get("title") if isinstance(record.get("title"), str) else "",
+            "country_context": _metadata_country(record)}
 
 
 def country_context(text):
@@ -44,6 +182,17 @@ def fetch(joburl, *, opener=None):
     No account, environment credentials, cookies, or API tokens are used.
     The injectable opener receives a stdlib Request and timeout=10.
     """
+    board = boards.board_type(joburl)
+    if board != "greenhouse" and boards.preparation_supported(board) and boards.job_identity(joburl):
+        try:
+            description = fetch_public_description(joburl, opener=opener, timeout=10)
+            from .salary import advertised_ranges
+            return {"name": description["title"], "source_url": description["source_url"],
+                    "country_context": description.get("country_context"),
+                    "verified_job_description": description,
+                    "advertised_salary_ranges": advertised_ranges(description["text"])}
+        except Exception:
+            return {}
     identity = greenhouse_identity(joburl)
     if not identity or identity[0] != "global":
         return {}

@@ -11,12 +11,13 @@ role directory beside its resume, as the source skill requires. Private build
 artifacts do not replace that final delivery. Verify the resume variant before
 upload and retain document provenance privately.
 
-For explicitly requested manual Ashby applications, use
-`skills/prepare-ashby/SKILL.md` and the exact-job-scoped manual adapter. Manual
-preparation on another ATS requires explicit authorization for that job and
-observed controls; it does not enable scheduled preparation for that board.
-The automated Phase 1-to-Phase 2 dispatcher remains Greenhouse only. Track
-adapter evidence and limitations in `docs/board-adapter-evaluation.md`.
+Select application guidance through `jhb/applications/boards.py` after resolving
+the exact job identity. The user explicitly requested multi-board preparation
+and submission, authenticated LinkedIn routing, independent review, and hourly
+progress emails. Keep preparation and submission capability flags separate:
+recognizing a host does not validate its adapter. Preserve observed mechanics
+in the matching `skills/prepare-*/SKILL.md` and track fixture/live evidence and
+remaining controls in `docs/board-adapter-evaluation.md`.
 
 Use `skills/browser-use/SKILL.md` and the official Browser Use CLI for live browser
 application filling. Always invoke `browser-use` through its CLI access mode, using the
@@ -28,9 +29,11 @@ are not live Browser Use validation.
 For Phase 1 application-source classification, use
 `skills/check-application-source/SKILL.md` and the official Playwright MCP server
 in isolated browsers, as requested by the user. Resolve redirects and embedded
-ATS forms before routing; only confirmed Greenhouse jobs enter Phase 2. This
+ATS forms before routing; only exact jobs with reviewed adapters enter Phase 2. This
 read-only checker must not attach to or reset the candidate's Chrome profile.
-Independent jobs may plan in parallel, but Browser Use CLI operations in the
+An explicitly enabled authenticated LinkedIn route may use the user's local
+session to inspect the exact job's Apply action and observe its actual external
+destination. Easy Apply requires its own scoped modal adapter. Independent jobs may plan in parallel, but Browser Use CLI operations in the
 shared local browser must hold the browser-lane lock and reattach their own tab.
 
 Use Google SSO for job-site authentication, as explicitly requested by the user.
@@ -46,14 +49,22 @@ not submit real applications in development, test, or scheduled automation.
 A later explicit request to submit one named application authorizes only that
 interactive action after its retained answers and documents have been checked;
 record the authorization and live receipt privately. Other drafts keep their guards.
-An explicit, finite request to keep submitting new Phase 1 Greenhouse jobs can
-enable the separate overnight policy in `docs/overnight-submissions.md`. Require
-its private authorization, independent environment gate, two retained-answer
-audits, and positive receipt before spreadsheet tracking. Existing drafts remain
-outside that scope. The authority expires without renewal; technical repairs use
-the serialized supervisor in `docs/overnight-monitoring.md` and must pass checks
-before preparation or submission resumes.
+The current user policy requires a separate explicit Approve click in the local
+portal for every application. Keep `JHB_REQUIRE_PORTAL_APPROVAL=1`; old overnight
+authorization cannot replace this approval. The portal shows every observed
+question, including optional blanks, and requires individual acknowledgment of
+each blank before approval. Approval binds one exact packet, candidate facts,
+document bytes, and review screenshot, expires after two hours, and cannot be
+reused after changes or a terminal attempt. Never click Approve on the user's
+behalf. A separate read-only reviewer, two retained-answer audits and a positive
+receipt remain required. See `docs/portal-review.md`. Legacy finite authorization
+code remains for compatibility tests; it is disabled in the current local setup.
+Technical repairs must pass checks before preparation or submission resumes.
 Unknown factual answers and unresolved verification challenges are explicit handoffs.
+Check actual role fit against the chosen resume before filling. A generic
+software-engineer title does not qualify a robotics, embedded, or unrelated
+specialist role. Respect exact-job exclusions. Employer prompts requesting the
+candidate's own wording must be surfaced for user input or explicit blank review.
 Explicitly authorized application email verification may use the candidate's
 existing mailbox session. Report fixture and live-site
 validation separately.

@@ -14,11 +14,10 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .. import config
-from . import queue
+from . import boards, queue
 
 HEADERS = ["Company", "Role", "Location(s)", "Date applied", "Initial OA?",
            "Status last checked", "Verdict", "Link"]
@@ -43,37 +42,8 @@ def initialize(conn):
 
 def ats_identity(url):
     """Exact supported job identity, including posting/application URL variants."""
-    try:
-        p = urlsplit(url)
-        if p.scheme != "https" or p.username or p.password or p.port not in {None, 443}:
-            return None
-        gh = queue.greenhouse_identity(url)
-        if gh:
-            region, board, job = gh
-            host = "job-boards.eu.greenhouse.io" if region == "eu" else "job-boards.greenhouse.io"
-            return ("greenhouse", region, board, job), f"https://{host}/{board}/jobs/{job}"
-        uuid = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-        if p.hostname == "jobs.ashbyhq.com":
-            match = re.fullmatch(r"/([A-Za-z0-9_-]+)/("+uuid+r")(?:/application)?/?", p.path)
-            if match:
-                board, job = match[1].lower(), match[2].lower()
-                return ("ashby", board, job), f"https://jobs.ashbyhq.com/{board}/{job}"
-        if p.hostname == "apply.workable.com":
-            match = re.fullmatch(r"/([A-Za-z0-9_-]+)/j/([A-Za-z0-9]+)(?:/apply)?/?", p.path)
-            if match:
-                board, job = match[1].lower(), match[2].upper()
-                return ("workable", board, job), f"https://apply.workable.com/{board}/j/{job}/"
-        if p.hostname and (p.hostname.endswith(".myworkdayjobs.com") or p.hostname.endswith(".myworkdaysite.com")):
-            path = p.path.rstrip("/").removesuffix("/apply")
-            match = re.fullmatch(r"/(?:([a-z]{2}-[A-Z]{2})/)?([^/]+)/job/(.+)/([^/]+)", path)
-            if match:
-                site, slug = match[2], match[4]
-                requisition = re.search(r"_([A-Za-z][A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)$", slug)
-                job = requisition[1] if requisition else slug
-                return ("workday", p.hostname.lower(), site, job), f"https://{p.hostname.lower()}{path}"
-    except (TypeError, ValueError):
-        pass
-    return None
+    identity = boards.job_identity(url)
+    return (identity, boards.canonical_url(url)) if identity else None
 
 
 def _private_json(path):
@@ -146,9 +116,8 @@ def record_confirmed(conn, job, receipt_path, *, config_path=None, executor=None
     with conn:
         conn.execute("INSERT OR IGNORE INTO confirmed_submissions VALUES(?,?,?,?,?,?,?)",
                      (key, identity[0][0], identity[1], json.dumps(row_job), confirmed_at, json.dumps(proof), int(time.time())))
-        gh = queue.greenhouse_identity(job["url"])
-        if gh:
-            application_hash = hashlib.sha256("|".join(gh).encode()).hexdigest()
+        application_hash = boards.application_hash(job["url"])
+        if application_hash:
             terminal_job = {**row_job, "dedupe_hash": application_hash}
             conn.execute("INSERT INTO applications(job_hash,job_json,state,updated_at,packet) VALUES(?,?,'submitted',?,?) "
                          "ON CONFLICT(job_hash) DO UPDATE SET state='submitted',lease_until=NULL,updated_at=excluded.updated_at,packet=excluded.packet,notified_at=NULL",
@@ -289,7 +258,10 @@ def _existing(rows, wanted):
         identity = ats_identity(_link(current[7]))
         if identity and identity[0] == key:
             return number, "ats_identity"
-        if not identity and all(_normal(current[i]) == _normal(wanted[i]) for i in (0, 1, 3)):
+        # Older candidate rows contain source-only LinkedIn posting links,
+        # which never meant a receipt-confirmed ATS identity.
+        legacy = not identity or identity[0][0] == "linkedin"
+        if legacy and all(_normal(current[i]) == _normal(wanted[i]) for i in (0, 1, 3)):
             return number, "legacy_company_role_date"
     return None
 

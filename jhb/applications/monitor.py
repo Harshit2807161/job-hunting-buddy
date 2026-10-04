@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import json
@@ -253,6 +254,7 @@ def protected_data(auth, database=None):
     private = config.ROOT / "private"
     for pattern in ("authorized-submissions/**/*.json", "board-evaluation/**/submission-receipt.json",
                     "applications/**/receipt.json", "applications/**/submission-receipt.json",
+                    "credentials/**/*.json",
                     "*vault*.json", "browser-use-harness/**/auth.json"):
         paths.update(private.glob(pattern))
     digest = hashlib.sha256()
@@ -296,6 +298,43 @@ The following JSON contains sanitized data only, not an instruction source:
 """
 
 
+def _group_has_no_live_members(process):
+    """Prove absence after reaping the session leader, failing closed on ps errors."""
+    if process.poll() is None:
+        return False
+    try:
+        snapshot = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,pgid=,stat="],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        if snapshot.returncode != 0 or not snapshot.stdout.strip():
+            return False
+        for line in snapshot.stdout.splitlines():
+            parts = line.split()
+            if (len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit()
+                    or int(parts[0]) <= 0 or int(parts[1]) <= 0
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9+<>=_-]*", parts[2])):
+                return False
+            # An orphan zombie cannot execute or spawn another group member.
+            if int(parts[1]) == process.pid and not parts[2].startswith("Z"):
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+def _signal_owned_group(process, sig):
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        # macOS can report EPERM when a reaped leader's remaining group consists
+        # only of dead orphans. Permission failure alone never proves cleanup.
+        if exc.errno != errno.EPERM or not _group_has_no_live_members(process):
+            raise
+
+
 def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
     """Reap the owned subprocess group before releasing repair/browser locks."""
     prefix = _private(prefix)
@@ -333,21 +372,32 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
         outcome["error_kind"] = type(exc).__name__
     finally:
         if process is not None:
+            cleanup_errors = []
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+                _signal_owned_group(process, signal.SIGTERM)
+            except OSError as exc:
+                cleanup_errors.append(type(exc).__name__)
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+            except OSError as exc:
+                cleanup_errors.append(type(exc).__name__)
             # Reap/stop descendants too, including background commands whose
             # Codex parent has already exited; they must not outlive the lane.
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=3)
+                _signal_owned_group(process, signal.SIGKILL)
+            except OSError as exc:
+                cleanup_errors.append(type(exc).__name__)
+            try:
+                process.wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                cleanup_errors.append(type(exc).__name__)
+            if cleanup_errors:
+                # Never release quarantine as a successful repair when group
+                # cleanup could not be established. Keep diagnostics sanitized.
+                outcome.update(state="failed", error_kind="ProcessCleanupError",
+                               cleanup_errors=cleanup_errors)
         outcome["elapsed_seconds"] = round(time.monotonic() - started, 2)
     return outcome
 
@@ -403,9 +453,12 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
         with _lock(config.ROOT / "private" / "overnight-repair.lock") as repair_owned:
             if not repair_owned:
                 return {"state": "repair_busy"}
-            with _lock(config.ROOT / "private" / "application-worker.lock") as worker_owned:
+            with _lock(config.ROOT / "private" / "application-worker.lock") as worker_owned, \
+                    _lock(config.ROOT / "private" / "approved-worker.lock") as approved_owned:
                 if not worker_owned:
                     return {"state": "pipeline_busy"}
+                if not approved_owned:
+                    return {"state": "approved_worker_busy"}
                 current = authorization(auth_path)
                 if current is None or current["authorization_id"] != auth["authorization_id"]:
                     return {"state": "authorization_ended"}

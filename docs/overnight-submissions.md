@@ -1,5 +1,11 @@
 # Expiring overnight submission policy
 
+**Historical mode.** The current local policy requires a candidate Approve click
+for each exact draft through the portal. `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects
+the broad authority described below, even if its environment flag is enabled.
+See [portal-review.md](portal-review.md). Compatibility tests retain the older
+finite policy, but it is not the active submission mode.
+
 Normal Phase 2 preparation stops before Submit. An explicitly authorized overnight
 window can opt in to submission of **new Phase 1 Greenhouse jobs only**. Existing
 drafts and manually prepared jobs remain outside this window; a separate explicit

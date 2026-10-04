@@ -1,4 +1,4 @@
-"""Bounded Phase 1 → isolated source checks → Greenhouse preparation manager.
+"""Bounded Phase 1 → isolated source checks → reviewed ATS adapters.
 
 Only the manager touches SQLite. Independent source checks and application
 planners overlap; Browser Use CLI operations keep their existing atomic lock.
@@ -18,11 +18,11 @@ import time
 from pathlib import Path
 
 from .. import config, notify
-from . import booklet, queue, source_queue
+from . import booklet, boards, queue, source_queue
 
 TRANSIENT_KINDS = {"TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
                    "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError",
-                   "browser_transport", "browser_mechanics", "planner_transport"}
+                   "browser_transport", "browser_mechanics", "planner_transport", "job_description_transport"}
 
 
 def _exception_recovery(exc):
@@ -160,16 +160,107 @@ def _requeue_answered_handoff(conn, job, result, book_path):
     return bool(changed)
 
 
-async def _resolve_one(item, resolver, semaphore, timeout):
+async def _resolve_one(item, resolver, semaphore, timeout, authenticated_resolver=None):
     async with semaphore:
         try:
+            states = {"greenhouse", "not_greenhouse", "blocked", "ambiguous", "error"}
+            if authenticated_resolver is not None and boards.board_type(item["job"].get("url")) == "linkedin":
+                # The user explicitly enabled their signed-in source session.
+                # Local resolution itself isolates any external ATS destination.
+                try:
+                    local = await asyncio.wait_for(authenticated_resolver(
+                        item["job"], isolated_outcome=None, timeout=timeout), timeout=timeout + 10)
+                    if isinstance(local, dict) and local.get("state") in states - {"ambiguous", "error"}:
+                        return local
+                except Exception:
+                    pass
             outcome = await asyncio.wait_for(resolver(item["job"], timeout=timeout), timeout=timeout + 10)
-            if not isinstance(outcome, dict) or outcome.get("state") not in {"greenhouse", "not_greenhouse", "blocked", "ambiguous", "error"}:
+            if not isinstance(outcome, dict) or outcome.get("state") not in states:
                 raise ValueError("Invalid source classifier outcome")
             return outcome
         except Exception as exc:
             # Exception messages can contain page content, cookies or form values.
             return {"state": "error", "board_type": "unknown", "reason": f"Source check failed: {type(exc).__name__}", "evidence": []}
+
+
+def _route_source(conn, item, outcome, path):
+    url = outcome.get("application_url")
+    identity = boards.job_identity(url)
+    observed_board = outcome.get("board_type") or outcome.get("ats")
+    board = boards.route_board(url, observed_board)
+    if (outcome.get("closed") or outcome.get("state") not in {"greenhouse", "not_greenhouse"}
+            or not identity or not boards.preparation_supported(board)
+            or observed_board and observed_board not in {board, "unknown"}):
+        return 0
+    resolved = {**item["job"], "url": url, "board_type": board,
+                "source_url": item["job"]["url"], "source_evidence": str(path)}
+    from .job_context import valid_description
+    description = outcome.get("verified_job_description")
+    if valid_description(description, url):
+        resolved["verified_job_description"] = description
+    count = queue.enqueue(conn, [resolved])
+    # One source can wrap the same canonical job as another source. The route
+    # marker records both without changing any existing application state.
+    conn.execute("INSERT OR IGNORE INTO source_application_routes(source_job_hash,application_hash,routed_at) VALUES(?,?,?)",
+                 (item["source_job_hash"], boards.application_hash(url), int(time.time())))
+    conn.commit()
+    return count
+
+
+def replay_resolved_sources(conn, *, limit=100):
+    """Newly reviewed adapters may consume old classifications without resetting jobs."""
+    conn.execute("CREATE TABLE IF NOT EXISTS source_application_routes (source_job_hash TEXT PRIMARY KEY,"
+                 "application_hash TEXT NOT NULL,routed_at INTEGER NOT NULL)")
+    supported = [name for name in boards.ADAPTERS if boards.preparation_supported(name)]
+    if not supported:
+        return 0
+    placeholders = ",".join("?" for _ in supported)
+    rows = conn.execute("SELECT s.* FROM application_sources s LEFT JOIN source_application_routes r "
+                        "ON r.source_job_hash=s.source_job_hash WHERE s.state='resolved' AND s.application_url IS NOT NULL "
+                        f"AND s.board IN ({placeholders}) AND r.source_job_hash IS NULL ORDER BY s.updated_at,s.source_job_hash LIMIT ?",
+                        (*supported, limit)).fetchall()
+    inserted = 0
+    for row in rows:
+        try:
+            path = Path(row["evidence_path"])
+            if not path.resolve().is_relative_to((config.ROOT / "private" / "source-checks").resolve()) or path.stat().st_size > 2_000_000:
+                continue
+            outcome = json.loads(path.read_text())
+            if outcome.get("application_url") != row["application_url"] or outcome.get("board_type", outcome.get("ats")) != row["board"]:
+                continue
+            inserted += _route_source(conn, {**dict(row), "job": json.loads(row["job_json"])}, outcome, path)
+        except (OSError, TypeError, ValueError):
+            continue
+    return inserted
+
+
+def recover_authenticated_linkedin_sources(conn, *, limit=3):
+    """An explicitly enabled local session may reconsider old isolated handoffs once."""
+    if os.environ.get("JHB_LINKEDIN_LOCAL_RESOLUTION") != "1":
+        return 0
+    conn.execute("CREATE TABLE IF NOT EXISTS source_authenticated_rechecks (source_job_hash TEXT PRIMARY KEY,"
+                 "rechecked_at INTEGER NOT NULL)")
+    rows = conn.execute("SELECT s.* FROM application_sources s LEFT JOIN source_authenticated_rechecks r "
+                        "ON r.source_job_hash=s.source_job_hash WHERE s.state IN "
+                        "('waiting_login','waiting_captcha','unknown','resolved') AND r.source_job_hash IS NULL "
+                        "AND (s.board IN ('linkedin','unknown') OR s.board IS NULL) "
+                        "AND (json_extract(s.job_json,'$.url') LIKE 'https://www.linkedin.com/jobs/view/%' "
+                        "OR json_extract(s.job_json,'$.url') LIKE 'https://linkedin.com/jobs/view/%') "
+                        "ORDER BY s.updated_at,s.source_job_hash LIMIT 100").fetchall()
+    changed = 0
+    for row in rows:
+        job = json.loads(row["job_json"])
+        if (boards.board_type(job.get("url")) != "linkedin"
+                or row["application_url"] and boards.board_type(row["application_url"]) not in {"linkedin", "unknown"}):
+            continue
+        conn.execute("INSERT INTO source_authenticated_rechecks VALUES(?,?)", (row["source_job_hash"], int(time.time())))
+        conn.execute("UPDATE application_sources SET state='queued',lease_until=NULL,attempts=0,available_at=0,"
+                     "notified_at=NULL,updated_at=? WHERE source_job_hash=?", (int(time.time()), row["source_job_hash"]))
+        changed += 1
+        if changed >= limit:
+            break
+    conn.commit()
+    return changed
 
 
 async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
@@ -178,6 +269,17 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
             result, packet = await asyncio.wait_for(runner(item["job"], book, planner_name=planner_name), timeout=timeout)
             if not isinstance(result, dict) or result.get("state") not in queue.STATES - {"queued", "running", "retry", "submitted"}:
                 raise ValueError("Invalid preparation outcome")
+            verification = result.get("eligibility", {}).get("verification", {})
+            if (result.get("state") == "waiting_input" and not result.get("missing")
+                    and verification.get("kind") == "job_description"
+                    and verification.get("error_type") in {"TimeoutError", "TimeoutExpired", "URLError", "OSError",
+                                                            "ConnectionError", "ConnectionResetError"}):
+                # The profile cannot answer a network failure. Retry only the
+                # official-description transport, with the normal finite budget.
+                from .worker import write_packet
+                result = {**result, "state": "failed", "retryable": True, "error_kind": "job_description_transport",
+                          "reason": "Official job-description transport failed before browser preparation"}
+                packet = await write_packet(None, config.ROOT / "private" / "applications" / item["job_hash"], item["job"], result)
             return result, packet
         except Exception as exc:
             from .worker import write_packet
@@ -190,7 +292,7 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
 
 async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, application_limit=3,
                 concurrency=2, source_timeout=90, application_timeout=600, planner_name="codex", send_email=False,
-                max_active_drafts=10, submission_runner=None):
+                max_active_drafts=10, submission_runner=None, authenticated_resolver=None, heartbeat=None):
     """Run one already-authorized batch. Caller owns the single manager lock."""
     if not (1 <= concurrency <= 4 and 1 <= source_limit <= 20 and 1 <= application_limit <= 10):
         raise ValueError("Pipeline batch/concurrency limits out of range")
@@ -201,6 +303,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     if resolver is None:
         from .greenhouse_source import resolve_job
         resolver = resolve_job
+    if authenticated_resolver is None and os.environ.get("JHB_LINKEDIN_LOCAL_RESOLUTION") == "1":
+        from .linkedin import resolve_source
+        authenticated_resolver = resolve_source
     if runner is None:
         from .worker import run_job
         from .job_context import fetch
@@ -209,39 +314,41 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
             if context:
                 booklet.write_private(config.ROOT / "private" / "applications" / job["dedupe_hash"] / "public-job-context.json", context)
                 job = {**job, "work_country": context.get("country_context"),
-                       "advertised_salary_ranges": context.get("advertised_salary_ranges", [])}
+                       "advertised_salary_ranges": context.get("advertised_salary_ranges", []),
+                       **({"verified_job_description": context["verified_job_description"]}
+                          if context.get("verified_job_description") else {})}
             return await run_job(job, book, **kwargs)
     from .worker import notify_pending
 
     queue.initialize(conn)
     source_queue.initialize(conn)
+    local_rechecks = recover_authenticated_linkedin_sources(conn, limit=source_limit)
+    replayed = replay_resolved_sources(conn)
     recovered = recover_technical_failures(conn)
     notify_source_handoffs(conn, send_email=send_email)
-    summary = {"sources_checked": 0, "boards": {}, "applications_queued": 0,
+    summary = {"sources_checked": 0, "boards": {}, "applications_queued": replayed, "sources_replayed": replayed,
+               "authenticated_sources_requeued": local_rechecks,
                "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": 0,
                "technical_recovered": recovered, "technical_retries": 0}
     sources = []
-    source_lease = math.ceil(source_limit / concurrency) * (source_timeout + 10) + 120
+    if heartbeat:
+        heartbeat.update(stage="source_resolution", summary=summary)
+    source_lease = math.ceil(source_limit / concurrency) * (source_timeout + 10) * (2 if authenticated_resolver else 1) + 120
     for _ in range(source_limit):
         item = source_queue.claim(conn, lease_seconds=source_lease)
         if item is None:
             break
         sources.append(item)
     source_semaphore = asyncio.Semaphore(concurrency)
-    outcomes = await asyncio.gather(*[_resolve_one(item, resolver, source_semaphore, source_timeout)
+    outcomes = await asyncio.gather(*[_resolve_one(item, resolver, source_semaphore, source_timeout, authenticated_resolver)
                                       for item in sources])
     for item, outcome in zip(sources, outcomes):
         state = outcome.get("state", "error")
         board = outcome.get("board_type") or outcome.get("ats") or ("greenhouse" if state == "greenhouse" else "unknown")
         path = _source_artifact(item, outcome)
         application_url = outcome.get("application_url")
-        if state == "greenhouse" and queue.is_greenhouse(application_url):
-            resolved = {**item["job"], "url": application_url,
-                        "source_url": item["job"]["url"], "source_evidence": str(path)}
-            # Canonical queue identity makes crash/re-resolution and multiple wrappers idempotent.
-            summary["applications_queued"] += queue.enqueue(conn, [resolved])
-            terminal = "resolved"
-        elif state == "not_greenhouse":
+        if state in {"greenhouse", "not_greenhouse"}:
+            summary["applications_queued"] += _route_source(conn, item, outcome, path)
             terminal = "resolved"
         elif state == "blocked":
             terminal = outcome.get("handoff", "waiting_login")
@@ -258,6 +365,8 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         summary["boards"][board] = summary["boards"].get(board, 0) + 1
 
     items = []
+    if heartbeat:
+        heartbeat.update(stage="preparation", summary=summary)
     lease = math.ceil(application_limit / concurrency) * application_timeout + 120
     active = conn.execute("SELECT COUNT(*) FROM applications WHERE state IN "
                           "('waiting_review','waiting_input','waiting_login','waiting_captcha','submission_uncertain') OR "
@@ -299,12 +408,19 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                 summary["states"][state] = summary["states"].get(state, 0) + 1
                 if state == "waiting_input":
                     summary["question_handoffs"] += 1
-    # Expiring user opt-in is evaluated after preparation and before review
-    # notices. Defaults perform no terminal clicks; uncertain attempts stay held.
-    from .overnight import drain as drain_authorized
+    # The current portal policy consumes only one explicit approval per exact
+    # draft. Legacy finite-authority dispatch remains gated for compatibility.
+    if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1":
+        from .approvals import drain as drain_authorized
+    else:
+        from .overnight import drain as drain_authorized
+    if heartbeat:
+        heartbeat.update(stage="submission", summary=summary)
     summary["authorized_submissions"] = await drain_authorized(
         conn, book_path, limit=application_limit, submitter=submission_runner)
     from .submission_notices import notify_uncertain
+    if heartbeat:
+        heartbeat.update(stage="notifications", summary=summary)
     summary["submission_outcome_notices"] = notify_uncertain(conn, send_email=send_email)
     # Refresh from the authoritative ledger, including earlier batches and
     # answered questions. Never leave a stale outbox after successful resumption.
@@ -330,7 +446,11 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     # Delivery is the final stage for separately confirmed receipts. Preparation
     # outcomes and submitted markers cannot create tracker entries here.
     from .tracking import sync_pending
+    if heartbeat:
+        heartbeat.update(stage="tracking", summary=summary)
     summary["submission_tracking"] = sync_pending(conn)
+    from .hourly_reports import report
+    summary["hourly_report"] = report(conn)
     summary["backlog"] = {
         "sources": conn.execute("SELECT COUNT(*) FROM application_sources WHERE state IN ('queued','retry')").fetchone()[0],
         "applications": conn.execute("SELECT COUNT(*) FROM applications WHERE state IN ('queued','retry')").fetchone()[0],
@@ -354,7 +474,17 @@ def run_cycle(conn, book_path, **kwargs):
             fcntl.flock(manager, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"skipped": "Another pipeline/worker manager is active"}
+        pause = config.ROOT / "private" / "pipeline-pause.json"
+        if pause.exists() or pause.is_symlink():
+            from .pipeline_status import Heartbeat
+            from .hourly_reports import report
+            Heartbeat(conn).update(status="paused", reasons=["automation_paused"])
+            return {"skipped": "Application automation is explicitly paused", "hourly_report": report(conn)}
         quarantine = config.ROOT / "private" / "overnight-monitor" / "repair-pending.json"
         if quarantine.exists() or quarantine.is_symlink():
-            return {"skipped": "Overnight repair requires validated recovery"}
-        return asyncio.run(cycle(conn, book_path, **kwargs))
+            from .pipeline_status import Heartbeat
+            from .hourly_reports import report
+            Heartbeat(conn).update(status="blocked", reasons=["repair_quarantine"])
+            return {"skipped": "Overnight repair requires validated recovery", "hourly_report": report(conn)}
+        from .pipeline_status import monitor_cycle
+        return asyncio.run(monitor_cycle(conn, book_path, cycle, **kwargs))

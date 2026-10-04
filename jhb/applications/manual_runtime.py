@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,12 +15,15 @@ from .planner import safe_next
 
 
 def application_scope(url, board="ashby"):
+    from .boards import board_type, job_identity
     parsed = urlsplit(url)
-    if (board != "ashby" or parsed.scheme != "https" or parsed.hostname != "jobs.ashbyhq.com"
-            or parsed.username or parsed.password or parsed.port not in {None, 443}
-            or not re.fullmatch(r"/[A-Za-z0-9_-]+/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/application/?", parsed.path)):
-        raise ValueError("Manual scope requires an exact Ashby application URL")
-    return {"board": board, "origin": "https://jobs.ashbyhq.com", "path": parsed.path.rstrip("/")}
+    identity = job_identity(url)
+    suffix = "application" if board == "ashby" else "apply"
+    if (board not in {"ashby", "workable", "lever"} or board_type(url) != board
+            or not identity or not parsed.path.rstrip("/").endswith("/"+suffix)):
+        raise ValueError(f"Manual scope requires an exact {board.title()} application URL")
+    return {"board": board, "origin": "https://"+parsed.hostname, "path": parsed.path.rstrip("/")}
+
 
 
 def matches_scope(url, scope):
@@ -102,13 +107,43 @@ def dispatch(request, helpers):
         helpers["activate_tab"](helpers["current_tab"]()["targetId"])
         wait(0.1)
 
+    if operation == "records":
+        if scope["board"] != "workable":
+            raise ValueError("Saved-record editors are unsupported for this board")
+        from .workable_records import prepare_records
+        try:
+            return prepare_records(request, helpers)
+        except ValueError:
+            return {"handoff": "unsupported", "reason": "Workable's active record editor did not retain or save a verified Education/Experience record; preserve the draft for a scoped widget repair"}
+
+    native = scope["board"] in {"workable", "lever"}
+    if native:
+        from .native_ats_runtime import NATIVE_FIELDS, NATIVE_CONTROLS
     def fields():
-        return js(ASHBY_FIELDS)
+        return js(NATIVE_FIELDS if native else ASHBY_FIELDS)
 
     def group_expr(field):
         return "("+ASHBY_GROUPS+")["+str(field["owner_index"])+"]"
 
     def element_expr(field, option=None):
+        selected = option if option is not None else field
+        if "native_index" in selected:
+            if option is None:
+                if field["ref"].startswith("native-name:"):
+                    condition = "e.name==="+json.dumps(field["ref"][len("native-name:"):])
+                elif not field["ref"].startswith("native:"):
+                    condition = "e.id==="+json.dumps(field["ref"])
+                else:
+                    condition = None
+                if condition:
+                    # Upload handlers insert hidden metadata and can replace
+                    # the input. Resolve the same unique owned id/name afresh;
+                    # never let an old numeric index point at another control.
+                    return "(()=>{const a=("+NATIVE_CONTROLS+").filter(e=>"+condition+");return a.length===1?a[0]:null})()"
+            elif selected.get("native_name") and selected.get("native_type"):
+                condition = "e.name==="+json.dumps(selected["native_name"])+"&&e.type==="+json.dumps(selected["native_type"])+"&&e.value==="+json.dumps(selected["value"])
+                return "(()=>{const a=("+NATIVE_CONTROLS+").filter(e=>"+condition+");return a.length===1?a[0]:null})()"
+            return "("+NATIVE_CONTROLS+")["+str(selected["native_index"])+"]"
         if option is None:
             if field["ref"].startswith("ashby:") and field.get("widget") == "native":
                 return "[...("+group_expr(field)+").querySelectorAll('input,textarea,select')].filter(e=>e.closest('[data-field-path]')==="+group_expr(field)+")["+str(field["control_index"])+"]"
@@ -145,6 +180,8 @@ def dispatch(request, helpers):
 
     def type_text(expression, value):
         cdp("DOM.focus", backendNodeId=backend(expression))
+        if not js("document.activeElement===("+expression+")"):
+            raise ValueError("Observed manual input did not receive focus")
         cdp("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=4, commands=["selectAll"])
         cdp("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA")
         cdp("Input.dispatchKeyEvent", type="keyDown", key="Backspace", code="Backspace")
@@ -196,7 +233,10 @@ def dispatch(request, helpers):
         if js("[...document.querySelectorAll('iframe')].some(e=>/recaptcha|hcaptcha|challenge/i.test(e.src)&&e.getClientRects().length&&e.getBoundingClientRect().height>90)"):
             return {"handoff": "waiting_captcha", "reason": "A visible verification challenge requires a handoff"}
         nodes = cdp("Accessibility.getFullAXTree")["nodes"]
-        return {"url": js("location.href"), "title": js("document.title"), "fields": fields(),
+        observed_fields = fields()
+        if not observed_fields:
+            return {"handoff": "unsupported", "reason": "The exact job has no recognized application-owned native controls; open its application form"}
+        return {"url": js("location.href"), "title": js("document.title"), "fields": observed_fields,
                 "buttons": [{"ref": str(n["backendDOMNodeId"]), "label": n.get("name", {}).get("value", "")}
                             for n in nodes if n.get("role", {}).get("value") == "button" and n.get("backendDOMNodeId")]}
     if operation in {"describe", "fill"}:
@@ -254,6 +294,77 @@ def dispatch(request, helpers):
                     raise ValueError("Manual choices did not retain the approved answer")
             return {"verified": True, "selected": [o["label"] for o in wanted]}
         expr = element_expr(field)
+        if field.get("widget") == "lever-location":
+            if scope["board"] != "lever" or not isinstance(value, str) or not value.strip():
+                raise ValueError("Lever location requires an approved city")
+            container = "("+expr+").closest('.application-field')"
+            committed = lambda: js("(()=>{const root="+container+";return {value:("+expr+").value,token:root.querySelector('#selected-location[name=selectedLocation]')?.value||''}})()")
+            before = committed()
+            if before.get("token") and option_matches(before["value"], value, field_id="candidate-location"):
+                return {"verified": True, "selected": before["value"]}
+            type_text(expr, value)
+            menu = "[...("+container+").querySelectorAll('.dropdown-results > *')].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden')"
+            matches = []
+            for _ in range(32):
+                observed = js("("+menu+").map((e,index)=>({index,label:e.innerText.trim()}))")
+                matches = [o for o in observed if option_matches(o["label"], value, field_id="candidate-location")]
+                if matches:
+                    break
+                wait(.25)
+            if len(matches) != 1:
+                escape()
+                raise ValueError("Lever location choice is absent or ambiguous")
+            chosen = matches[0]
+            option = "("+menu+")["+str(chosen["index"])+"]"
+            if js("("+option+")?.innerText.trim()") != chosen["label"]:
+                raise ValueError("Observed Lever location choice changed")
+            click(option)
+            for _ in range(12):
+                wait(.15)
+                after = committed()
+                if (after.get("token") and after.get("value") == chosen["label"] and
+                        not (before.get("token") and before["value"] != after["value"] and before["token"] == after["token"])):
+                    return {"verified": True, "selected": after["value"], "committed": True}
+            raise ValueError("Lever location did not retain a committed catalog choice")
+        if kind == "checkbox":
+            if not isinstance(value, bool):
+                raise ValueError("Checkbox requires an approved boolean")
+            before = state(expr)
+            if not before:
+                raise ValueError("Observed native checkbox is unavailable")
+            if before["checked"] != value:
+                click_choice(expr)
+                wait(0.15)
+            after = state(expr)
+            if not after or after["checked"] != value or after["invalid"]:
+                raise ValueError("Checkbox did not retain the approved answer")
+            return {"verified": True, "checked": value}
+        if kind == "select":
+            options = field.get("options", [])
+            matches = [o for o in options if not o.get("disabled") and option_matches(o["label"], value)]
+            if len(matches) != 1:
+                raise ValueError("Stored answer is absent from dropdown options" if not matches else "Answer does not uniquely match an observed choice")
+            wanted = matches[0]
+            cdp("DOM.focus", backendNodeId=backend(expr))
+            for key in ["Home"]+["ArrowDown"]*sum(not o.get("disabled") for o in options[:options.index(wanted)]):
+                virtual = {"Home": 36, "ArrowDown": 40}[key]
+                cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=key, windowsVirtualKeyCode=virtual)
+                cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=key, windowsVirtualKeyCode=virtual)
+            wait(0.15)
+            interim = state(expr)
+            if not interim or interim["value"] != wanted["value"]:
+                # macOS native select widgets accept trusted typeahead even
+                # when Home/ArrowDown do not commit a selection.
+                wait(1.05)
+                for char in wanted["label"]:
+                    virtual = ord(char.upper()) if char.isascii() and len(char.upper()) == 1 else 0
+                    cdp("Input.dispatchKeyEvent", type="keyDown", key=char, text=char, unmodifiedText=char, windowsVirtualKeyCode=virtual)
+                    cdp("Input.dispatchKeyEvent", type="keyUp", key=char, windowsVirtualKeyCode=virtual)
+            wait(0.15)
+            after = state(expr)
+            if not after or after["value"] != wanted["value"] or after["invalid"]:
+                raise ValueError("Native select did not retain the approved answer")
+            return {"verified": True, "selected": wanted["label"]}
         if kind == "combobox":
             if (not isinstance(value, dict) or set(value) != {"query", "choice"}
                     or not all(isinstance(value[key], str) and value[key].strip() for key in ("query", "choice"))):
@@ -278,14 +389,22 @@ def dispatch(request, helpers):
             raise ValueError("Autocomplete did not retain the committed choice")
         if kind == "file":
             path = Path(str(value))
-            if not path.is_file() or path.suffix.casefold() != ".pdf":
+            if not path.is_file() or path.suffix.casefold() != ".pdf" or not path.read_bytes().startswith(b"%PDF-"):
                 raise ValueError("Approved PDF is unavailable")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            existing = js("(()=>{const e="+expr+";return e?{filename:e.files?.[0]?.name,receipt:e.__jhbUploadReceipt,sha256:e.__jhbUploadSha256}:null})()")
+            if (request.get("upload_receipt") and existing and existing.get("receipt") == request["upload_receipt"]
+                    and existing.get("sha256") == digest and existing.get("filename") == path.name):
+                return {"verified": True, "filename": path.name, "upload_receipt": existing["receipt"], "sha256": digest, "cached": True}
             cdp("DOM.setFileInputFiles", backendNodeId=backend(expr), files=[str(path.resolve())])
             for _ in range(30):
                 wait(0.2)
                 retained = js("(()=>{const e="+expr+";return e?.files?.[0]?.name||''})()")
                 if retained == path.name:
-                    return {"verified": True, "filename": retained}
+                    receipt = uuid.uuid4().hex
+                    js("(()=>{const e="+expr+";if(!e)return; e.__jhbUploadReceipt="+json.dumps(receipt)+
+                       ";e.__jhbUploadSha256="+json.dumps(digest)+";e.addEventListener('change',()=>{delete e.__jhbUploadReceipt;delete e.__jhbUploadSha256},{once:true,capture:true})})()")
+                    return {"verified": True, "filename": retained, "upload_receipt": receipt, "sha256": digest}
             raise ValueError("Approved file was not retained")
         if kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
             type_text(expr, value)
@@ -311,7 +430,7 @@ def dispatch(request, helpers):
         return {"continued": True}
     if operation == "screenshot":
         path = Path(request["path"])
-        helpers["capture_screenshot"](str(path))
+        helpers["capture_screenshot"](str(path), full=True)
         path.chmod(0o600)
         return {"screenshot": str(path)}
     raise ValueError("Unsupported manual CLI operation")

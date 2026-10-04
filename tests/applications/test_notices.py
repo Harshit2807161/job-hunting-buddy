@@ -38,6 +38,8 @@ def test_operational_statuses_remain_local_while_reviews_coalesce(setup, monkeyp
     worker.notify_pending(db, send_email=True)
     assert len(sent) == 1 and len(sent[0][0]) == 3
     assert sent[0][1]["subject_prefix"] == "[applications ready for review] "
+    for job in reviews:
+        assert f"http://127.0.0.1:8030/#review/{job['dedupe_hash']}" in sent[0][1]["details"]
     assert len(list((root / "private" / "notifications").glob("*.json"))) == 9
     # A worker rewriting the same status clears legacy notified_at, but not the
     # durable identity of the successfully delivered review notice.

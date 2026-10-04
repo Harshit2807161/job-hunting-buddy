@@ -46,6 +46,33 @@ def _apply_phone_format(answers, policy):
         answers.pop("identity.phone_national", None)
 
 
+def _verified_start_month(record):
+    """Reduce a verified calendar availability to its original month, never guess."""
+    from calendar import month_name
+    from datetime import date, datetime
+    value = record.get("value")
+    if record.get("status") != "verified" or not record.get("source") or not isinstance(value, str):
+        return None
+    parsed = None
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}(?:-[0-9]{2})?", value):
+        try:
+            parsed = date.fromisoformat(value if len(value) == 10 else value+"-01")
+        except ValueError:
+            return None
+    else:
+        for fmt in ("%B %Y", "%b %Y"):
+            try:
+                parsed = datetime.strptime(value, fmt).date()
+                break
+            except ValueError:
+                pass
+    if parsed is None:
+        return None
+    return booklet.answer(f"{month_name[parsed.month]} {parsed.year}",
+                          {"method": "verified_availability_month", "original_value": value,
+                           "original_source": record["source"], "precision": "month"})
+
+
 def _located_us_from_country(answers):
     """Residence is derived from the verified contact country, never nationality.
 
@@ -68,6 +95,21 @@ def _located_us_from_country(answers):
     return booklet.answer(value in us, {"method": "verified_contact_country_residence",
         "derived_from": "identity.country", "original_country": country["value"],
         "original_source": country["source"], "criterion": "Contact country is the United States"})
+
+
+def _observed_relocation_choice(field, answers):
+    """Map willingness to its observed option without claiming current residence."""
+    record = answers.get("preferences.relocation", {})
+    if (booklet.normalize(field.get("label", "")) != "are you based in san francisco or open to relocating?"
+            or record.get("status") != "verified" or record.get("value") is not True or not record.get("source")):
+        return None
+    choices = [option for option in field.get("options", []) if isinstance(option, dict)
+               and booklet.normalize(option.get("label", "")) == "open to relocating" and not option.get("disabled")]
+    if len(choices) != 1:
+        return None
+    return booklet.answer(choices[0]["label"], {"method": "verified_willingness_observed_choice",
+        "derived_from": "preferences.relocation", "original_source": record["source"],
+        "observed_question": field["label"], "observed_choice": choices[0]["label"]})
 
 
 def _inapplicable_optional(field, answers):
@@ -114,10 +156,16 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
     else:
         answers.pop("standing.located_us", None)
     actions = cli_actions or BrowserActions(page, demo_origin=demo_origin)
+    observed_fields = {}
+    observed_step = 0
+    def outcome(result, *, stable=False):
+        from .review_inventory import build
+        return {**result, **build(list(observed_fields.values()), result.get("filled", []), answers,
+                                 key_for_field, complete=stable, step_count=observed_step+1 if observed_fields else 0)}
     if not cli_actions:
         await actions.install()
     if not actions.allowed_url(job["url"]):
-        return {"state": "unsupported", "reason": "Only Greenhouse-hosted forms are supported", "events": [], "filled": []}, actions
+        return outcome({"state": "unsupported", "reason": "The application URL differs from this adapter's exact job scope", "events": [], "filled": []}), actions
     try:
         if cli_actions:
             await actions.open(job["url"])
@@ -125,8 +173,14 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             await page.goto(job["url"], wait_until="domcontentloaded", timeout=30000)
     except Exception:
         if getattr(actions, "redirected_to", None):
-            return {"state": "unsupported", "reason": "Employer ATS redirect is outside v1 scope", "events": [], "filled": []}, actions
+            return outcome({"state": "unsupported", "reason": "Employer ATS redirect is outside v1 scope", "events": [], "filled": []}), actions
         raise
+    profile_result = {}
+    if cli_actions and hasattr(actions, "ensure_profile"):
+        profile_result = await actions.ensure_profile(answers)
+        if profile_result.get("handoff"):
+            return outcome({"state": profile_result["handoff"], "reason": profile_result["reason"],
+                    "events": [{"event": "record_editor_handoff"}], "filled": profile_result.get("filled", [])}), actions
     if not cli_actions:
         await page.wait_for_timeout(350)
     else:
@@ -140,13 +194,18 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             for field in snapshot.get("fields", []):
                 if booklet.normalize(field["label"]) in {"are you authorized to work lawfully in the location posted for this position?", "work authorization"}:
                     field["country_context"] = booklet.normalize(job["work_country"])
+        for field in snapshot.get("fields", []):
+            observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         return snapshot
-    events, filled, previous = [], {}, None
+    events = [{"event": "verified_saved_records"}] if profile_result.get("filled") else []
+    filled = {(row["question"], row["ref"]): row for row in profile_result.get("filled", [])}
+    previous = None
     optional_questions = {}
     resolved_optional_refs = set()
     authenticated = False
     deadline = time.monotonic() + 480
     for step in range(max_steps):
+        observed_step = step
         if time.monotonic() > deadline: break
         snapshot = await observe()
         events.append({"step": step, "event": "observed", "time": int(time.time())})
@@ -156,7 +215,12 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 if await actions.authenticate(answers, vault):
                     events.append({"step": step, "event": "authenticated", "credential_storage": "local vault" if vault.demo_path else "OS keyring"})
                     continue
-            return {"state": snapshot["handoff"], "reason": snapshot["reason"], "events": events, "filled": list(filled.values())}, actions
+            return outcome({"state": snapshot["handoff"], "reason": snapshot["reason"], "events": events, "filled": list(filled.values())}), actions
+        answers.pop("standing.relocation_choice", None)
+        for field in snapshot["fields"]:
+            relocation = _observed_relocation_choice(field, answers)
+            if relocation:
+                answers["standing.relocation_choice"] = relocation
         if answers.get("standing.salary_policy", {}).get("value") is True:
             ranges = snapshot.get("salary_ranges") or job.get("advertised_salary_ranges", [])
             if len(ranges) == 1:
@@ -176,8 +240,13 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     answers["standing.school."+school] = booklet.answer(school in schools,
                         "Verified education records and explicit user instruction to reuse education history")
         from .narratives import proposal
+        from .review_inventory import candidate_wording_requested
         narrative_job = {**job, "observed_application_questions": [f["label"] for f in snapshot["fields"]]}
         for field in snapshot["fields"]:
+            if candidate_wording_requested(field["label"]):
+                # Preserve exact text and surface the candidate-only prompt,
+                # including optional prompts, in the ledger and portal.
+                continue
             existing = answers.get(key_for_field(field, answers), {})
             if existing.get("status") in {"verified", "declined"}:
                 continue
@@ -190,7 +259,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     **record, "question": field["label"], "field_ref": field["ref"]}
         fingerprint = json.dumps(snapshot, sort_keys=True)
         if fingerprint == previous:
-            return {"state": "unsupported", "reason": "Continue did not reveal a new supported step; check blocked draft-save requests", "events": events, "filled": list(filled.values())}, actions
+            return outcome({"state": "unsupported", "reason": "Continue did not reveal a new supported step; check blocked draft-save requests", "events": events, "filled": list(filled.values())}), actions
         plan = validate_plan(await asyncio.to_thread(planner, snapshot, answers), snapshot, answers)
         bindings = {b["ref"]: b["answer_key"] for b in plan["bindings"]}
         missing = []
@@ -213,6 +282,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"]}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
             except ValueError as exc:
+                filled.pop((field["label"], field["ref"]), None)
                 from .cli_browser import BrowserOperationError
                 if isinstance(exc, BrowserOperationError) and exc.retryable:
                     # A stale control or interrupted widget is a technical retry,
@@ -244,11 +314,11 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                         item["choices"] = choices.get("choices", [])
                     except (ValueError, RuntimeError):
                         pass
-            return {"state": "waiting_input", "reason": "Required answers or documents need candidate input", "missing": missing,
-                    "optional_questions": list(optional_questions.values()), "resolved_optional_refs": sorted(resolved_optional_refs), "events": events, "filled": list(filled.values())}, actions
+            return outcome({"state": "waiting_input", "reason": "Required answers or documents need candidate input", "missing": missing,
+                    "optional_questions": list(optional_questions.values()), "resolved_optional_refs": sorted(resolved_optional_refs), "events": events, "filled": list(filled.values())}), actions
         updated = await observe()
         if updated.get("handoff"):
-            return {"state": updated["handoff"], "reason": updated["reason"], "events": events, "filled": list(filled.values())}, actions
+            return outcome({"state": updated["handoff"], "reason": updated["reason"], "events": events, "filled": list(filled.values())}), actions
         if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in snapshot["fields"]}:
             events.append({"step": step, "event": "fields_revealed"})
             previous = None
@@ -256,20 +326,23 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         if plan["next_ref"] is None:
             terminal = any(re.fullmatch(r"(?:submit(?: application)?|apply(?: now)?|send application|finish application)",
                                        booklet.normalize(b["label"])) for b in snapshot["buttons"])
-            return {"state": "waiting_review" if terminal else "unsupported",
-                    "reason": "Final submission is ready for candidate review" if terminal else "Unrecognized application controls; open the application form manually",
+            return outcome({"state": "waiting_review" if terminal else "unsupported",
+                    "reason": "Draft needs portal review and explicit approval, including every unanswered optional question" if terminal else "Unrecognized application controls; open the application form manually",
                     "events": events, "filled": list(filled.values()), "optional_questions": list(optional_questions.values()),
-                    "resolved_optional_refs": sorted(resolved_optional_refs), "blocked_requests": actions.blocked_requests}, actions
+                    "resolved_optional_refs": sorted(resolved_optional_refs), "blocked_requests": actions.blocked_requests}, stable=terminal), actions
         button = next(b for b in snapshot["buttons"] if b["ref"] == plan["next_ref"])
         await actions.click_next(button)
         previous = fingerprint
         events.append({"step": step, "event": "continued", "button": button["label"]})
-    return {"state": "unsupported", "reason": "Step or time budget reached", "events": events, "filled": list(filled.values())}, actions
+    return outcome({"state": "unsupported", "reason": "Step or time budget reached", "events": events, "filled": list(filled.values())}), actions
 
 
 async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
+    if "review_inventory" not in result:
+        from .review_inventory import build
+        result.update(build([], result.get("filled", []), {}, key_for_field))
     data = {"job": job, **result, "submitted": False, "created_at": int(time.time())}
     booklet.write_private(directory / "packet.json", data)
     booklet.write_private(directory / "events.json", result["events"])
@@ -293,12 +366,16 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
     rows = "".join(f'<tr><td>{esc(r["question"])}</td><td><pre>{esc(r["value"])}</pre></td><td>{esc(r["source"])}</td></tr>' for r in result.get("filled", []))
     missing = "".join(f'<li>Required: {esc(r["question"])}</li>' for r in result.get("missing", []))
     missing += "".join(f'<li>Optional unanswered question: {esc(r["question"])}</li>' for r in result.get("optional_questions", []))
+    inventory = result["review_inventory"]
+    inventory_rows = "".join(f'<tr><td>{esc(row["question"])}</td><td>{esc(row["status"])}</td><td>{esc(row["category"])}</td><td>{"Required" if row["required"] else "Optional"}{"; candidate’s own wording requested" if row["candidate_wording_required"] else ""}</td></tr>' for row in inventory["fields"])
     body = f'''<!doctype html><html lang="en"><meta charset="utf-8"><title>Application review</title>
 <style>body{{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px}}td,th{{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}}pre{{white-space:pre-wrap;max-width:550px}}img{{max-width:100%}}.state{{padding:14px;background:#eef4ff}}a{{color:#1463bc}}</style>
 <h1>{esc(job['title'])} · {esc(job['company'])}</h1><p class="state">{esc(result['state'])}: {esc(result['reason'])}</p>
 <p>Application has not been submitted. Review the answers and documents before taking over the browser.</p>
 <p><a href="{esc(job['url'])}">Original posting</a> · <a href="packet.json">Structured packet</a></p>
 <ul>{notes}{missing}</ul><table><tr><th>Question</th><th>Answer</th><th>Evidence</th></tr>{rows}</table>
+<h2>Every discovered application question</h2><p>Inventory {"verified after final observation" if inventory["complete"] else "incomplete; approval is blocked"}. Blank optional questions require explicit portal acknowledgment.</p>
+<table><tr><th>Question</th><th>Status</th><th>Category</th><th>Requirement</th></tr>{inventory_rows}</table>
 <h2>Browser at handoff</h2>{'<img src="browser.png" alt="Browser screenshot at handoff">' if captured else '<p>Browser screenshot unavailable.</p>'}
 </html>'''
     target = directory / "review.html"
@@ -331,10 +408,12 @@ def notify_pending(conn, *, send_email=False):
         return
     def send(keys):
         selected = [ready[key] for key in sorted(keys)]
-        details = ["Applications are ready for your review. No application was submitted."]
+        details = ["Applications are ready for your review. No application was submitted.",
+                   "Open the local portal on this Mac, review every answer, and click Approve only when ready."]
         for row, job in selected:
-            details += ["", f"{job['title']} · {job['company']}", f"Local review packet: {row['packet']}",
-                        f"Application ID: {row['job_hash']}", f"Take over: jhb-apply review {row['job_hash']}"]
+            details += ["", f"{job['title']} · {job['company']}",
+                        f"Review and approve: http://127.0.0.1:8030/#review/{row['job_hash']}",
+                        f"Local review packet: {row['packet']}", f"Application ID: {row['job_hash']}"]
         return notify.send([job for row, job in selected], subject_prefix="[applications ready for review] ", details="\n".join(details))
     for key in deliver(conn, ready, "ready_reviews", send):
         row, _ = ready[key]
@@ -348,10 +427,18 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
     choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
     explicit_role = choice.get("value") if choice.get("status") == "verified" and choice.get("value") in {"sde", "ml"} else None
     selected_role = role or explicit_role or role_for_job(job)
+    job = {**job, "selected_role": selected_role}
     if not re.fullmatch(r"[a-f0-9]{64}", job["dedupe_hash"]): raise ValueError("Invalid job identity")
     directory = (artifacts or config.ROOT / "private" / "applications") / job["dedupe_hash"]
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
+    async def persist(page, directory, job, result, *, cli_actions=None):
+        result["selected_role"] = selected_role
+        return await write_packet(page, directory, job, result, cli_actions=cli_actions)
+    if booklet.job_excluded(book, job):
+        result = {"state": "skipped", "reason": "Explicit user instruction excludes this exact job",
+                  "events": [{"event": "explicit_job_exclusion"}], "filled": [], "missing": []}
+        return result, await persist(None, directory, job, result)
     if not demo_origin:
         from ..eligibility import assess_job
         eligibility = await asyncio.to_thread(assess_job, job)
@@ -360,19 +447,31 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
             result = {"state": eligibility["state"], "reason": eligibility["reason"],
                       "eligibility": eligibility, "events": [{"event": "eligibility_handoff", "policy": eligibility["policy"]}],
                       "filled": [], "missing": []}
-            return result, await write_packet(None, directory, job, result)
+            return result, await persist(None, directory, job, result)
         if eligibility.get("description"):
             job = {**job, "verified_job_description": eligibility["description"]}
     if not selected_role:
         result = {"state": "waiting_input", "reason": "Ambiguous role; choose --role sde or --role ml",
                   "missing": [{"question": "Choose the SDE or ML resume variant"}], "events": [], "filled": []}
-        return result, await write_packet(None, directory, job, result)
+        return result, await persist(None, directory, job, result)
+    if not demo_origin:
+        from .role_fit import assess as assess_role_fit
+        fit = await asyncio.to_thread(assess_role_fit, job, book, selected_role)
+        booklet.write_private(directory / "role-fit.json", fit)
+        if fit.get("state") != "eligible":
+            result = {"state": fit.get("state", "unsupported"), "reason": fit["reason"], "role_fit": fit,
+                      "events": [{"event": "role_fit_handoff"}], "filled": [], "missing": []}
+            return result, await persist(None, directory, job, result)
     answers = booklet.for_role(book, selected_role)
+    start_month = _verified_start_month(answers.get("preferences.start_date", {}))
+    if start_month:
+        answers["standing.start_month"] = start_month
     discovery = {"simplify": "Simplify", "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor"}.get(job.get("source"))
     if discovery:
         answers["standing.discovery_source"] = booklet.answer(discovery,
             {"method": "recorded_phase1_discovery", "source": job["source"],
              "source_url": job.get("source_url", job["url"]), "source_job_hash": job.get("source_job_hash")})
+        answers["standing.discovery_source"]["company_question"] = f"How did you hear about {job['company']}?"
     completed_cs = completed_cs_degree_answer(book.get("education_records", []))
     if completed_cs is not None:
         answers["standing.completed_cs_degree"] = completed_cs
@@ -431,20 +530,46 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
                     answers[f"education.{index}.school"] = booklet.answer(mapping["school_option"],
                         {"actual_institution": record["school"], "resume_source": record["source"],
                          "form_mapping": mapping})
+    from .questions import _scope as question_scope
+    try:
+        scope = question_scope(job) if not demo_origin else None
+    except ValueError:
+        scope = None
     answers.update({key: item for key, item in book.get("custom_answers", {}).items()
-                    if identity and item.get("scope") == {"region": identity[0], "board": identity[1]}
+                    if scope is not None and item.get("scope") == scope
                     and (not item.get("job_hash") or item["job_hash"] == job["dedupe_hash"])})
-    planner = CodexPlanner(directory) if planner_name == "codex" else deterministic_plan
+    from .boards import adapter, board_type, preparation_supported
+    board = board_type(job["url"])
+    if not demo_origin and not preparation_supported(board):
+        result = {"state": "unsupported", "reason": f"{board} has no reviewed preparation adapter; preserve the exact job for browser evaluation",
+                  "missing": [], "events": [], "filled": [], "board": board}
+        return result, await persist(None, directory, job, result)
+    planner = CodexPlanner(directory, board=board if not demo_origin else "greenhouse") if planner_name == "codex" else deterministic_plan
     if not demo_origin:
         from .cli_browser import BrowserUseCLI
-        actions = BrowserUseCLI()
+        if board == "greenhouse":
+            actions = BrowserUseCLI()
+        elif board == "workday":
+            from .workday import WorkdayCLI
+            experience_count = len({int(match[1]) for key, record in answers.items()
+                                    if (match := re.fullmatch(r"experience\.(\d+)\.title", key))
+                                    and record.get("status") == "verified"})
+            actions = WorkdayCLI(job["url"], experience_count=experience_count)
+        else:
+            from .manual_ats import ManualATSCLI
+            actions = ManualATSCLI(job["url"], board=board)
         try:
-            result, actions = await prepare(None, job, answers, planner, None, cli_actions=actions)
+            vault = None
+            if board == "workday":
+                from .workday import approved_credential_store
+                vault = approved_credential_store(job["url"], answers)
+            result, actions = await prepare(None, job, answers, planner, vault, cli_actions=actions)
         except Exception as exc:
             result = failure_result(exc, actions)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
+        result.update(board=board, planner_skill=adapter(board).get("skill"))
         # Keep the persistent browser and the unsaved draft open at handoff.
-        packet = await write_packet(None, directory, job, result, cli_actions=actions)
+        packet = await persist(None, directory, job, result, cli_actions=actions)
         if interactive and result["state"] == "waiting_review":
             print(f"Review {packet}. Browser is guarded. No application has been submitted.")
             acknowledgement = await asyncio.to_thread(input, "Type TAKE OVER to continue manually, or Enter to keep the guard: ")
@@ -467,7 +592,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
             except Exception as exc:
                 # Exceptions may contain DOM or private values; store only safe class metadata.
                 result, actions = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}", "events": [], "filled": []}, None
-            packet = await write_packet(page, directory, job, result)
+            packet = await persist(page, directory, job, result)
             if interactive and actions:
                 print(f"Review {packet}. Browser is guarded. No application has been submitted.")
                 acknowledgement = await asyncio.to_thread(input, "Type TAKE OVER to review/continue manually, or Enter to close: ")

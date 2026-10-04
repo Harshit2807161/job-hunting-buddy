@@ -165,7 +165,7 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
                          "identity.preferred_name": booklet.answer(status="declined", source="synthetic explicit decline"),
                          "preferences.application_city": booklet.answer("Example Metro, CA", "synthetic application-city instruction"),
                          "identity.location": booklet.answer("Different Mailing City, CA", "synthetic mailing location")},
-            "roles": {"sde": {}, "ml": {}}, "workflow_preferences": {}}
+            "roles": {"sde": {"role.skills": booklet.answer("Python backend engineering", "Synthetic resume")}, "ml": {}}, "workflow_preferences": {}}
     captured = {}
     async def fake_prepare(page, current_job, answers, planner, vault, **kwargs):
         captured.clear()
@@ -200,7 +200,7 @@ def test_school_attendance_uses_original_verified_catalog_not_dropdown_other_map
         "text": "Synthetic software role with no security clearance required.", "retrieved_at": time.time(),
         "sha256": hashlib.sha256(b"Synthetic software role with no security clearance required.").hexdigest()}
     book = {"answers": {"identity.first_name": booklet.answer("Sam", "synthetic source")},
-            "roles": {"sde": {}, "ml": {}}, "workflow_preferences": {"school_attendance": True},
+            "roles": {"sde": {"role.skills": booklet.answer("Python backend engineering", "Synthetic resume")}, "ml": {}}, "workflow_preferences": {"school_attendance": True},
             "education_records": [
                 {"school": "University of California San Diego", "status": "verified", "source": "synthetic education",
                  "form_mappings": [{"region": "global", "board": "example", "school_option": "Other"}]},

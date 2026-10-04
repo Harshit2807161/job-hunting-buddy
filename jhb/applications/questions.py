@@ -48,10 +48,19 @@ def _locked(path):
 
 
 def _scope(job):
-    identity = greenhouse_identity(job.get("application_url") or job.get("url", ""))
+    url = job.get("application_url") or job.get("url", "")
+    identity = greenhouse_identity(url)
+    if identity is not None:
+        # Keep existing question IDs and explicitly approved answers stable.
+        return {"region": identity[0], "board": identity[1]}
+    from .boards import job_identity
+    identity = job_identity(url)
     if identity is None:
-        raise ValueError("Question handoffs require a resolved Greenhouse job URL")
-    return {"region": identity[0], "board": identity[1]}
+        raise ValueError("Question handoffs require an exact resolved application job URL")
+    if identity[0] == "linkedin":
+        # LinkedIn's URL identifies a posting, not a stable employer tenant.
+        return {"ats": "linkedin", "region": "global", "board": identity[-1]}
+    return {"ats": identity[0], "region": "global", "board": "|".join(identity[1:-1])}
 
 
 def _job_hash(job):

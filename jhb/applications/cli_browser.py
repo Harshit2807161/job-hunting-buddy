@@ -99,7 +99,8 @@ class BrowserUseCLI:
                 payload["expected_url"] = self.expected_url
         request = json.dumps({"operation": operation, **payload}, ensure_ascii=False)
         if self._dispatch_module not in {"jhb.applications.cli_runtime", "jhb.applications.manual_runtime",
-                                         "jhb.applications.submission_runtime"}:
+                                         "jhb.applications.submission_runtime", "jhb.applications.linkedin_runtime",
+                                         "jhb.applications.workday_runtime"}:
             raise ValueError("Unsupported browser dispatcher")
         # Python stdin, not shell interpolation. Values never appear in argv.
         script = (

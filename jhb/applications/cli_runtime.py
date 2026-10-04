@@ -638,7 +638,7 @@ def dispatch(request, helpers):
         return {"continued": True}
     if operation == "screenshot":
         path = Path(request["path"])
-        helpers["capture_screenshot"](str(path))
+        helpers["capture_screenshot"](str(path), full=True)
         path.chmod(0o600)
         return {"screenshot": str(path)}
     if operation == "takeover":

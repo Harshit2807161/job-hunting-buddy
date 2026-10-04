@@ -88,7 +88,9 @@ def _company_interest(field, job):
     allowed = {"why are you interested in this company?", "why do you want to work here?",
                "why are you interested in working with us?",
                f"why are you interested in {normalize(company)}?",
-               f"why do you want to work at {normalize(company)}?"}
+               f"why do you want to work at {normalize(company)}?",
+               f"why are you interested in working at {normalize(company)}?",
+               f"why are you interested in working at {normalize(company)}? (can be short)"}
     if label not in allowed:
         return None
     description = verified_description(job)
@@ -98,7 +100,7 @@ def _company_interest(field, job):
     # inferred technology advantage. Keep the complete brief sentence intact.
     text = re.sub(r"\s+", " ", description["text"]).strip()
     for sentence in re.split(r"(?<=[.!?])\s+", text):
-        if not re.search(r"\b(?:our mission|mission is|mission:|mission to)\b", sentence, re.I):
+        if not re.search(r"\b(?:our mission|mission is|mission:|mission to|our (?:ultimate )?goal is|our goal:)\b", sentence, re.I):
             continue
         if len(sentence.split()) > 25 or len(sentence) > 300:
             continue
@@ -106,7 +108,9 @@ def _company_interest(field, job):
             continue
         # Candidate experience is deliberately not invented to complete a
         # company-focused answer. The posting remains the stated fact source.
-        value = f"Your mission stands out to me: “{sentence}”"
+        goal = re.search(r"\bour (?:ultimate )?(?:goal|mission) (?:is|:) to (.+?)[.!?]?$", sentence, re.I)
+        value = (f"I'm interested in helping {company} {goal[1].rstrip('.!?')}."
+                 if goal and "working at" in label else f"Your mission stands out to me: “{sentence}”")
         return {**answer(value, {"kind": "grounded_narrative", "method": "official_mission_sentence",
                                "source_url": description["source_url"],
                                "description_sha256": description["sha256"],
@@ -124,4 +128,60 @@ def proposal(field, job, answers):
     """
     if field.get("type") not in {"text", "textarea"} or not isinstance(field.get("label"), str):
         return None
-    return _accomplishment(field, job, answers) or _company_interest(field, job)
+    from .review_inventory import candidate_wording_requested
+    if candidate_wording_requested(field["label"]):
+        return None
+    return (_accomplishment(field, job, answers) or _company_interest(field, job)
+            or _proud_work(field, job, answers)
+            or _motivation(field, job, answers))
+
+
+def _proud_work(field, job, answers):
+    if normalize(field['label']) not in {"what's something you worked on that you were proud of?",
+                                         "what is something you worked on that you were proud of?"}:
+        return None
+    description = verified_description(job)
+    if not description:
+        return None
+    vocabulary = {"python", "pytorch", "tensorflow", "transformer", "embedding", "search", "retrieval",
+                  "model", "learning", "training", "evaluation", "dataset", "database", "api", "cloud",
+                  "infrastructure", "frontend", "react", "typescript", "deployment", "recommender", "quantum"}
+    def tokens(text):
+        return {word.rstrip('s') for word in re.findall(r'\b[a-z][a-z0-9]{2,}\b',text.lower())} & vocabulary
+    desired = tokens(description['text'])
+    candidates = []
+    for key in ('role.experience','role.projects'):
+        record = _verified_text(answers,key)
+        if not record:
+            continue
+        for section in _sections(record['value'],key):
+            relevance = len(tokens(' '.join(section['bullets'])) & desired)
+            aws = bool(re.search(r'\b(?:amazon|aws|amazon web services)\b',section['section'],re.I))
+            candidates.append((relevance,aws,section,key,record))
+    if not candidates:
+        return None
+    _,_,section,key,record = max(candidates,key=lambda item:(item[0],item[1]))
+    value = f"At {section['section']}, I worked on:\n" + '\n'.join(section['bullets'])
+    return {**answer(value,{'kind':'grounded_narrative','method':'verified_resume_achievement',
+                          'review_status':'proposed','section':section['section'],
+                          'description_sha256':description['sha256'],
+                          'selected_role_facts':{'key':key,'source':record['source'],
+                                                'sha256':hashlib.sha256(record['value'].encode()).hexdigest()}}),
+            'kind':'grounded_narrative','proposed':True}
+
+
+def _motivation(field, job, answers):
+    if normalize(field['label']) != 'what motivates you?':
+        return None
+    role = job.get('selected_role')
+    record = _verified_text(answers,'role.experience')
+    if role not in {'sde','ml'} or not record:
+        return None
+    focus = 'applied ML research with reliable software engineering' if role == 'ml' else 'software engineering with reliable delivery'
+    value = ("I'm motivated by turning technical ideas into working systems and measuring whether they improve on the baseline. "
+             f"I'm looking for work where I can combine {focus}.")
+    return {**answer(value,{'kind':'grounded_narrative','method':'proposed_motivation_from_role_selection',
+                          'review_status':'proposed','selected_role':role,
+                          'selected_role_facts':{'key':'role.experience','source':record['source'],
+                                                'sha256':hashlib.sha256(record['value'].encode()).hexdigest()}}),
+            'kind':'grounded_narrative','proposed':True}

@@ -1,10 +1,18 @@
 # Job-board adapter evaluation
 
-The discovery pipeline classifies multiple ATS providers, but scheduled
-application preparation remains **Greenhouse only**. The six postings below
-were explicitly authorized for manual evaluation and preparation. Their results
-do not enable automatic Ashby, Workable or Workday dispatch. Phase 1's `main` and
-`v0.1.0` baseline remain unchanged; this work stays on the Phase 2 branch.
+The discovery pipeline classifies multiple ATS providers. The current registry
+enables preparation for Greenhouse, Ashby, Workable and Lever. Workday, LinkedIn
+Easy Apply, SmartRecruiters and iCIMS retain explicit limitations and are not
+enabled for generic preparation. Submission capability is separate and currently
+limited to Greenhouse/Ashby, with mandatory candidate approval through the local
+portal. Phase 1's `main` and `v0.1.0` remain unchanged on the Phase 2 branch.
+
+The historical manual evaluations below establish observed mechanics, not current
+submission authority. Live validation exposed a required-only completeness defect:
+substantive optional questions could remain blank. Every new review packet now
+includes the complete question inventory; the portal requires individual blank
+acknowledgments and an explicit per-draft Approve click. See
+[portal-review.md](portal-review.md). Exact incident evidence remains private.
 
 Ashby benefits from a shared adapter: four employers share the same field
 and selection patterns. Workable needs a smaller layer for its uploads and
@@ -60,8 +68,8 @@ page confirmed retained values across all sections. No Skills field, education
 date controls, sexual-orientation question or separate cover-letter upload was
 offered on this tenant's observed form; other tenants may differ.
 
-The current `ManualATSCLI` is an explicit Ashby scope around the existing CLI
-transport; it is not wired into the scheduled dispatcher. Location autocomplete
+The current `ManualATSCLI` scopes Ashby, Workable and Lever around the shared CLI
+transport and is wired into the scheduled dispatcher. Location autocomplete
 uses an approved query and exact choice scoped to that field's visible listbox;
 the selected value and closed popup are verified. Calendars and new repeater
 shapes still need observed, bounded handling. Existing Greenhouse
@@ -69,8 +77,8 @@ behavior remains restricted to Greenhouse application identities.
 
 ## Answer and document preparation
 
-Use [prepare-ashby](../skills/prepare-ashby/SKILL.md) for explicitly authorized
-Ashby work and the existing Greenhouse planning skill for scheduled jobs. Match
+Use the board-specific preparation skill selected by `boards.py` for each
+scheduled or manually queued job. Match
 the selected resume to the actual role responsibilities, preserving its source
 path and hash. An AI-related engineering team does not automatically require the
 ML resume. Match skills to both the job description and selected resume; include

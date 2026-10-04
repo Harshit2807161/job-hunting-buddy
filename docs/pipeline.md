@@ -14,15 +14,19 @@ requiring login, a verification challenge, or a choice among several different
 application identities produces a handoff. Unsupported boards are classified
 and recorded, but never dispatched to Phase 2. A closed posting is not prepared.
 
-Only a confirmed canonical Greenhouse application URL enters the application
-queue. The canonical region/board/job identity deduplicates different wrappers
-and tracking links. An existing submitted application stays submitted.
+An exact official application identity enters the queue only when its board's
+preparation adapter is enabled in `jhb/applications/boards.py`. Preparation and
+submission capabilities are separate. Previously resolved sources can be routed
+once when a reviewed adapter becomes available. Canonical identities deduplicate
+wrappers and tracking links; submitted and uncertain attempts stay protected.
 
 The standing eligibility filter excludes jobs requiring a particular citizenship,
 security clearance, TS/SCI, or a polygraph, including the ability to obtain or
 maintain those requirements. Phase 1 checks available titles and descriptions;
 the preparation worker verifies the exact job's official Greenhouse description
-before accessing the candidate browser. Matched requirements and their source
+before accessing the candidate browser. Other reviewed boards require an exact
+official description with identity, timestamp, and content-hash provenance.
+Matched requirements and their source
 are saved privately, and the application becomes `skipped`. Answering an older
 question or resuming the queue cannot reactivate that state. This filter does not
 infer the candidate's citizenship and does not exclude optional citizenship
@@ -42,7 +46,29 @@ CLI, default daemon, and existing local Chrome CDP endpoint. Independent job
 planners can run concurrently. Every browser operation holds the shared browser
 lane and selects that job's tab before acting. Tabs containing drafts remain
 open. Final submission is guarded; review, unknown answers, login, and CAPTCHA
-are explicit stopping points. Google SSO is the only live authentication mode.
+are explicit stopping points. Google SSO is the default authentication mode;
+the reviewed Broadridge-only exception permits reuse of its existing OS-keyring
+credential when the answer booklet contains the verified exact-origin approval.
+Workday remains disabled until its live wizard validation is complete.
+
+An explicit, verified rejection of an exact job stops both direct preparation
+and submission of an older review draft. Resume-backed role-fit review follows
+official-description verification, before any browser action. When independent
+semantic review is enabled, submission requires an eligible independent verdict
+bound to the current job description, selected role, and verified career evidence.
+
+The manager writes `private/pipeline-status.json` with its current stage and
+aggregate queue counts, refreshing every 15 seconds during asynchronous work.
+The dashboard treats a heartbeat older than 45 seconds as stale. Quarantined
+repairs produce a blocked status; manager contention preserves the active
+manager's heartbeat. Candidate values, question text, and credentials are absent.
+Status reports distinguish parked factual questions, exhausted capacity,
+inactive submission authority, and an empty ready backlog. They do not create
+progress or change queue states. Technical failures remain local and notices
+retain their durable deduplication and delivery backoff.
+An explicit `private/pipeline-pause.json` takes precedence over repair quarantine
+and reports `paused`. Scheduled managers never expire or remove this pause;
+resumption requires the user's instruction after the reported defect is resolved.
 
 The two browser tools have separate access paths. Source discovery uses the
 official **Playwright MCP** protocol in a temporary isolated browser. Application
@@ -165,12 +191,24 @@ An incompatible answer stays at a question handoff rather than retrying forever.
 
 ## Final step: submission tracking
 
-The default scheduled workflow stops at review. A separately enabled, verified,
-expiring overnight authorization can submit only new Phase 1 Greenhouse jobs
-discovered within its window, after two fresh Browser Use audits and approved
-document checks. Durable attempts prevent blind repetition after an uncertain
-click; positive receipts precede spreadsheet updates. Existing drafts remain
-outside this scope. See [overnight-submissions.md](overnight-submissions.md).
+The current workflow stops every application at review. With
+`JHB_REQUIRE_PORTAL_APPROVAL=1`, scheduled dispatch consumes only that exact
+draft's explicit Approve action in the local portal. The portal lists all
+discovered application questions, selected resume, approved documents, and
+final screenshot. Optional blank answers require explicit acknowledgment.
+Each approval expires after two hours and binds those exact facts and artifacts;
+changes require a fresh review. Independent review and two live retained-answer
+audits still precede the terminal click. Old blanket authorizations are rejected
+under this policy. Durable attempts prevent blind repetition after an uncertain
+click, and positive receipts precede spreadsheet updates.
+
+Hourly reports use a separate, verified finite
+`private/progress-report-window.json` and `JHB_HOURLY_PROGRESS_EMAIL=1`.
+Reporting consent has no submission privilege and can remain active while
+preparation is paused. One durable message is delivered per hourly bucket,
+including zero-confirmation updates; failed delivery uses the existing backoff.
+Reports count captured positive receipts and verified sheet deliveries, and
+distinguish them from drafts and uncertain attempts.
 
 After a separately authorized submission succeeds, the agent records the exact
 job's private success receipt with `confirm-submission`. This durably records the

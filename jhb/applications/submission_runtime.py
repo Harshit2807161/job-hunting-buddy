@@ -15,18 +15,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .authorized_submission import load_gate
+from .authorized_submission import audit_hash, load_gate, private_file
 from .booklet import answer, normalize, write_private
 from .browser import GUARD_SCRIPT
 from .cli_runtime import _settled_click, dispatch as guarded_dispatch, option_matches
 from .planner import key_for_field
-from .queue import greenhouse_identity
+from . import boards
+from .manual_runtime import ASHBY_GROUPS, application_scope, dispatch as ashby_dispatch
+from .native_ats_runtime import NATIVE_CONTROLS
 
 TERMINAL = re.compile(r"(?:submit(?: application)?|apply(?: now)?|send application|finish application)", re.I)
 CONFIRMATION = re.compile(r"your application (?:was successfully submitted|has been submitted successfully|has been received)|(?:we have|we've|we) received your application|thank you for applying", re.I)
 
 
-def _native_form_submit(helpers, button, approved_refs):
+def _native_form_submit(helpers, button, approved_refs, board="greenhouse"):
     """Read the exact AX node's native form owner, never infer from its label."""
     if not str(button.get("ref", "")).isdigit() or int(button["ref"]) <= 0:
         return False
@@ -36,47 +38,147 @@ def _native_form_submit(helpers, button, approved_refs):
         return False
     try:
         result = helpers["cdp"]("Runtime.callFunctionOn", objectId=object_id,
-            functionDeclaration="""function(refs) {
+            functionDeclaration="""function(refs,board) {
                 const e=this,w=e.ownerDocument?.defaultView;
                 if(!w || !(e instanceof w.HTMLButtonElement || e instanceof w.HTMLInputElement)
-                    || e.type!=='submit' || e.matches(':disabled') || e.getAttribute('aria-disabled')==='true'
+                    || e.matches(':disabled') || e.getAttribute('aria-disabled')==='true'
                     || !e.getClientRects().length || w.getComputedStyle(e).visibility==='hidden') return false;
+                if(board==='ashby'){
+                    // Current Ashby puts Submit beside its field container,
+                    // inside the application's named tab panel (not a form).
+                    const panel=e.closest('#form[role="tabpanel"]');
+                    const owner=e.closest('.ashby-application-form-container,form') ||
+                        (e.matches('.ashby-application-form-submit-button') && panel &&
+                         panel.querySelectorAll('.ashby-application-form-submit-button').length===1 ? panel : null);
+                    if(!owner || !refs.length) return false;
+                    return refs.every(ref=>{
+                        if(ref.startsWith('ashby:')){
+                            const path=ref.slice(6).replace(/:control:\\d+$|:communicationConsent$/,'');
+                            return [...owner.querySelectorAll('[data-field-path]')].some(g=>g.getAttribute('data-field-path')===path);
+                        }
+                        const control=e.ownerDocument.getElementById(ref);
+                        return !!control&&owner.contains(control);
+                    });
+                }
+                if(e.type!=='submit') return false;
                 const form=e.form;
                 if(!(form instanceof w.HTMLFormElement)) return false;
+                if(board==='workable'||board==='lever'){
+                    const controls=NATIVE_OWNED_CONTROLS;
+                    return refs.length>0&&refs.every(ref=>{
+                        if(ref.startsWith('native-name:')){
+                            const matches=controls.filter(c=>c.name===ref.slice(12));
+                            return matches.length===1&&matches[0].form===form;
+                        }
+                        if(ref.startsWith('native:')){const c=controls[Number(ref.slice(7))];return !!c&&c.form===form;}
+                        if(ref.startsWith('native-radio:')||ref.startsWith('native-multiselect:')){
+                            const name=ref.split(':').slice(1).join(':');
+                            return controls.some(c=>c.form===form&&c.name===name&&(c.type==='radio'||c.type==='checkbox'));
+                        }
+                        const c=e.ownerDocument.getElementById(ref);return !!c&&c.form===form;
+                    });
+                }
                 return refs.some(ref=>{
                     const control=e.ownerDocument.getElementById(ref);
                     return !!control && (control.form===form || form.contains(control));
                 });
-            }""", arguments=[{"value": approved_refs}], returnByValue=True)
+            }""".replace("NATIVE_OWNED_CONTROLS", "("+NATIVE_CONTROLS+")"), arguments=[{"value": approved_refs}, {"value": board}], returnByValue=True)
         return not result.get("exceptionDetails") and result.get("result", {}).get("value") is True
     finally:
         helpers["cdp"]("Runtime.releaseObject", objectId=object_id)
 
 
-def _visible_application_submit(helpers, approved_refs):
+def _visible_application_submit(helpers, approved_refs, board="greenhouse"):
     nodes = helpers["cdp"]("Accessibility.getFullAXTree")["nodes"]
     return any(_native_form_submit(helpers, {"ref": str(node.get("backendDOMNodeId", "")),
-                                            "label": node.get("name", {}).get("value", "")}, approved_refs)
+                                            "label": node.get("name", {}).get("value", "")}, approved_refs, board)
                for node in nodes if not node.get("ignored") and node.get("role", {}).get("value") == "button"
                and TERMINAL.fullmatch(normalize(node.get("name", {}).get("value", ""))))
 
 
-def _control_state(helpers, field):
+def _board_dispatch(request, helpers, url):
+    identity = boards.job_identity(url)
+    if identity and identity[0] == "greenhouse":
+        return guarded_dispatch(request, helpers)
+    if identity and identity[0] in {"ashby", "workable", "lever"}:
+        scope = application_scope(boards.canonical_url(url) + ("/application" if identity[0] == "ashby" else "/apply"), identity[0])
+        return ashby_dispatch({**request, "scope": scope, "foreground": True}, helpers)
+    raise ValueError("No reviewed terminal adapter for this job board")
+
+
+def _ashby_control_state(helpers, field):
+    group = "("+ASHBY_GROUPS+")["+str(field["owner_index"])+"]"
+    if field.get("widget") in {"yesno", "radio", "checkboxes", "communicationConsent"}:
+        return helpers["js"]("(()=>{const g="+group+";if(!g)return null;const owned=e=>e.closest('[data-field-path]')===g;"
+            "const opts="+json.dumps(field.get("options", []))+";const selected=opts.filter(o=>{let e;"
+            "if("+json.dumps(field["widget"])+"==='yesno'){e=[...g.querySelectorAll('button.ashby-application-form-input-yesno-option')].find(e=>owned(e)&&e.getAttribute('data-option')===o.value);return e?.getAttribute('aria-pressed')==='true'}"
+            "e=o.id?document.getElementById(o.id):[...g.querySelectorAll('input[type=radio]')].find(e=>owned(e)&&e.name==='communicationConsent'&&e.value===o.value);return e?.checked===true});"
+            "return {selected:selected.map(o=>o.label),value:'',invalid:[...g.querySelectorAll('input')].filter(owned).some(e=>e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid))}})()")
+    expression = ("[...("+group+").querySelectorAll('input,textarea,select')].filter(e=>e.closest('[data-field-path]')==="+group+")["+str(field["control_index"])+"]"
+                  if field["ref"].startswith("ashby:") else "document.getElementById("+json.dumps(field["ref"])+")")
+    return helpers["js"]("(()=>{const e="+expression+";return e?{value:e.type==='file'?e.files?.[0]?.name||'':e.value,checked:e.checked,"
+        "selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.getAttribute('role')==='combobox'&&e.getAttribute('aria-expanded')==='false'?e.value:'',"
+        "receipt:e.__jhbUploadReceipt||null,invalid:e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)}:null})()")
+
+
+def _control_state(helpers, field, board="greenhouse"):
+    if board == "ashby":
+        return _ashby_control_state(helpers, field)
+    if board in {"workable", "lever"}:
+        if field["type"] in {"radio", "multiselect"}:
+            return helpers["js"]("(()=>{const controls=("+NATIVE_CONTROLS+");const opts="+json.dumps(field.get("options", []))+";"
+                "return {selected:opts.filter(o=>controls[o.native_index]?.checked).map(o=>o.label),value:'',invalid:opts.some(o=>{const e=controls[o.native_index];return !e||e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)})}})()")
+        expression = "("+NATIVE_CONTROLS+")["+str(field["native_index"])+"]"
+        return helpers["js"]("(()=>{const e="+expression+";if(!e)return null;let selected=e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':"
+            "e.getAttribute('role')==='combobox'&&e.getAttribute('aria-expanded')==='false'?e.value:'';"
+            "let locationToken=null;if("+json.dumps(field.get("widget"))+"==='lever-location'){const hidden=e.closest('.application-field')?.querySelector('#selected-location[name=selectedLocation]');locationToken=hidden?.value||'';selected=locationToken?e.value:''}"
+            "return {value:e.type==='file'?e.files?.[0]?.name||'':e.value,checked:e.checked,selected,receipt:e.__jhbUploadReceipt||null,"
+            "...(locationToken!==null?{locationToken}:{}),invalid:e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)}})()")
     if field["type"] == "file":
         return helpers["js"]("(()=>{const label="+json.dumps(normalize(field["label"]))+";const groups=[...document.querySelectorAll('.file-upload')].filter(e=>{const labelText=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0];return labelText.trim().replace(/[ *]+$/,'').toLowerCase()===label});return groups.length===1?{value:groups[0].querySelector('.file-upload__filename p')?.innerText||'',receipt:groups[0].__jhbUploadReceipt||null}:null})()")
     return helpers["js"]("(()=>{const e=document.getElementById("+json.dumps(field["ref"])+
         ");return e?{value:e.value,checked:e.checked,selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||[...(e.closest('.select__value-container')?.querySelectorAll('.select__multi-value__label')||[])].map(e=>e.innerText).join(', ')||'',countryCode:e.closest('.select__value-container')?.querySelector('.iti__flag')?.className||'',invalid:e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)}:null})()")
 
 
+def _review_matches(request, attempt, snapshot):
+    path = private_file(Path(request["attempt_path"]).parent / "independent-review.json")
+    token = json.loads(path.read_text())
+    review = token.get("review", {})
+    book_path = private_file(token.get("approved_book_path", ""))
+    book_digest = hashlib.sha256(book_path.read_bytes()).hexdigest()
+    from .application_review import snapshot_digest
+    return (token.get("verdict") == "approved" and token.get("source") == "independent_application_review"
+            and token.get("job_hash") == attempt["job_hash"] and token.get("authorization_id") == attempt["authorization_id"]
+            and token.get("packet_sha256") == attempt["packet_sha256"]
+            and token.get("audit_sha256") == audit_hash(snapshot, request["documents"])
+            and token.get("approved_book_path") == review.get("approved_book_path")
+            and token.get("approved_book_sha256") == review.get("approved_book_sha256") == book_digest
+            and review.get("verdict") == "approved" and review.get("reviewer") == "codex-readonly"
+            and review.get("source") == "independent_application_review" and review.get("issues") == []
+            and review.get("snapshot_sha256") == snapshot_digest(snapshot)
+            and review.get("authorization_id") == attempt["authorization_id"] and review.get("job_hash") == attempt["job_hash"])
+
+
 def _checks(request, helpers, packet, attempt):
+    board = boards.job_identity(attempt["application_url"])[0]
     if (helpers["current_tab"]()["targetId"] != request.get("target_id")
-            or greenhouse_identity(helpers["js"]("location.href")) != greenhouse_identity(attempt["application_url"])
+            or boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(attempt["application_url"])
             or helpers["js"]("window.__jhbGuard===true") is not True):
         raise ValueError("Owned application identity or submission guard changed")
-    snapshot = guarded_dispatch({"operation": "observe", "target_id": request["target_id"],
-                                 "expected_url": attempt["application_url"]}, helpers)
+    snapshot = _board_dispatch({"operation": "observe", "target_id": request["target_id"],
+                                 "expected_url": attempt["application_url"]}, helpers, attempt["application_url"])
     if snapshot.get("handoff"):
         return {"state": snapshot["handoff"], "reason": snapshot["reason"], "click_started": False}
+    if attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal":
+        inventory = packet.get("review_inventory", {}).get("fields", [])
+        for field in snapshot["fields"]:
+            matches = [f for f in inventory if
+                       (f.get("ref") == field.get("ref") or field.get("type") == "file" and f.get("type") == "file")
+                       and normalize(f.get("question", "")) == normalize(field.get("label", ""))
+                       and f.get("type") == field.get("type") and bool(f.get("required")) == bool(field.get("required"))]
+            if len(matches) != 1:
+                return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
+                        "click_started": False}
     if packet.get("job", {}).get("work_country"):
         for field in snapshot["fields"]:
             if normalize(field["label"]) in {"are you authorized to work lawfully in the location posted for this position?", "work authorization"}:
@@ -103,7 +205,7 @@ def _checks(request, helpers, packet, attempt):
             if matches and all(r.get("value") == matches[0].get("value") and r.get("source") == matches[0].get("source")
                                and normalize(r.get("question", "")) == normalize(matches[0].get("question", "")) for r in matches):
                 matches = matches[:1]
-        state = _control_state(helpers, field)
+        state = _control_state(helpers, field, board)
         if len(matches) != 1:
             if field["required"] or (state and (state.get("selected") or state.get("value") or state.get("checked"))):
                 return {"state": "waiting_input", "reason": "A fresh field lacks an exact approved answer", "click_started": False,
@@ -116,8 +218,9 @@ def _checks(request, helpers, packet, attempt):
         catalog = re.fullmatch(r"standing\.catalog\.(\d+)\.(school|major)", record["key"])
         catalog_ref = f"{'discipline' if catalog and catalog[2] == 'major' else 'school'}--{catalog[1]}" if catalog else None
         catalog_match = catalog and field["ref"] == catalog_ref
+        replacing_document = field["type"] == "file" and request.get("require_receipts") is False
         if (not record.get("source") or (key != record["key"] and not catalog_match)
-                or not state or state.get("invalid")):
+                or not state or (state.get("invalid") and not replacing_document)):
             return {"state": "waiting_review", "reason": "Approved binding or retained field validity changed", "click_started": False}
         value, kind = record["value"], field["type"]
         national = request.get("approved_phone_national", {})
@@ -136,9 +239,17 @@ def _checks(request, helpers, packet, attempt):
         elif kind == "checkbox":
             valid = isinstance(value, bool) and state["checked"] == value
         elif kind in {"combobox", "select"}:
-            valid = option_matches(state["selected"], value, field_id=field["ref"], field_label=field["label"])
+            expected_choice = value["choice"] if board != "greenhouse" and isinstance(value, dict) and set(value) == {"query", "choice"} else value
+            choice_ref = "candidate-location" if field.get("widget") == "lever-location" else field["ref"]
+            valid = option_matches(state["selected"], expected_choice, field_id=choice_ref, field_label=field["label"])
             if field["ref"] == "country" and value == "United States" and "iti__us" in state.get("countryCode", ""):
                 valid = True
+        elif kind in {"radio", "multiselect"} and board in {"ashby", "workable", "lever"}:
+            values = value if isinstance(value, list) else [value]
+            choices = [[o["label"] for o in field.get("options", []) if option_matches(o["label"], v)] for v in values]
+            valid = (all(len(options) == 1 for options in choices)
+                     and (kind != "radio" or len(choices) == 1)
+                     and sorted(state.get("selected", [])) == sorted(options[0] for options in choices))
         elif kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
             actual, expected = state["value"], str(value)
             if kind == "tel":
@@ -161,7 +272,7 @@ def _checks(request, helpers, packet, attempt):
             return {"state": "waiting_review", "reason": "A prepared application record disappeared", "click_started": False}
     approved_refs = [r["ref"] for r in records if not str(r.get("ref", "")).startswith("uploaded:")]
     terminals = [b for b in snapshot["buttons"] if TERMINAL.fullmatch(normalize(b["label"]))
-                 and _native_form_submit(helpers, b, approved_refs)]
+                 and _native_form_submit(helpers, b, approved_refs, board)]
     if len(terminals) != 1:
         return {"state": "waiting_review", "reason": "Final submission control is unavailable or ambiguous", "click_started": False}
     return {"fields": checked, "retained": retained, "button": terminals[0], "double_check_count": len(checked)}
@@ -189,14 +300,15 @@ def dispatch(request, helpers):
     if operation not in {"locate", "check", "document", "submit"}:
         raise ValueError("Unsupported authorized submission operation")
     authority, attempt, packet = load_gate(request["authorization_path"], request["attempt_path"])
+    identity = boards.job_identity(attempt["application_url"])
+    board = identity[0]
     if operation == "locate":
-        identity = greenhouse_identity(attempt["application_url"])
-        tabs = [t for t in helpers["list_tabs"]() if greenhouse_identity(t["url"]) == identity]
+        tabs = [t for t in helpers["list_tabs"]() if boards.job_identity(t["url"]) == identity]
         if len(tabs) != 1:
             return {"state": "waiting_review", "reason": "An exact existing draft tab must be unambiguous", "click_started": False}
         target = tabs[0]["targetId"]
         helpers["switch_tab"](target)
-        if greenhouse_identity(helpers["js"]("location.href")) != identity:
+        if boards.job_identity(helpers["js"]("location.href")) != identity:
             raise ValueError("Existing application draft changed identity")
         helpers["cdp"]("Page.addScriptToEvaluateOnNewDocument", source=GUARD_SCRIPT)
         helpers["js"](GUARD_SCRIPT)
@@ -217,7 +329,7 @@ def dispatch(request, helpers):
             raise ValueError("Only an approved packet document may be uploaded")
         if helpers["js"]("window.__jhbGuard===true") is not True:
             raise ValueError("Document replacement requires the application guard")
-        return guarded_dispatch({**request, "operation": "fill", "expected_url": attempt["application_url"]}, helpers)
+        return _board_dispatch({**request, "operation": "fill", "expected_url": attempt["application_url"]}, helpers, attempt["application_url"])
     first = _checks(request, helpers, packet, attempt)
     if operation == "check" or first.get("state"):
         return first
@@ -235,6 +347,9 @@ def dispatch(request, helpers):
             return second
         if first != second:
             return {"state": "waiting_review", "reason": "The draft changed between the two checks", "click_started": False}
+        if authority.get("require_independent_review") is True:
+            if not _review_matches(request, attempt, second):
+                return {"state": "waiting_review", "reason": "Independent review does not bind this fresh application audit", "click_started": False}
         checks_path = Path(request["attempt_path"]).parent / "checks.json"
         write_private(checks_path, {"check_count": 2, "checks": [first, second], "documents": request["documents"],
                                    "authorization_id": attempt["authorization_id"], "job_hash": attempt["job_hash"],
@@ -247,16 +362,21 @@ def dispatch(request, helpers):
         if not node:
             raise ValueError("The verified terminal button changed")
         clicked = False
+        review_digest = None
         def native_press(x, y):
-            nonlocal clicked
+            nonlocal clicked, review_digest
             # Geometry is now settled. Re-read authority immediately before
             # consuming the one-shot attempt; expiry cannot be bypassed by work.
             _, current, _ = load_gate(request["authorization_path"], request["attempt_path"])
-            if greenhouse_identity(helpers["js"]("location.href")) != greenhouse_identity(current["application_url"]):
+            if boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(current["application_url"]):
                 raise ValueError("Application identity changed before submission")
             final_check = _checks(request, helpers, packet, current)
             if final_check != second:
                 raise ValueError("Retained application changed during final click geometry")
+            if authority.get("require_independent_review") is True and not _review_matches(request, current, final_check):
+                raise ValueError("Independent review changed before submission")
+            if authority.get("require_independent_review") is True:
+                review_digest = hashlib.sha256(private_file(Path(request["attempt_path"]).parent / "independent-review.json").read_bytes()).hexdigest()
             current.update(runtime_click_started=True, click_started_at=datetime.now(timezone.utc).isoformat(),
                            double_check_count=2, checked_fields=second["double_check_count"])
             write_private(Path(request["attempt_path"]), current)
@@ -278,10 +398,10 @@ def dispatch(request, helpers):
         def verify_guarded_owned_draft():
             _, current, _ = load_gate(request["authorization_path"], request["attempt_path"])
             owned = helpers["current_tab"]()
-            identity = greenhouse_identity(current["application_url"])
+            identity = boards.job_identity(current["application_url"])
             if (owned.get("targetId") != request["target_id"]
-                    or greenhouse_identity(owned.get("url", "")) != identity
-                    or greenhouse_identity(helpers["js"]("location.href")) != identity
+                    or boards.job_identity(owned.get("url", "")) != identity
+                    or boards.job_identity(helpers["js"]("location.href")) != identity
                     or helpers["js"]("window.__jhbGuard===true") is not True):
                 raise ValueError("Owned application identity or guard changed during pointer recovery")
             if _checks(request, helpers, packet, current) != second:
@@ -305,9 +425,11 @@ def dispatch(request, helpers):
                 body = helpers["js"]("document.body.innerText")
                 current_url = helpers["js"]("location.href")
                 visible_terminal = _visible_application_submit(helpers, [r["ref"] for r in packet.get("filled", [])
-                                                                        if not str(r.get("ref", "")).startswith("uploaded:")])
+                                                                        if not str(r.get("ref", "")).startswith("uploaded:")], board)
                 parsed = urlsplit(current_url)
-                host_allowed = parsed.scheme == "https" and parsed.hostname in {"boards.greenhouse.io", "job-boards.greenhouse.io", "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
+                host_allowed = (parsed.scheme == "https" and not parsed.username and not parsed.password
+                                and (parsed.hostname in {"boards.greenhouse.io", "job-boards.greenhouse.io", "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
+                                     if board == "greenhouse" else boards.job_identity(current_url) == identity))
                 confirmation = CONFIRMATION.search(body)
                 if host_allowed and confirmation and not CONFIRMATION.search(before_text) and not visible_terminal:
                     receipt = {"state": "submitted", "confirmed": True, "job_hash": attempt["job_hash"],
@@ -315,6 +437,9 @@ def dispatch(request, helpers):
                                "authorization_id": attempt["authorization_id"], "target_id": request["target_id"],
                                "confirmed_at": datetime.now(timezone.utc).isoformat(), "confirmation": confirmation[0],
                                "source": "Live Browser Use CLI success page", "check_count": 2,
+                               "board": board, "document_sha256": {k: v["sha256"] for k, v in request["documents"].items()},
+                               "resume_sha256": request["documents"]["documents.resume"]["sha256"],
+                               "independent_review_sha256": review_digest,
                                "body": body, "double_check_count": 2, "checks_path": str(checks_path)}
                     path = Path(request["attempt_path"]).parent / "receipt.json"
                     write_private(path, receipt)

@@ -195,8 +195,8 @@ def test_concurrent_collect_preserves_all_job_contexts(tmp_path):
 def test_invalid_or_unresolved_job_does_not_modify_booklet(tmp_path):
     path = make_book(tmp_path)
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="resolved Greenhouse"):
-        questions.collect({**job(), "url": "https://linkedin.com/jobs/view/123"}, result(), path)
+    with pytest.raises(ValueError, match="exact resolved"):
+        questions.collect({**job(), "url": "https://example.org/jobs/view/123"}, result(), path)
     with pytest.raises(ValueError, match="Invalid job identity"):
         questions.collect({**job(), "dedupe_hash": "../../bad"}, result(), path)
     assert path.read_bytes() == before

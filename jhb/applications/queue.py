@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import re
 import time
-from urllib.parse import parse_qs, urlsplit
+from . import boards
+from .boards import greenhouse_identity  # Public compatibility API for existing Greenhouse clients.
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
@@ -29,27 +28,6 @@ def is_greenhouse(url: str) -> bool:
     return greenhouse_identity(url) is not None
 
 
-def greenhouse_identity(url: str):
-    try:
-        p = urlsplit(url)
-        hosts = {"boards.greenhouse.io", "job-boards.greenhouse.io",
-                 "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
-        match = re.fullmatch(r"/([A-Za-z0-9_-]+)/jobs/(\d+)/?", p.path)
-        if p.scheme != "https" or p.username or p.password or p.hostname not in hosts or p.port not in {None, 443}:
-            return None
-        if match:
-            board, job_id = match[1], match[2]
-        elif p.path.rstrip("/") == "/embed/job_app":
-            query = parse_qs(p.query)
-            boards, jobs = query.get("for", []), query.get("token", [])
-            if len(boards) != 1 or len(jobs) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", boards[0]) or not jobs[0].isdigit():
-                return None
-            board, job_id = boards[0], jobs[0]
-        else:
-            return None
-        return ("eu" if ".eu." in p.hostname else "global", board.lower(), job_id)
-    except (TypeError, ValueError):
-        return None
 
 
 def initialize(conn):
@@ -69,11 +47,14 @@ def enqueue(conn, jobs) -> int:
             "dedupe_hash": job.dedupe_hash, "source": job.source, "company": job.company,
             "title": job.title, "url": job.url, "role_classes": ",".join(job.role_classes)}
         url = row.get("url", "")
-        identity = greenhouse_identity(url)
-        if identity is None:
+        identity = boards.job_identity(url)
+        routed_board = boards.route_board(url, row.get("board_type"))
+        if identity is None or not boards.preparation_supported(routed_board):
             continue
-        application_hash = hashlib.sha256("|".join(identity).encode()).hexdigest()
-        row = {**row, "source_job_hash": row["dedupe_hash"], "dedupe_hash": application_hash}
+        application_hash = boards.application_hash(url)
+        row = {**row, "source_job_hash": row.get("source_job_hash", row["dedupe_hash"]),
+               "dedupe_hash": application_hash, "board_type": routed_board, "job_identity": list(identity),
+               "adapter_skill": boards.adapter(routed_board)["skill"]}
         from ..eligibility import preliminary, POLICY_ID
         findings = preliminary(row)
         if findings:

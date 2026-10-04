@@ -102,10 +102,14 @@ def render(jobs: list[dict], subject_prefix: str = "") -> tuple[str, str, str]:
     return subject, body, "\n".join(lines)
 
 
-def send(jobs: list[dict], subject_prefix: str = "", dry_run: bool = False, details: str = "") -> bool:
-    if not jobs:
+def send(jobs: list[dict], subject_prefix: str = "", dry_run: bool = False, details: str = "", *, subject_override: str | None = None) -> bool:
+    if not jobs and subject_override is None:
         return False
     subject, body_html, body_text = render(jobs, subject_prefix)
+    if subject_override is not None:
+        if not subject_override.strip() or "\n" in subject_override or "\r" in subject_override:
+            raise ValueError("Notification subject must be a single nonempty line")
+        subject = subject_override
     if details:
         body_text += "\n" + details
         body_html = body_html.replace("</body>", f"<pre>{html.escape(details)}</pre></body>")
@@ -134,7 +138,8 @@ def send(jobs: list[dict], subject_prefix: str = "", dry_run: bool = False, deta
     # Stable Message-ID derived from the exact set of jobs: if this batch is ever
     # delivered twice, Gmail collapses the copies instead of showing two emails.
     digest = hashlib.sha256(
-        "|".join(sorted(j.get("dedupe_hash", j["url"]) for j in jobs)).encode()
+        ((subject_override + "|" if subject_override is not None else "") +
+         "|".join(sorted(j.get("dedupe_hash") or j["url"] for j in jobs))).encode()
     ).hexdigest()[:32]
     msg["Message-ID"] = f"<jhb-{digest}@job-hunting-buddy.local>"
 

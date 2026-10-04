@@ -17,9 +17,12 @@ import time
 
 from .. import config
 from ..eligibility import POLICY_ID, restrictions, verified_description
-from . import booklet, queue, tracking
+from . import boards, booklet, queue, tracking
 
 SCOPE = "new Phase 1 Greenhouse jobs discovered during this authorization window"
+MULTI_SCOPE = "approved existing and new application drafts on enabled boards during this authorization window"
+MULTI_JOB_POLICY = "existing_and_new_verified_drafts"
+PORTAL_SCOPE = "one exact application explicitly approved in the local review portal"
 AUTH_NAME = "overnight-submission-authorization.json"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS authorized_submission_attempts (
@@ -56,24 +59,53 @@ def _read_private(path):
     return path, value, hashlib.sha256(data).hexdigest()
 
 
-def load_authorization(path=None, *, now=None):
-    """Fail closed without the separate reviewed runtime gate and user evidence."""
-    if os.environ.get("JHB_OVERNIGHT_SUBMISSIONS_ENABLED") != "1":
-        return None
+def valid_authority(auth, *, now=None):
+    """Validate one finite user instruction; recognition never grants a submit adapter."""
     now = time.time() if now is None else now
-    try:
-        path, auth, digest = _read_private(path or config.ROOT / "private" / AUTH_NAME)
-        start, expiry = _timestamp(auth["authorized_at"]), _timestamp(auth["expires_at"])
-        content = auth.get("content", "").casefold()
+    start, expiry = _timestamp(auth["authorized_at"]), _timestamp(auth["expires_at"])
+    content = auth.get("content", "").casefold()
+    if auth.get("scope") == SCOPE:
         explicit = (re.search(r"\b(?:keep|continue) submitting\b", content)
                     and "phase 1" in content and "night" in content
                     and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable)\b", content))
-        if (auth.get("enabled") is not True or auth.get("status") != "verified"
-                or auth.get("role") != "user" or not explicit or auth.get("scope") != SCOPE
-                or auth.get("board") != "greenhouse" or not start <= now < expiry
-                or not 0 < expiry-start <= 86400
-                or any(auth.get(key) is not True for key in (
-                    "require_browser_double_check", "pause_unknown_answers", "require_receipt_before_sheet"))):
+        scoped = auth.get("board") == "greenhouse"
+    elif auth.get("scope") == MULTI_SCOPE:
+        explicit = (re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
+                    and re.search(r"\b(?:all (?:job )?boards|everything)\b", content)
+                    and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable)\s+(?:apply|applying|submit|submitting|applications?|automation)\b", content))
+        enabled = auth.get("boards")
+        scoped = (isinstance(enabled, list) and bool(enabled) and len(enabled) == len(set(enabled))
+                  and all(isinstance(board, str) and board in boards.ADAPTERS for board in enabled)
+                  and auth.get("candidate_job_policy") == MULTI_JOB_POLICY
+                  and auth.get("require_independent_review") is True)
+    elif auth.get("scope") == PORTAL_SCOPE:
+        explicit = auth.get("action") == "approve" and auth.get("source") == "local_review_portal"
+        scoped = (bool(re.fullmatch(r"[a-f0-9]{64}", auth.get("job_hash", "")))
+                  and bool(re.fullmatch(r"[a-f0-9]{32}", auth.get("approval_id", "")))
+                  and isinstance(auth.get("boards"), list) and len(auth["boards"]) == 1
+                  and auth["boards"][0] in boards.ADAPTERS
+                  and auth.get("require_independent_review") is True)
+    else:
+        return False
+    return (auth.get("enabled") is True and auth.get("status") == "verified" and auth.get("role") == "user"
+            and bool(explicit) and scoped and start <= now < expiry and 0 < expiry-start <= 86400
+            and all(auth.get(key) is True for key in (
+                "require_browser_double_check", "pause_unknown_answers", "require_receipt_before_sheet")))
+
+
+def gate_enabled(auth):
+    portal = auth.get("scope") == PORTAL_SCOPE
+    if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1" and not portal:
+        return False
+    return os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED" if portal else "JHB_OVERNIGHT_SUBMISSIONS_ENABLED") == "1"
+
+
+def load_authorization(path=None, *, now=None):
+    """Fail closed without the separate reviewed runtime gate and user evidence."""
+    now = time.time() if now is None else now
+    try:
+        path, auth, digest = _read_private(path or config.ROOT / "private" / AUTH_NAME)
+        if not gate_enabled(auth) or not valid_authority(auth, now=now):
             return None
         return {**auth, "authorization_path": str(path), "authorization_id": digest}
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -90,14 +122,17 @@ def initialize(conn):
     conn.commit()
 
 
-def _safe_preclick_retry(previous, packet_sha, *, now):
+def _safe_preclick_retry(previous, packet_sha, *, now, authorization_id=None):
     """Require affirmative persisted no-click proof, changed inputs or backoff."""
     if previous["state"] not in {"waiting_input", "waiting_login", "waiting_captcha", "waiting_review"} or previous["attempt_count"] >= 3:
         return False
     try:
         _, attempt, _ = _read_private(previous["attempt_path"])
-        if attempt.get("runtime_click_started") is not False:
+        if (attempt.get("runtime_click_started") is not False or attempt.get("job_hash") != previous["job_hash"]
+                or attempt.get("authorization_id") != previous["authorization_id"]):
             return False
+        if authorization_id and authorization_id != previous["authorization_id"]:
+            return True  # A renewed explicit window re-audits only proven no-click attempts.
         old_sha = previous["packet_sha256"] or attempt.get("packet_sha256")
         if old_sha and packet_sha != old_sha:
             return True
@@ -136,30 +171,70 @@ def _manifest(job, packet, book):
     return manifest
 
 
-def _candidate(conn, row, auth):
+def _candidate(conn, row, auth, book):
     job = json.loads(row["job_json"])
-    identity = queue.greenhouse_identity(job.get("url", ""))
-    if not identity or row["state"] != "waiting_review" or not row["packet"]:
+    if auth.get("scope") == PORTAL_SCOPE and auth.get("job_hash") != row["job_hash"]:
         return None
-    source = conn.execute("SELECT j.first_seen,s.state,s.board,s.application_url FROM jobs j "
-                          "JOIN application_sources s ON s.source_job_hash=j.dedupe_hash "
-                          "WHERE j.dedupe_hash=?", (job.get("source_job_hash"),)).fetchone()
-    start, expiry = _timestamp(auth["authorized_at"]), _timestamp(auth["expires_at"])
-    if (not source or not start <= source["first_seen"] < expiry or source["state"] != "resolved"
-            or source["board"] != "greenhouse" or queue.greenhouse_identity(source["application_url"]) != identity):
+    if booklet.job_excluded(book, job):
         return None
+    identity = boards.job_identity(job.get("url", ""))
+    allowed = ["greenhouse"] if auth.get("scope") == SCOPE else auth.get("boards", [])
+    if (not identity or identity[0] not in allowed or not boards.submission_supported(identity[0])
+            or row["state"] != "waiting_review" or not row["packet"]
+            or boards.application_hash(job["url"]) != row["job_hash"]):
+        return None
+    if auth.get("scope") == SCOPE:
+        source = conn.execute("SELECT j.first_seen,s.state,s.board,s.application_url FROM jobs j "
+                              "JOIN application_sources s ON s.source_job_hash=j.dedupe_hash "
+                              "WHERE j.dedupe_hash=?", (job.get("source_job_hash"),)).fetchone()
+        start, expiry = _timestamp(auth["authorized_at"]), _timestamp(auth["expires_at"])
+        if (not source or not start <= source["first_seen"] < expiry or source["state"] != "resolved"
+                or source["board"] != "greenhouse" or boards.job_identity(source["application_url"]) != identity):
+            return None
+    if conn.execute("SELECT name FROM sqlite_master WHERE name='confirmed_submissions'").fetchone():
+        if any(boards.job_identity(item[0]) == identity for item in conn.execute("SELECT application_url FROM confirmed_submissions")):
+            return None
     packet_path, packet, _ = _read_private(Path(row["packet"]).parent / "packet.json")
+    if auth.get("scope") == PORTAL_SCOPE:
+        from .approvals import validate_binding
+        validate_binding(auth, packet_path)
     if (packet.get("state") != "waiting_review" or packet.get("submitted") is not False
             or packet.get("missing") or packet.get("verification")
             or packet.get("job", {}).get("dedupe_hash") != row["job_hash"]
-            or queue.greenhouse_identity(packet.get("job", {}).get("url", "")) != identity):
+            or boards.job_identity(packet.get("job", {}).get("url", "")) != identity):
         return None
     _, eligibility, _ = _read_private(packet_path.parent / "eligibility.json")
     description = verified_description({**job, "verified_job_description": eligibility.get("description", {})})
     if (eligibility.get("state") != "eligible" or eligibility.get("policy") != POLICY_ID
             or not description or restrictions(description["text"])):
         return None
+    if os.environ.get("JHB_ROLE_FIT_REVIEW") == "1":
+        from .role_fit import evidence_hash, POLICY as FIT_POLICY
+        from .worker import role_for_job
+        _, fit, _ = _read_private(packet_path.parent / "role-fit.json")
+        choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
+        role = choice.get("value") if choice.get("status") == "verified" else role_for_job(job)
+        if (role not in {"sde", "ml"} or fit.get("state") != "eligible" or fit.get("source") != FIT_POLICY
+                or fit.get("mode") != "independent_codex" or fit.get("selected_role") != role
+                or fit.get("evidence_hash") != evidence_hash({**job, "verified_job_description": description}, book, role)):
+            return None
     return job, packet_path, packet
+
+
+def register_manual_draft(conn, packet_path):
+    """Import an exact private reviewed draft; authority is checked at drain time."""
+    path, packet, _ = _read_private(packet_path)
+    job = packet.get("job", {})
+    key = boards.application_hash(job.get("url"))
+    if (path.name != "packet.json" or key is None or packet.get("state") != "waiting_review" or packet.get("submitted") is not False
+            or packet.get("missing") or packet.get("verification") or job.get("dedupe_hash") != key):
+        raise ValueError("Manual draft requires a complete exact-job review packet")
+    queue.initialize(conn)
+    # Existing submitted/uncertain/running rows retain their terminal ownership.
+    with conn:
+        count = conn.execute("INSERT OR IGNORE INTO applications(job_hash,job_json,state,updated_at,packet) "
+                             "VALUES(?,?,'waiting_review',?,?)", (key, json.dumps(job), int(time.time()), str(path.with_name("review.html")))).rowcount
+    return count
 
 
 def _finish_attempt(conn, row, state, result=None, receipt=None):
@@ -174,6 +249,40 @@ def _finish_attempt(conn, row, state, result=None, receipt=None):
     conn.commit()
 
 
+def _checked_receipt(row, proof):
+    """Match modern receipts to immutable audits, documents and separate review."""
+    if proof.get("check_count") != 2 or proof.get("authorization_id") != row["authorization_id"]:
+        return False
+    _, attempt, _ = _read_private(row["attempt_path"])
+    if attempt.get("require_independent_review") is not True:
+        return True  # Existing v1 receipts retain their reviewed contract.
+    _, checks, _ = _read_private(Path(row["attempt_path"]).parent / "checks.json")
+    _, token, token_digest = _read_private(Path(row["attempt_path"]).parent / "independent-review.json")
+    from .authorized_submission import audit_hash
+    from .application_review import snapshot_digest
+    snapshots, documents = checks.get("checks"), checks.get("documents", {})
+    if (attempt.get("runtime_click_started") is not True or not isinstance(snapshots, list) or len(snapshots) != 2
+            or snapshots[0] != snapshots[1] or checks.get("check_count") != 2 or not isinstance(documents, dict)
+            or "documents.resume" not in documents or proof.get("job_hash") != row["job_hash"]
+            or boards.job_identity(proof.get("url")) != boards.job_identity(row["application_url"])
+            or checks.get("authorization_id") != row["authorization_id"] or checks.get("job_hash") != row["job_hash"]):
+        return False
+    hashes = {key: item.get("sha256") for key, item in documents.items() if isinstance(item, dict)}
+    if (len(hashes) != len(documents) or not all(isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) for value in hashes.values())
+            or proof.get("document_sha256") != hashes or proof.get("resume_sha256") != hashes["documents.resume"]):
+        return False
+    review = token.get("review", {})
+    return (token.get("verdict") == "approved" and token.get("source") == "independent_application_review"
+            and proof.get("independent_review_sha256") == token_digest
+            and token.get("job_hash") == row["job_hash"] and token.get("authorization_id") == row["authorization_id"]
+            and token.get("packet_sha256") == attempt.get("packet_sha256")
+            and token.get("audit_sha256") == audit_hash(snapshots[0], documents)
+            and review.get("verdict") == "approved" and review.get("reviewer") == "codex-readonly"
+            and review.get("source") == "independent_application_review" and review.get("issues") == []
+            and review.get("snapshot_sha256") == snapshot_digest(snapshots[0])
+            and review.get("job_hash") == row["job_hash"] and review.get("authorization_id") == row["authorization_id"])
+
+
 def _reconcile_receipts(conn, recorder):
     reconciled = 0
     for row in conn.execute("SELECT * FROM authorized_submission_attempts WHERE state<>'submitted'").fetchall():
@@ -183,7 +292,7 @@ def _reconcile_receipts(conn, recorder):
             continue
         try:
             _, proof, _ = _read_private(receipt)
-            if proof.get("check_count") != 2 or proof.get("authorization_id") != row["authorization_id"]:
+            if not _checked_receipt(row, proof):
                 continue
             result = recorder(conn, json.loads(jobrow["job_json"]), receipt)
             if result.get("state") == "submitted":
@@ -194,13 +303,13 @@ def _reconcile_receipts(conn, recorder):
     return reconciled
 
 
-async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=None):
+async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=None, authorization_path=None):
     """Submit only scoped ready drafts; attempts are durable before browser work."""
     initialize(conn)
     recorder = recorder or tracking.record_confirmed
     summary = {"attempted": 0, "submitted": 0, "uncertain": 0, "handoffs": 0,
                "reconciled": _reconcile_receipts(conn, recorder), "enabled": False}
-    auth = load_authorization(now=now)
+    auth = load_authorization(authorization_path, now=now)
     if auth is None:
         return summary
     summary["enabled"] = True
@@ -216,18 +325,20 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
         if summary["attempted"] >= limit:
             break
         # Re-read authorization for revocation, mutation and expiry between jobs.
-        latest = load_authorization(now=now)
+        latest = load_authorization(authorization_path, now=now)
         if latest is None or latest["authorization_id"] != auth["authorization_id"]:
             break
         try:
-            candidate = _candidate(conn, row, auth)
+            current_book = booklet.load(book_path)
+            candidate = _candidate(conn, row, auth, current_book)
             if candidate is None:
                 continue
             job, packet_path, packet = candidate
-            manifest = _manifest(job, packet, book)
+            manifest = _manifest(job, packet, current_book)
             packet_sha = hashlib.sha256(packet_path.read_bytes()).hexdigest()
             previous = conn.execute("SELECT * FROM authorized_submission_attempts WHERE job_hash=?", (row["job_hash"],)).fetchone()
-            if previous and not _safe_preclick_retry(previous, packet_sha, now=time.time() if now is None else now):
+            if previous and not _safe_preclick_retry(previous, packet_sha, now=time.time() if now is None else now,
+                                                    authorization_id=auth["authorization_id"]):
                 continue
         except (OSError, ValueError, KeyError, TypeError):
             continue
@@ -257,6 +368,8 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
         summary["attempted"] += 1
         attempt = {"job_hash": row["job_hash"], "application_url": job["url"],
                    "authorization_id": auth["authorization_id"], "authorization_path": auth["authorization_path"],
+                   "authorization_scope": auth["scope"],
+                   "require_independent_review": auth.get("require_independent_review") is True,
                    "started_at": datetime.now(timezone.utc).isoformat(), "state": "in_progress",
                    "runtime_click_started": False, "attempt_count": previous["attempt_count"]+1 if previous else 1,
                    "packet_path": str(packet_path), "packet_sha256": packet_sha}
@@ -269,7 +382,8 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
                 if result.get("check_count") != 2:
                     raise ValueError("Submission requires two live retained-answer checks")
                 _, proof, _ = _read_private(receipt)
-                if proof.get("check_count") != 2 or proof.get("authorization_id") != auth["authorization_id"]:
+                persisted_row = conn.execute("SELECT * FROM authorized_submission_attempts WHERE job_hash=?", (row["job_hash"],)).fetchone()
+                if not _checked_receipt(persisted_row, proof):
                     raise ValueError("Submission receipt lacks matching authorization and double-check evidence")
                 # Receipt validation, durable confirmation and sheet update are one
                 # existing final-step API. A click or state marker is insufficient.

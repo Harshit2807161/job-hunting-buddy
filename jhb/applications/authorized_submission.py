@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import os
 import re
@@ -11,7 +12,7 @@ from pathlib import Path
 from .. import config
 from .booklet import write_private
 from .cli_browser import BrowserOperationError, BrowserUseCLI
-from .queue import greenhouse_identity
+from . import boards, overnight
 
 SCOPE = "new Phase 1 Greenhouse jobs discovered during this authorization window"
 
@@ -35,6 +36,14 @@ def timestamp(value):
 
 def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False):
     """Re-read immutable user authority and the durable, job-specific attempt."""
+    # A pause can arrive while the separate reviewer or pointer settling is
+    # running. Recheck it at every operation, including immediately before the
+    # write-ahead click marker. Receipt reconciliation does not use this gate:
+    # an already observed positive receipt remains valid after a later pause.
+    for guard in (config.ROOT / "private" / "pipeline-pause.json",
+                  config.ROOT / "private" / "overnight-monitor" / "repair-pending.json"):
+        if guard.exists() or guard.is_symlink():
+            raise ValueError("Application automation is paused or quarantined")
     authorization_path, attempt_path = private_file(authorization_path), private_file(attempt_path)
     raw = authorization_path.read_bytes()
     authority = json.loads(raw)
@@ -42,25 +51,20 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
     moment = now or datetime.now(timezone.utc)
     start = timestamp(authority.get("authorized_at", authority.get("started_at", "")))
     expiry = timestamp(authority.get("expires_at", authority.get("expiry", "")))
-    content = authority.get("content", "").casefold()
-    explicit = ("submitting" in content and "phase 1" in content and "night" in content
-                and "do not submit" not in content and "don't submit" not in content)
-    if (os.environ.get("JHB_OVERNIGHT_SUBMISSIONS_ENABLED") != "1"
-            or authority.get("role") != "user" or authority.get("enabled") is not True or not explicit
-            or authority.get("status") != "verified" or authority.get("scope") != SCOPE
-            or authority.get("board") != "greenhouse"
-            or not all(authority.get(key) is True for key in (
-                "require_browser_double_check", "pause_unknown_answers", "require_receipt_before_sheet"))
-            or not start <= moment < expiry or not 0 < (expiry-start).total_seconds() <= 86400):
+    if (not overnight.gate_enabled(authority)
+            or not overnight.valid_authority(authority, now=moment.timestamp())):
         raise ValueError("No active finite user authorization for this submission")
     digest = hashlib.sha256(raw).hexdigest()
-    identity = greenhouse_identity(attempt.get("application_url"))
+    identity = boards.job_identity(attempt.get("application_url"))
+    allowed = ["greenhouse"] if authority.get("scope") == SCOPE else authority.get("boards", [])
     if (attempt.get("authorization_id") != digest
             or attempt.get("authorization_path") != str(authorization_path)
             or attempt.get("state") != "in_progress"
             or not re.fullmatch(r"[a-f0-9]{64}", attempt.get("job_hash", ""))
             or identity is None
-            or hashlib.sha256("|".join(identity or ()).encode()).hexdigest() != attempt.get("job_hash")
+            or identity[0] not in allowed or not boards.submission_supported(identity[0])
+            or boards.application_hash(attempt.get("application_url")) != attempt.get("job_hash")
+            or (authority.get("require_independent_review") is True and attempt.get("require_independent_review") is not True)
             or (attempt.get("runtime_click_started") and not allow_clicked)
             or not start <= timestamp(attempt.get("started_at", "")) < expiry):
         raise ValueError("Submission attempt is mismatched, consumed, or not durable")
@@ -71,11 +75,16 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
     packet_bytes = packet_path.read_bytes()
     packet = json.loads(packet_bytes)
     if (hashlib.sha256(packet_bytes).hexdigest() != attempt.get("packet_sha256")
-            or packet.get("state") != "waiting_review" or packet.get("submitted") is True
-            or packet.get("missing") or packet.get("blocked_requests", 0)
+            or packet.get("state") != "waiting_review" or packet.get("submitted") is not False
+            or packet.get("missing") or packet.get("verification") or packet.get("blocked_requests", 0)
             or packet.get("job", {}).get("dedupe_hash") != attempt["job_hash"]
-            or greenhouse_identity(packet.get("job", {}).get("url")) != greenhouse_identity(attempt["application_url"])):
+            or boards.job_identity(packet.get("job", {}).get("url")) != identity):
         raise ValueError("Submission packet is changed, incomplete, or for another job")
+    if authority.get("scope") == overnight.PORTAL_SCOPE:
+        from .approvals import validate_binding
+        validate_binding(authority, packet_path)
+        if authority.get("job_hash") != attempt["job_hash"]:
+            raise ValueError("Portal approval belongs to a different application")
     return authority, attempt, packet
 
 
@@ -108,7 +117,12 @@ class AuthorizedSubmissionCLI(BrowserUseCLI):
     _dispatch_module = "jhb.applications.submission_runtime"
 
 
-async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, cli=None):
+def audit_hash(snapshot, documents):
+    return hashlib.sha256(json.dumps({"snapshot": snapshot, "documents": documents}, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, cli=None, reviewer=None):
     """Submit once, after durable ownership and two fresh retained-value checks.
 
     ``answers`` contains selected_role, documents (verified booklet records), and
@@ -123,10 +137,10 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
     if national.get("status") == "verified" and national.get("source") and isinstance(national.get("value"), str):
         context["approved_phone_national"] = national
     try:
-        _, persisted, packet = load_gate(authorization_path, attempt_path)
+        authority, persisted, packet = load_gate(authorization_path, attempt_path)
         if (str(private_file(packet_path)) != persisted["packet_path"]
                 or job.get("dedupe_hash") != persisted["job_hash"]
-                or greenhouse_identity(job.get("url")) != greenhouse_identity(persisted["application_url"])):
+                or boards.job_identity(job.get("url")) != boards.job_identity(persisted["application_url"])):
             raise ValueError("Requested job differs from the durable attempt")
         documents = document_manifest(answers, packet)
         located = await client.invoke("locate", **context)
@@ -146,6 +160,38 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
             if not result.get("verified") or not result.get("upload_receipt"):
                 raise ValueError("Approved document upload was not verified")
             document["receipt"] = result["upload_receipt"]
+        if authority.get("require_independent_review") is True:
+            snapshot = await client.invoke("check", **context, documents=documents)
+            if snapshot.get("state"):
+                return snapshot
+            if reviewer is None:
+                from .application_review import review_application
+                reviewer = review_application
+            independent = await asyncio.to_thread(reviewer, job, {**answers, "documents": documents,
+                                                                 "approved_documents": answers["documents"],
+                                                                 "application_inventory": packet.get("review_inventory"),
+                                                                 "user_blank_acknowledgments": authority.get("acknowledged_blank_refs", [])}, snapshot, authorization)
+            from .application_review import snapshot_digest
+            snapshot_sha = snapshot_digest(snapshot)
+            if (not isinstance(independent, dict) or independent.get("verdict") != "approved"
+                    or independent.get("reviewer") != "codex-readonly"
+                    or independent.get("source") != "independent_application_review"
+                    or independent.get("issues") != []
+                    or independent.get("snapshot_sha256") != snapshot_sha
+                    or independent.get("authorization_id") != persisted["authorization_id"]
+                    or independent.get("job_hash") != persisted["job_hash"]):
+                return {"state": "waiting_review", "reason": "Independent application review did not approve the retained draft", "click_started": False}
+            reviewed_book = private_file(independent.get("approved_book_path", ""))
+            if hashlib.sha256(reviewed_book.read_bytes()).hexdigest() != independent.get("approved_book_sha256"):
+                return {"state": "waiting_review", "reason": "Candidate answers changed during independent review", "click_started": False}
+            # The runtime verifies this exact snapshot again inside the browser
+            # lane. A reviewer never receives authority to alter field values.
+            token = {"verdict": "approved", "source": "independent_application_review",
+                     "job_hash": persisted["job_hash"], "authorization_id": persisted["authorization_id"],
+                     "packet_sha256": persisted["packet_sha256"], "audit_sha256": audit_hash(snapshot, documents),
+                     "approved_book_path": str(reviewed_book), "approved_book_sha256": independent["approved_book_sha256"],
+                     "review": independent, "reviewed_at": datetime.now(timezone.utc).isoformat()}
+            write_private(attempt_path.parent / "independent-review.json", token)
         return await client.invoke("submit", **context, documents=documents)
     except Exception as exc:
         # Transport failure after a durable click is uncertain, never replayable.

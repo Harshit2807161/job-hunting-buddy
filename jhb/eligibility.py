@@ -141,13 +141,8 @@ def preliminary(job):
 
 
 def description_url(job):
-    from .applications.queue import greenhouse_identity
-    identity = greenhouse_identity(job.get("url", ""))
-    if identity is None:
-        return None
-    region, board, job_id = identity
-    host = "boards-api.eu.greenhouse.io" if region == "eu" else "boards-api.greenhouse.io"
-    return f"https://{host}/v1/boards/{board}/jobs/{job_id}"
+    from .applications.job_context import description_source
+    return description_source(job.get("url", ""))
 
 
 class _OfficialRedirects(urllib.request.HTTPRedirectHandler):
@@ -159,6 +154,10 @@ class _OfficialRedirects(urllib.request.HTTPRedirectHandler):
 
 
 def fetch_description(job, *, timeout=15):
+    from .applications.boards import board_type
+    if board_type(job.get("url")) != "greenhouse":
+        from .applications.job_context import fetch_public_description
+        return fetch_public_description(job.get("url"), timeout=timeout)
     url = description_url(job)
     if url is None:
         raise ValueError("No supported official job-description source")
@@ -181,15 +180,8 @@ def fetch_description(job, *, timeout=15):
 def verified_description(job):
     """Reuse only a fresh, integrity-checked snapshot of this exact official job."""
     item = job.get("verified_job_description", {})
-    if not isinstance(item, dict) or item.get("status") != "verified" or item.get("source_url") != description_url(job):
-        return None
-    text = item.get("text")
-    retrieved = item.get("retrieved_at")
-    if not isinstance(text, str) or not text.strip() or not isinstance(retrieved, (int, float)) or not 0 <= time.time()-retrieved <= 86400:
-        return None
-    if hashlib.sha256(text.encode()).hexdigest() != item.get("sha256"):
-        return None
-    return item
+    from .applications.job_context import valid_description
+    return item if valid_description(item, job.get("url")) else None
 
 
 def assess_job(job):

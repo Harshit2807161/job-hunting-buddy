@@ -48,3 +48,15 @@ the application email or send Google credentials to the planner.
 
 Cover-letter work follows `skills/tailor-cover-letter/SKILL.md` and the candidate's
 local source skill. This planner does not generate or edit document content.
+
+## Complete question review
+
+Preserve every question seen across steps in `review_inventory`, including
+blank optional prose, voluntary disclosures and communications. Mark it complete
+only after a stable final observation reconciles answers and unanswered fields.
+Zero required missing answers is insufficient. Allowed written answers need
+selected-role factual grounding; explicit “no AI text” requests require the
+candidate's own wording through the ledger and portal, even if optional.
+Preserve exact labels and requiredness. An optional blank requires explicit
+per-field portal acknowledgment, and submission requires approval of the exact
+packet.

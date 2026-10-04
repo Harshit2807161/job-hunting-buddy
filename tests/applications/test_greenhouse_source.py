@@ -156,7 +156,7 @@ def test_linkedin_login_and_verification_are_explicit_handoffs():
 
 def test_wrapper_resolves_non_greenhouse_ats_without_attempting_application():
     source = "https://www.linkedin.com/jobs/view/888"
-    workday = "https://example.wd1.myworkdayjobs.com/en-US/jobs/job/Engineer_123"
+    workday = "https://example.wd1.myworkdayjobs.com/en-US/jobs/job/Remote/Engineer_123"
     result, _ = resolve({source: page(source, links=[{"url": workday, "text": "Apply"}]),
                          workday: page(workday)}, source)
     assert result["state"] == "not_greenhouse"

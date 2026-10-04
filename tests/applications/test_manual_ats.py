@@ -121,7 +121,14 @@ def test_manual_ashby_groups_upload_and_submit_guard(tmp_path, foreground):
             assert not page.locator("#backend").is_checked() and page.locator("#ml").is_checked()
             with pytest.raises(ValueError, match="approved selection"):
                 call("fill", field=fields["ashby:teams"], value=[])
-            assert call("fill", field=fields["_systemfield_resume"], value=str(resume))["verified"]
+            upload = call("fill", field=fields["_systemfield_resume"], value=str(resume))
+            assert upload["verified"] and upload["upload_receipt"] and len(upload["sha256"]) == 64
+            cached = call("fill", field=fields["_systemfield_resume"], value=str(resume), upload_receipt=upload["upload_receipt"])
+            assert cached["cached"] and cached["upload_receipt"] == upload["upload_receipt"]
+            page.locator("#_systemfield_resume").set_input_files([])
+            assert page.locator("#_systemfield_resume").evaluate("e=>e.__jhbUploadReceipt||null") is None
+            replacement = call("fill", field=fields["_systemfield_resume"], value=str(resume), upload_receipt=upload["upload_receipt"])
+            assert replacement["upload_receipt"] != upload["upload_receipt"] and not replacement.get("cached")
             assert page.locator("#autofill").evaluate("e=>e.files.length") == 0
             with pytest.raises(ValueError, match="uniquely match"):
                 call("fill", field=fields["ashby:sponsor"], value="Maybe")
