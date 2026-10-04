@@ -71,6 +71,58 @@ def recover_technical_failures(conn):
     return changed
 
 
+def recover_description_handoffs(conn, *, limit=20):
+    """Reconsider pre-refresh, zero-field technical handoffs once; retain budgets."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+        raise ValueError("Description handoff recovery limit out of range")
+    from .authorized_submission import private_file
+    from .tracking import confirmed_application
+    conn.execute("CREATE TABLE IF NOT EXISTS job_description_refresh_rechecks "
+                 "(job_hash TEXT PRIMARY KEY,packet_sha256 TEXT NOT NULL,rechecked_at INTEGER NOT NULL)")
+    rows = conn.execute("SELECT a.* FROM applications a LEFT JOIN job_description_refresh_rechecks r "
+                        "ON r.job_hash=a.job_hash WHERE a.state='waiting_input' AND a.attempts<3 "
+                        "AND r.job_hash IS NULL ORDER BY a.updated_at,a.job_hash LIMIT ?", (limit,)).fetchall()
+    changed = 0
+    for row in rows:
+        if not row["packet"]:
+            continue
+        protected = False
+        for table in ("authorized_submission_attempts", "application_approvals"):
+            if (conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone()
+                    and conn.execute(f"SELECT 1 FROM {table} WHERE job_hash=?", (row["job_hash"],)).fetchone()):
+                protected = True
+                break
+        if protected:
+            continue
+        try:
+            path = private_file(str(Path(row["packet"]).parent / "packet.json"))
+            raw = path.read_bytes()
+            packet, original = json.loads(raw), json.loads(row["job_json"])
+            verification = packet.get("eligibility", {}).get("verification", {})
+            if (packet.get("state") != "waiting_input" or packet.get("filled") or packet.get("missing")
+                    or packet.get("submitted") is True or packet.get("runtime_click_started") is True
+                    or packet.get("optional_questions")
+                    or packet.get("review_inventory", {}).get("fields") or packet.get("verification")
+                    or verification.get("kind") != "job_description"
+                    or packet.get("job", {}).get("dedupe_hash") != row["job_hash"]
+                    or boards.application_hash(original.get("url")) != row["job_hash"]
+                    or boards.job_identity(packet["job"].get("url")) != boards.job_identity(original.get("url"))):
+                continue
+            if confirmed_application(conn, original.get("url")):
+                continue
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+        with conn:
+            updated = conn.execute("UPDATE applications SET state='queued',lease_until=NULL,available_at=0,error_kind=NULL,"
+                                   "notified_at=NULL,updated_at=? WHERE job_hash=? AND state='waiting_input' AND attempts<3",
+                                   (int(time.time()), row["job_hash"])).rowcount
+            if updated:
+                conn.execute("INSERT OR IGNORE INTO job_description_refresh_rechecks VALUES(?,?,?)",
+                             (row["job_hash"], hashlib.sha256(raw).hexdigest(), int(time.time())))
+                changed += 1
+    return changed
+
+
 def _limit(name, fallback, maximum):
     value = int(os.environ.get(name, str(fallback)))
     if not 1 <= value <= maximum:
@@ -307,29 +359,37 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         from .linkedin import resolve_source
         authenticated_resolver = resolve_source
     if runner is None:
-        from .worker import run_job
-        from .job_context import fetch
+        from .worker import run_job, write_packet
+        from .source_refresh import refresh
         async def runner(job, book, **kwargs):
-            context = await asyncio.to_thread(fetch, job["url"])
-            if context:
-                booklet.write_private(config.ROOT / "private" / "applications" / job["dedupe_hash"] / "public-job-context.json", context)
-                job = {**job, "work_country": context.get("country_context"),
-                       "advertised_salary_ranges": context.get("advertised_salary_ranges", []),
-                       **({"verified_job_description": context["verified_job_description"]}
-                          if context.get("verified_job_description") else {})}
+            refreshed = await refresh(job, resolver=resolver, timeout=source_timeout)
+            directory = config.ROOT / "private" / "applications" / job["dedupe_hash"]
+            booklet.write_private(directory / "source-refresh.json", refreshed)
+            if refreshed["state"] != "verified":
+                return refreshed, await write_packet(None, directory, job, refreshed)
+            context = refreshed["context"]
+            booklet.write_private(directory / "public-job-context.json", context)
+            job = {**job, "work_country": context.get("country_context") or job.get("work_country"),
+                   "advertised_salary_ranges": context.get("advertised_salary_ranges", []),
+                   "verified_job_description": context["verified_job_description"]}
             return await run_job(job, book, **kwargs)
     from .worker import notify_pending
 
     queue.initialize(conn)
     source_queue.initialize(conn)
+    from .tracking import restore_confirmed_applications
+    historical_confirmations = restore_confirmed_applications(conn)
     local_rechecks = recover_authenticated_linkedin_sources(conn, limit=source_limit)
     replayed = replay_resolved_sources(conn)
     recovered = recover_technical_failures(conn)
+    description_rechecks = recover_description_handoffs(conn)
     notify_source_handoffs(conn, send_email=send_email)
     summary = {"sources_checked": 0, "boards": {}, "applications_queued": replayed, "sources_replayed": replayed,
                "authenticated_sources_requeued": local_rechecks,
                "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": 0,
                "technical_recovered": recovered, "technical_retries": 0}
+    summary["historical_confirmations_reconciled"] = historical_confirmations
+    summary["description_handoffs_requeued"] = description_rechecks
     sources = []
     if heartbeat:
         heartbeat.update(stage="source_resolution", summary=summary)

@@ -51,6 +51,11 @@ def enqueue(conn, jobs) -> int:
         routed_board = boards.route_board(url, row.get("board_type"))
         if identity is None or not boards.preparation_supported(routed_board):
             continue
+        from .tracking import confirmed_application, _restore_confirmation
+        confirmation = confirmed_application(conn, url)
+        if confirmation:
+            _restore_confirmation(conn, confirmation)
+            continue
         application_hash = boards.application_hash(url)
         row = {**row, "source_job_hash": row.get("source_job_hash", row["dedupe_hash"]),
                "dedupe_hash": application_hash, "board_type": routed_board, "job_identity": list(identity),
@@ -73,9 +78,21 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3):
         conn.execute("UPDATE applications SET state='failed',lease_until=NULL,updated_at=? "
                      "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ?",
                      (now, now, max_attempts))
-        row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
-                           "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
-                           "ORDER BY updated_at,job_hash LIMIT 1", (now, now, max_attempts)).fetchone()
+        # Bound archival scans; a later cycle can drain the next batch.
+        for _ in range(100):
+            row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
+                               "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
+                               "ORDER BY updated_at,job_hash LIMIT 1", (now, now, max_attempts)).fetchone()
+            if row is None:
+                break
+            from .tracking import confirmed_application, _restore_confirmation
+            confirmation = confirmed_application(conn, json.loads(row["job_json"]).get("url"))
+            if not confirmation or confirmation["job"]["dedupe_hash"] != row["job_hash"]:
+                break
+            _restore_confirmation(conn, confirmation)
+        else:
+            conn.commit()
+            return None
         if not row:
             conn.commit()
             return None

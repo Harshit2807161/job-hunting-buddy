@@ -54,7 +54,7 @@ _OBSERVE = r"""() => ({
   job_postings: (()=>{const jobs=[];const visit=(value,depth=0)=>{if(!value||depth>5||jobs.length>=20)return;
     if(Array.isArray(value)){for(const item of value)visit(item,depth+1);return}
     if(typeof value!=='object')return;
-    if(value['@type']==='JobPosting'||Array.isArray(value['@type'])&&value['@type'].includes('JobPosting'))jobs.push({title:value.title,description:value.description,url:value.url||value.mainEntityOfPage?.['@id']||location.href});
+    if(value['@type']==='JobPosting'||Array.isArray(value['@type'])&&value['@type'].includes('JobPosting'))jobs.push({title:value.title,description:value.description,url:value.url||value.mainEntityOfPage?.['@id']||location.href,jobLocation:value.jobLocation,applicantLocationRequirements:value.applicantLocationRequirements});
     if(value['@graph'])visit(value['@graph'],depth+1)};
     for(const e of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(e.textContent))}catch(_){}}
     return jobs})()
@@ -95,9 +95,10 @@ def _observed_description(observation):
         text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", content))).strip()
         if len(text) < 100 or len(text.encode()) > 1024*1024:
             continue
+        from .job_context import _metadata_country
         candidates.append({"status": "verified", "source_url": url, "job_identity": list(identity),
                            "retrieved_at": time.time(), "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                           "title": title.strip()})
+                           "title": title.strip(), "country_context": _metadata_country(record)})
     # Conflicting JobPosting records are not an invitation to choose one role.
     unique = {(item["title"], item["sha256"]): item for item in candidates}
     return next(iter(unique.values())) if len(unique) == 1 else None

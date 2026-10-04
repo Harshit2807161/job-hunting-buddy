@@ -35,11 +35,24 @@ checks, explicitly unnecessary clearances, or citizenship with a permanent-
 resident alternative.
 
 An unavailable or empty official description prevents preparation. Stale,
-mismatched, or altered cached descriptions trigger a fresh official fetch.
-Failed verification produces a `waiting_input` operational handoff
-with no candidate question; no application tab is opened or filled. Retry only
-after the official description can be verified. Fresh cached descriptions must
-match the exact official job URL and their recorded content hash.
+mismatched, or altered cached descriptions trigger one bounded official fetch,
+then an isolated Playwright MCP inspection of the exact job if the page requires
+JavaScript. Fresh valid source or private context snapshots are reused without
+another fetch. Verified description, country metadata, advertised salary ranges,
+and inspection provenance are saved privately before the filler starts. The
+eligibility check consumes that same snapshot. Fresh descriptions must match
+the exact official identity, content hash, and retrieval timestamp.
+
+Closed jobs become `skipped`; mismatched or unverifiable descriptions become an
+`unsupported` technical handoff. Site authentication and challenges remain
+explicit source access handoffs. Transport failures use the existing finite
+three-attempt retry budget. These outcomes contain no candidate question, and
+no candidate application tab is opened or filled. Evidence is available in the
+job's private `source-refresh.json` and `public-job-context.json`.
+Older zero-field `waiting_input` packets caused solely by job-description
+verification are reconsidered once, in a bounded batch with attempts preserved.
+Any actual question, observed field, approval, submission attempt, confirmation,
+or terminal evidence excludes the packet from this technical migration.
 
 Greenhouse preparation uses the registered Browser Use skill and its official
 CLI, default daemon, and existing local Chrome CDP endpoint. Independent job
@@ -230,6 +243,14 @@ An uncertain write stays pending for read-only reconciliation instead of being
 blindly repeated. Configuration, credentials and receipts remain private; CI
 uses synthetic tool responses. See [submission-tracking.md](submission-tracking.md)
 for configuration and receipt recording commands.
+
+Historical manual confirmations are reconciled before source replay, enqueue,
+and queue claim. The tracker verifies the exact ATS identity and saved positive
+receipt digest before restoring a `submitted` application row. If an exact
+historical confirmation exists but its private receipt is missing, changed, or
+unverifiable, that job is held as `submission_uncertain` for technical review;
+it cannot become a fresh application. Existing submitted rows remain submitted.
+This reconciliation opens no browser and performs no spreadsheet append.
 
 ## Validation boundaries
 

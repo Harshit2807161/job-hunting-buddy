@@ -130,6 +130,62 @@ def record_confirmed(conn, job, receipt_path, *, config_path=None, executor=None
     return {"submission_key": key, "state": "submitted", "tracking": tracking}
 
 
+def confirmed_application(conn, url):
+    """Revalidate prior proof; an exact but damaged confirmation blocks replay."""
+    identity = ats_identity(url)
+    if identity is None or not conn.execute("SELECT 1 FROM sqlite_master WHERE name='confirmed_submissions'").fetchone():
+        return None
+    key = hashlib.sha256(json.dumps(identity[0], separators=(",", ":")).encode()).hexdigest()
+    rows = conn.execute("SELECT * FROM confirmed_submissions WHERE submission_key=? OR application_url=?",
+                        (key, identity[1])).fetchall()
+    unverified = None
+    for row in rows:
+        try:
+            stored = ats_identity(row["application_url"])
+            if stored is None or stored[0] != identity[0]:
+                continue
+            unverified = {"job": {"url": identity[1], "dedupe_hash": boards.application_hash(url),
+                                  "historical_confirmation": {"state": "unverified", "kind": "saved_receipt_integrity"}},
+                          "receipt_path": None, "verified": False}
+            job, saved = json.loads(row["job_json"]), json.loads(row["proof_json"])
+            checked, confirmed_at, proof = _proof(job, saved["receipt_path"])
+            if (checked[0] != identity[0] or ats_identity(row["application_url"])[0] != identity[0]
+                    or confirmed_at != row["confirmed_at"] or proof["receipt_sha256"] != saved.get("receipt_sha256")):
+                continue
+            return {"job": {**job, "url": checked[1], "dedupe_hash": boards.application_hash(url)},
+                    "receipt_path": proof["receipt_path"], "verified": True}
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return unverified
+
+
+def _restore_confirmation(conn, confirmation):
+    job = confirmation["job"]
+    state = "submitted" if confirmation["verified"] else "submission_uncertain"
+    return conn.execute("INSERT INTO applications(job_hash,job_json,state,updated_at,packet) VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(job_hash) DO UPDATE SET state=excluded.state,lease_until=NULL,updated_at=excluded.updated_at,"
+                        "packet=excluded.packet WHERE applications.state<>'submitted' AND (excluded.state='submitted' OR applications.state<>'submission_uncertain')",
+                        (job["dedupe_hash"], json.dumps(job), state, int(time.time()), confirmation["receipt_path"])).rowcount
+
+
+def restore_confirmed_applications(conn, *, limit=1000):
+    """Migrate historical confirmations into the queue without Sheets or browser IO.
+
+    Exact enqueue/claim checks also protect jobs beyond this bounded startup scan.
+    Missing or changed private receipt evidence never fabricates a submission.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='confirmed_submissions'").fetchone():
+        return 0
+    restored = 0
+    rows = conn.execute("SELECT application_url FROM confirmed_submissions ORDER BY recorded_at DESC LIMIT ?", (limit,)).fetchall()
+    for row in rows:
+        confirmation = confirmed_application(conn, row["application_url"])
+        if confirmation:
+            restored += _restore_confirmation(conn, confirmation)
+    conn.commit()
+    return restored
+
+
 def _load_config(path=None):
     selected = path or os.environ.get("JHB_TRACKER_CONFIG") or config.ROOT / "private" / CONFIG_NAME
     if not Path(selected).is_absolute():
