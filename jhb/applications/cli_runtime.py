@@ -21,7 +21,7 @@ from .queue import greenhouse_identity, is_greenhouse
 def _settled_click(backend, cdp, wait, click_at_xy):
     """Click only after bounded, viewport-relative CDP geometry has settled."""
     cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
-    previous, stable = None, 0
+    previous, stable, wheel_attempts, obstructed = None, 0, 0, False
     for _ in range(20):
         # A completed scroll request does not guarantee a completed reflow or
         # animation triggered by that scroll. Observe several rendered frames.
@@ -50,9 +50,47 @@ def _settled_click(backend, cdp, wait, click_at_xy):
             continue
         if max(final[0::2]) <= min(final[0::2]) or max(final[1::2]) <= min(final[1::2]):
             raise ValueError("Observed control has no clickable area")
-        click_at_xy(sum(final[0::2])/4, sum(final[1::2])/4)
+        x, y = sum(final[0::2])/4, sum(final[1::2])/4
+        obj = cdp("DOM.resolveNode", backendNodeId=backend)["object"]["objectId"]
+        try:
+            hit = cdp("Runtime.callFunctionOn", objectId=obj, returnByValue=True,
+                arguments=[{"value": value} for value in (x, y, viewport["clientWidth"], viewport["clientHeight"])],
+                functionDeclaration=r"""function(x,y,width,height){
+                  const doc=this.ownerDocument, view=doc.defaultView, blocker=doc.elementFromPoint(x,y);
+                  const correct=!!blocker&&(blocker===this||this.contains(blocker)||
+                    [...(this.labels||[])].some(label=>label===blocker||label.contains(blocker)));
+                  if(correct)return {hit:true};
+                  const candidates=[[width/2,height/2],[x,height/2],[width/2,height*.35],[width/2,height*.65]];
+                  for(const [cx,cy] of candidates){
+                    const e=doc.elementFromPoint(cx,cy);
+                    if(!e||e===blocker||blocker?.contains(e)||e.closest('input,textarea,select,button,a,iframe,[contenteditable=true]'))continue;
+                    let overlay=false;
+                    for(let p=e;p;p=p.parentElement){
+                      if(['fixed','sticky'].includes(view.getComputedStyle(p).position)){overlay=true;break;}
+                    }
+                    if(!overlay)return {hit:false,wheel:{x:cx,y:cy}};
+                  }
+                  return {hit:false};
+                }""")["result"].get("value")
+        finally:
+            cdp("Runtime.releaseObject", objectId=obj)
+        if not isinstance(hit, dict) or hit.get("hit") is not True:
+            obstructed = True
+            point = hit.get("wheel") if isinstance(hit, dict) else None
+            if (wheel_attempts >= 3 or not isinstance(point, dict)
+                    or not all(isinstance(point.get(k), (int, float)) and math.isfinite(point[k]) for k in ("x", "y"))
+                    or not (0 < point["x"] < viewport["clientWidth"] and 0 < point["y"] < viewport["clientHeight"])):
+                raise ValueError("Observed control is obstructed at its click position")
+            delta = max(120, min(viewport["clientHeight"]*.4, abs(y-viewport["clientHeight"]*.45)))
+            cdp("Input.dispatchMouseEvent", type="mouseWheel", x=point["x"], y=point["y"],
+                deltaX=0, deltaY=delta if y >= viewport["clientHeight"]/2 else -delta)
+            wheel_attempts += 1
+            wait(0.1)
+            previous, stable = None, 0
+            continue
+        click_at_xy(x, y)
         return
-    raise ValueError("Observed control did not settle in the viewport")
+    raise ValueError("Observed control remains obstructed after scrolling" if obstructed else "Observed control did not settle in the viewport")
 
 FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
  .filter(e=>e.id && !e.disabled && (e.type==='file' ||
