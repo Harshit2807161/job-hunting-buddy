@@ -13,10 +13,10 @@ from .booklet import write_private
 INTERVAL = 15
 STAGES = {"initializing", "source_resolution", "preparation", "submission", "notifications", "tracking", "complete"}
 PROCESSED = {"sources_checked", "applications_queued", "sources_replayed", "applications_prepared",
-             "question_handoffs", "auto_requeued", "technical_recovered", "technical_retries"}
+             "question_handoffs", "auto_requeued", "technical_recovered", "technical_retries", "browser_capacity_deferred"}
 REASONS = {"repair_quarantine", "manager_active", "draft_capacity", "candidate_answers_required",
            "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted", "automation_paused",
-           "local_browser_disconnected", "local_browser_unavailable", "preparation_disabled", "portal_required"}
+           "local_browser_disconnected", "local_browser_unavailable", "preparation_disabled", "portal_required", "browser_capacity"}
 
 
 def _timestamp(now=None):
@@ -94,11 +94,14 @@ async def monitor_cycle(conn, book_path, operation, **kwargs):
         reasons = []
         if result.get("capacity_blocked"):
             reasons.append("draft_capacity")
+        if result.get("browser_capacity_deferred"):
+            reasons.append("browser_capacity")
         if heartbeat.value["queue"].get("applications", {}).get("waiting_input", 0):
             reasons.append("candidate_answers_required")
         if result.get("authorized_submissions", {}).get("enabled") is False:
             reasons.append("submission_authority_inactive")
-        if not result.get("sources_checked") and not result.get("applications_prepared") and not result.get("authorized_submissions", {}).get("attempted"):
+        if (not result.get("browser_capacity_deferred") and not result.get("sources_checked")
+                and not result.get("applications_prepared") and not result.get("authorized_submissions", {}).get("attempted")):
             reasons.append("no_ready_jobs")
         heartbeat.update(stage="complete", summary=result, status="completed", reasons=reasons)
         return result

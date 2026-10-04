@@ -302,7 +302,7 @@ class DashboardStore:
             if re.fullmatch(r"[a-z_]+", state) and type(count) is int and 0 <= count <= 1000000}
             for kind, values in data.get("queue", {}).items()
             if kind in {"applications", "sources", "sheet_delivery"} and isinstance(values, dict)}
-        allowed_reasons = {"repair_quarantine", "draft_capacity", "candidate_answers_required", "automation_paused",
+        allowed_reasons = {"repair_quarantine", "draft_capacity", "browser_capacity", "candidate_answers_required", "automation_paused",
                            "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted",
                            "portal_disabled", "portal_required", "local_browser_unavailable", "local_browser_disconnected", "no_approvals",
                            "external_approval_active", "operation_failed", "operation_interrupted", "approval_crash_recovered",

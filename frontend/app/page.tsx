@@ -200,7 +200,9 @@ export default function Dashboard() {
   const questionCount = data?.questions.length || 0;
   const chartMax = Math.max(1, ...(data?.daily.flatMap(d => [d.confirmed, d.prepared]) || [1]));
   const workerActive = !data?.automation_paused && data?.pipeline?.status === "running" && !data.pipeline.stale;
-  const activityTitle = error ? "Connection lost" : data?.automation_paused ? "Automation paused" : workerActive ? "Agent is working" : data?.pipeline?.status === "blocked" ? "Agent paused" : summary?.running ? "Applications in progress" : "Workspace connected";
+  const browserWaiting = !data?.automation_paused && !data?.pipeline?.stale && data?.pipeline?.reason_codes.includes("browser_capacity");
+  const browserDisconnected = data?.pipeline?.reason_codes.includes("local_browser_disconnected");
+  const activityTitle = error ? "Connection lost" : data?.automation_paused ? "Automation paused" : workerActive ? "Agent is working" : browserWaiting ? "Browser tabs need review" : browserDisconnected ? "Chrome disconnected" : data?.pipeline?.status === "blocked" ? "Agent paused" : summary?.running ? "Applications in progress" : "Workspace connected";
 
   return <div className="workspace">
     <aside className="sidebar"><div className="brand"><span className="brand-mark"><Icon name="spark" size={24}/></span><span>job hunting<br/><b>buddy</b></span></div>
@@ -226,6 +228,8 @@ export default function Dashboard() {
       </section><section id="activity" className="panel agent-panel"><div className="panel-heading"><h2>Your agent</h2><span className={workerActive ? "live-pill" : "quiet-pill"}>{workerActive ? "WORKING" : "STATUS"}</span></div><div className="agent-status"><div className={workerActive ? "agent-orb active" : "agent-orb"}><Icon name="spark" size={26}/></div><h3>{activityTitle}</h3><p>{data?.pipeline ? `${data.pipeline.stage.replaceAll("_", " ")} · last heartbeat ${timeLabel(data.pipeline.updated_at)}` : "No pipeline heartbeat recorded yet."}</p></div>
         <div className="agent-counters"><div><b>{summary?.running ?? "—"}</b><span>preparing</span></div><div><b>{summary?.queued ?? "—"}</b><span>queued / retry</span></div><div><b>{summary?.sheet_synced ?? "—"}</b><span>sheet synced</span></div></div>
         {data?.pipeline?.stale && data.pipeline.status === "running" && <p className="form-error">Heartbeat is stale; worker activity is unconfirmed.</p>}
+        {browserWaiting && <p className="agent-warning">New tabs are paused at the browser limit or while a new destination needs verification. Existing drafts stay open. Review completed applications below.</p>}
+        {!data?.automation_paused && browserDisconnected && <p className="agent-warning">Reconnect your Chrome session to resume filling. Queued jobs keep their remaining attempts.</p>}
         {data?.submission_pipeline && <p className="submission-worker">Approval worker: {data.automation_paused ? "paused by the portal gate" : data.submission_pipeline.stale ? "heartbeat stale" : data.submission_pipeline.status.replaceAll("_", " ")}{!data.automation_paused && data.submission_pipeline.active_jobs.length ? ` · ${data.submission_pipeline.active_jobs.length} application in final checks` : ""}</p>}
         {summary?.uncertain ? <div className="agent-warning"><Icon name="shield" size={16}/>{summary.uncertain} outcome{summary.uncertain > 1 ? "s" : ""} need verification. No automatic replay.</div> : <div className="agent-safety"><Icon name="shield" size={15}/>Unknown answers pause their application.</div>}
       </section></div>

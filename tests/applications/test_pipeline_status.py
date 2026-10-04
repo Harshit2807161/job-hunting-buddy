@@ -134,3 +134,14 @@ def test_hourly_reporting_still_runs_when_application_pipeline_is_paused(context
     result = pipeline.run_cycle(conn, book)
     assert result["hourly_report"]["state"] == "not_due" and calls == ["report"]
     assert json.loads(status.read_text())["status"] == "paused"
+
+
+def test_browser_capacity_is_visible_instead_of_reported_as_an_empty_queue(context):
+    conn, book, status = context
+    async def deferred(*args, **kwargs):
+        return {"browser_capacity_deferred": 2, "sources_checked": 0, "applications_prepared": 0}
+    asyncio.run(pipeline_status.monitor_cycle(conn, book, deferred))
+    value = json.loads(status.read_text())
+    assert value["status"] == "completed"
+    assert value["processed"]["browser_capacity_deferred"] == 2
+    assert value["reason_codes"] == ["browser_capacity"]
