@@ -14,6 +14,7 @@ _GH_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io",
 _ATS_HOSTS = {
     "greenhouse": ("greenhouse.io",), "lever": ("jobs.lever.co", "apply.lever.co"),
     "ashby": ("jobs.ashbyhq.com",), "workday": ("myworkdayjobs.com", "myworkdaysite.com"),
+    "workable": ("apply.workable.com",),
     "smartrecruiters": ("jobs.smartrecruiters.com", "careers.smartrecruiters.com"),
     "icims": ("icims.com",), "taleo": ("taleo.net",),
     "linkedin": ("linkedin.com",), "indeed": ("indeed.com",),

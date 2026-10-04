@@ -166,6 +166,8 @@ def test_wrapper_resolves_non_greenhouse_ats_without_attempting_application():
 
 @pytest.mark.parametrize("url,ats", [
     ("https://jobs.lever.co/company/123", "lever"), ("https://jobs.ashbyhq.com/company/123", "ashby"),
+    ("https://apply.workable.com/company/j/ABC123/", "workable"),
+    ("https://apply.workable.com.evil.example/company/j/ABC123/", "unknown"),
     ("https://jobs.smartrecruiters.com/company/123", "smartrecruiters"),
     ("https://careers-company.icims.com/jobs/123", "icims"), ("https://company.taleo.net/careersection/jobdetail.ftl", "taleo"),
     ("https://indeed.com/viewjob?jk=123", "indeed"), ("https://greenhouse.io.evil.example/", "unknown")])
