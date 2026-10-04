@@ -24,7 +24,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 @contextmanager
-def workspace(fragment="", state=None):
+def workspace(fragment="", state=None, configure=None):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(ROOT / ".local-browsers"))
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(BUILD)))
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -53,6 +53,8 @@ def workspace(fragment="", state=None):
         "approval": {"can_approve": True, "revision": "exact-draft-revision", "blank_questions": [{"ref": "why", "question": "Why this company? Please, no AI text.", "required": False, "type": "textarea"}]}}
     if state is not None:
         state.update(overview=overview, detail=detail, question=question)
+    if configure is not None:
+        configure(question, detail)
     def respond(route):
         path = route.request.url.removeprefix(base).split("?")[0]
         if route.request.method == "POST":
@@ -193,3 +195,21 @@ def test_required_pending_question_disables_approval_despite_stale_approve_hint(
         page.get_by_role("dialog").get_by_text("Your input for this application", exact=True).wait_for(timeout=10000)
         assert page.get_by_role("button", name="Approve and submit this application", exact=True).is_disabled()
         assert actions == [] and errors == []
+
+
+def test_text_to_checkbox_question_revision_cannot_coerce_old_text_to_false():
+    state = {}
+    def initial_text(question, detail):
+        question["contexts"][0]["type"] = "text"
+    with workspace(state=state, configure=initial_text) as (page, actions, errors):
+        page.get_by_label("Answer: May we contact your current employer?").fill("I need to check first")
+        state["question"]["contexts"][0]["type"] = "checkbox"
+        state["question"]["updated_at"] = "changed-widget-revision"
+        page.get_by_role("button", name="Use updated question", exact=True).wait_for(timeout=10000)
+        page.get_by_role("button", name="Use updated question", exact=True).click()
+        button = page.get_by_role("button", name="Save answer", exact=True)
+        assert button.is_disabled() and actions == []
+        page.get_by_label("Answer: May we contact your current employer?").select_option("false")
+        button.click()
+        page.get_by_text("Answer saved", exact=True).wait_for()
+        assert actions[0][1]["value"] is False and errors == []

@@ -65,6 +65,10 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
   const choices = question.kind === "role" ? ["sde", "ml"] : [...new Set(question.contexts.flatMap(c => c.choices))];
   const multi = ["multiselect", "checkboxes"].includes(context.type);
   const checkbox = context.type === "checkbox";
+  const validAnswer = multi ? selected.length > 0 && selected.every(choice => choices.includes(choice))
+    : checkbox ? ["true", "false"].includes(value)
+    : choices.length ? choices.includes(value)
+    : !!value.trim() && (context.type !== "number" || Number.isFinite(Number(value)));
   async function save(decline = false) {
     setBusy(true); setError("");
     try {
@@ -87,7 +91,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
     }
     {stale && <div className="notice warning" role="alert">This question changed while you were answering. Your text is preserved. Review the latest question and choices, then <button className="text-button" onClick={() => { setRevision(question.updated_at); setSelected([]); if (choices.length && !choices.includes(value)) setValue(""); setError(""); }}>Use updated question</button>.</div>}
     {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="question-actions"><button className="primary small" disabled={busy || stale || (multi ? !selected.length : !value.trim()) || (context.type === "number" && !Number.isFinite(Number(value)))} onClick={() => save()}>{busy ? "Saving…" : "Save answer"}<Icon name="arrow" size={14}/></button>
+    <div className="question-actions"><button className="primary small" disabled={busy || stale || !validAnswer} onClick={() => save()}>{busy ? "Saving…" : "Save answer"}<Icon name="arrow" size={14}/></button>
       {!question.required && <button className="text-button" disabled={busy || stale} onClick={() => save(true)}>Leave unanswered</button>}
     </div><p className="privacy-caption">Saved for this employer. Filling can resume after required answers are complete; submission always needs your approval.</p>
   </article>;
