@@ -18,6 +18,8 @@ MARKER = "JHB_BROWSER_RESULT="
 
 
 class BrowserUseCLI:
+    _dispatch_module = "jhb.applications.cli_runtime"
+
     def __init__(self, *, executable="browser-use", timeout=45):
         if not isinstance(timeout, (int, float)) or not 0 < timeout <= 300:
             raise ValueError("Browser operation timeout must be between 0 and 300 seconds")
@@ -73,11 +75,13 @@ class BrowserUseCLI:
         if operation != "open" and self.target_id:
             payload["target_id"] = self.target_id
         request = json.dumps({"operation": operation, **payload}, ensure_ascii=False)
+        if self._dispatch_module not in {"jhb.applications.cli_runtime", "jhb.applications.manual_runtime"}:
+            raise ValueError("Unsupported browser dispatcher")
         # Python stdin, not shell interpolation. Values never appear in argv.
         script = (
             "import sys,json\n"
             f"sys.path.insert(0,{str(ROOT)!r})\n"
-            "from jhb.applications.cli_runtime import dispatch\n"
+            f"from {self._dispatch_module} import dispatch\n"
             "try:\n"
             f"    result=dispatch(json.loads({request!r}),globals())\n"
             "except ValueError as exc:\n"
