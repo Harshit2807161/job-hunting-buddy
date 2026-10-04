@@ -314,6 +314,7 @@ def test_legacy_technical_packet_recovery_does_not_reinterpret_safety_failures(s
     for item, exception in zip(items, ['FileNotFoundError', 'ValueError']):
         directory = config.ROOT/'private'/'applications'/item['job_hash']
         booklet.write_private(directory/'packet.json', {'state': 'failed', 'reason': f'Preparation failed: {exception}',
+                                                       'job': item['job'],
                                                        'filled': [], 'events': [], 'submitted': False})
         queue.finish(db, item['job_hash'], 'failed', directory/'review.html')
     assert pipeline.recover_technical_failures(db) == 1
@@ -340,14 +341,15 @@ def test_capacity_backlog_is_reported_without_reopening_protected_drafts(setup):
 
 
 @pytest.mark.parametrize("extra", [{"missing": [{"question": "A new factual answer"}]},
-                                   {"verification": "email-code"}, {"submitted": True}])
+                                   {"verification": "email-code"}, {"submitted": True},
+                                   {"runtime_click_started": True}, {"runtime_click_started": None}])
 def test_technical_packet_with_candidate_handoff_or_submission_never_auto_recovers(setup, extra):
     db, _ = setup
     queue.enqueue(db, [job("protected-failure", "https://job-boards.greenhouse.io/example/jobs/906")])
     item = queue.claim(db)
     directory = config.ROOT / "private" / "applications" / item["job_hash"]
     booklet.write_private(directory / "packet.json", {
-        "state": "failed", "retryable": True, "error_kind": "TimeoutError", **extra,
+        "job": item['job'], "state": "failed", "retryable": True, "error_kind": "TimeoutError", **extra,
     })
     queue.finish(db, item["job_hash"], "failed", directory / "review.html")
     assert pipeline.recover_technical_failures(db) == 0

@@ -47,7 +47,8 @@ def _exception_recovery(exc):
 def _recoverable(result):
     return (result.get("state") == "failed" and result.get("retryable") is True
             and result.get("error_kind") in TRANSIENT_KINDS and not result.get("missing")
-            and not result.get("verification") and not result.get("submitted"))
+            and not result.get("verification") and not result.get("submitted")
+            and ("runtime_click_started" not in result or result["runtime_click_started"] is False))
 
 
 def _capacity_wait(result):
@@ -59,18 +60,30 @@ def _capacity_wait(result):
 
 def recover_technical_failures(conn):
     """Migrate old sanitized technical packets once, without resetting attempts."""
+    from .authorized_submission import private_file
     changed = 0
-    for row in conn.execute("SELECT job_hash,packet FROM applications WHERE state='failed' AND attempts < 3").fetchall():
+    for row in conn.execute("SELECT job_hash,job_json,packet FROM applications WHERE state='failed' AND attempts < 3").fetchall():
         if not row["packet"]:
             continue
-        path = Path(row["packet"]).parent / "packet.json"
+        # Legacy preparation recovery has no authority to revisit a reviewed
+        # draft or any past terminal attempt, including an orphan private marker.
+        protected = any(conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone()
+                        and conn.execute(f"SELECT 1 FROM {table} WHERE job_hash=?", (row["job_hash"],)).fetchone()
+                        for table in ("authorized_submission_attempts", "application_approvals"))
+        marker = config.ROOT / 'private' / 'authorized-submissions' / row['job_hash'] / 'attempt.json'
+        if protected or marker.exists() or marker.is_symlink():
+            continue
         try:
-            if not path.resolve().is_relative_to((config.ROOT / "private" / "applications").resolve()) or path.stat().st_size > 2_000_000:
+            path = private_file(str(Path(row["packet"]).parent / "packet.json"))
+            if not path.resolve().is_relative_to((config.ROOT / "private" / "applications").resolve()):
                 continue
             result = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(result, dict):
+            original = json.loads(row['job_json'])
+            if (not isinstance(result, dict) or result.get('job', {}).get('dedupe_hash') != row['job_hash']
+                    or boards.application_hash(original.get('url')) != row['job_hash']
+                    or boards.job_identity(result['job'].get('url')) != boards.job_identity(original.get('url'))):
+                continue
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
             continue
         # Prior workers stored only the class name. Generic ValueError or
         # RuntimeError could be a deliberate safety rejection and stays stopped.
