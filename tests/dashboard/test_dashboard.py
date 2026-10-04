@@ -400,3 +400,87 @@ def test_proposed_wording_and_role_fit_notes_are_visible_distinct_from_final_rev
     assert response["fields"][1]["proposed"] is False
     assert response["role_fit_notes"] == ["The posting prefers one extra year of experience.", "Discuss distributed systems depth in review."]
     assert response["reviewer_issues"] == []
+
+
+def test_stale_question_changed_between_api_read_and_locked_save_cannot_revoke_or_queue(portal, monkeypatch):
+    root, conn, book, client, headers = portal
+    job, _, _ = reviewable(portal)
+    q = pending_question(job, book, 'Why this company?', 'why', required=False)
+    view = approvals.review(conn, job['dedupe_hash'], book)
+    approvals.approve(conn, job['dedupe_hash'], view['revision'], ['why'], book)
+    real_answer = questions.answer
+    def concurrent_change(*args, **kwargs):
+        data = booklet.load(book)
+        data['question_handoffs'][q['id']]['updated_at'] = 'a-new-worker-revision'
+        booklet.write_private(book, data)
+        return real_answer(*args, **kwargs)
+    monkeypatch.setattr(questions, 'answer', concurrent_change)
+    response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
+        json={'value': 'Stale candidate answer', 'revision': q['updated_at']})
+    assert response.status_code == 409
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'waiting_review'
+    assert conn.execute('SELECT state FROM application_approvals').fetchone()[0] == 'approved'
+    assert 'custom.'+q['id'][2:] not in booklet.load(book)['custom_answers']
+
+
+def test_answer_response_reports_remaining_blockers_then_paused_durable_queue(portal):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state='waiting_input')
+    first = pending_question(job, book)
+    second = pending_question(job, book, 'Earliest start date?', 'start')
+    booklet.write_private(root / 'private' / 'pipeline-pause.json', {'paused': True})
+    response = client.post(f"/api/v1/questions/{first['id']}/answer", headers=headers,
+        json={'value': False, 'revision': first['updated_at']}).json()
+    assert response['applications'] == [{'job_hash': job['dedupe_hash'], 'state': 'waiting_input', 'remaining_required_questions': 1}]
+    assert response['automation_paused'] is True
+    response = client.post(f"/api/v1/questions/{second['id']}/answer", headers=headers,
+        json={'value': '2027-01-01', 'revision': second['updated_at']}).json()
+    assert response['applications'] == [{'job_hash': job['dedupe_hash'], 'state': 'queued', 'remaining_required_questions': 0}]
+    assert conn.execute('SELECT attempts FROM applications').fetchone()[0] == 0
+
+
+def test_review_details_include_only_questions_for_exact_application(portal):
+    root, conn, book, client, _ = portal
+    job, _, _ = add_job(conn, root, state='waiting_input')
+    other, _, _ = add_job(conn, root, n=2, state='waiting_input')
+    shared = pending_question(job, book)
+    pending_question(other, book)
+    unrelated = pending_question(other, book, 'Travel availability?', 'travel')
+    view = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert [q['id'] for q in view['questions']] == [shared['id']]
+    assert unrelated['id'] not in str(view['questions'])
+
+
+
+def test_saved_answer_queue_failure_reports_durable_save_instead_of_inviting_duplicate(portal, monkeypatch):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    question = pending_question(job, book)
+    real_answer = questions.answer
+    def save_then_queue_failure(*args, **kwargs):
+        # The real ledger write and after_save notification happen before SQL.
+        args = (*args[:3], None)
+        real_answer(*args, **kwargs)
+        raise sqlite3.OperationalError("Synthetic queue unavailable")
+    monkeypatch.setattr(questions, "answer", save_then_queue_failure)
+    response = client.post(f"/api/v1/questions/{question['id']}/answer", headers=headers,
+        json={"value": False, "revision": question["updated_at"]})
+    assert response.status_code == 202 and response.json()["resume_pending"] is True
+    assert response.json()["affected_jobs"] == [job["dedupe_hash"]]
+    assert response.json()["resumed_jobs"] == []
+    assert booklet.load(book)["question_handoffs"][question["id"]]["status"] == "answered"
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "waiting_input"
+
+
+def test_required_ledger_question_prevents_approval_of_previously_complete_inventory(portal):
+    _, conn, book, client, headers = portal
+    job, _, _ = reviewable(portal)
+    prior = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    pending_question(job, book, "Export controls authorization?", "export", required=True)
+    current = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert current["approval"]["can_approve"] is False
+    assert "required questions" in current["approval"]["reason"]
+    response = client.post(f"/api/v1/applications/{job['dedupe_hash']}/approve", headers=headers,
+        json={"revision": prior["approval"]["revision"], "acknowledged_blank_refs": ["why"]})
+    assert response.status_code == 409
+    assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0

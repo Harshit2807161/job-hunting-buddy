@@ -25,6 +25,10 @@ _SECRET = re.compile(
 _SAFE_SHARED = ("identity.", "links.", "preferences.application_city")
 
 
+class QuestionChanged(ValueError):
+    """A dashboard answer was based on a superseded question snapshot."""
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -281,7 +285,7 @@ def _validate_value(value):
 
 
 def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=None,
-           *, promote=False, decline=False) -> list[str]:
+           *, promote=False, decline=False, expected_revision=None, before_save=None, after_save=None) -> list[str]:
     """Persist a user's answer and optionally resume unblocked waiting_input jobs.
 
     ``promote=True`` requires deliberate user choice and an ordinary known
@@ -299,6 +303,9 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
         record = book.get("question_handoffs", {}).get(question_id)
         if record is None:
             raise ValueError("Unknown question ID")
+        if expected_revision is not None and (record.get("status") != "pending" or
+                                              record.get("updated_at") != expected_revision):
+            raise QuestionChanged("Question changed; refresh before answering")
         if _SECRET.search(record["question"]):
             raise ValueError("Credentials and verification codes are browser handoffs")
         if decline and (record["kind"] != "field" or promote or
@@ -312,6 +319,10 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
                         or record.get("field_ref") or
                         record["normalized_question"] not in booklet.ALIASES.get(key, [])):
             raise ValueError("This question cannot become a shared profile default")
+        # Validate and serialize candidate edits against CLI/worker ledger writers
+        # before revoking approvals or changing durable queue state.
+        if before_save is not None:
+            before_save(record)
         stamp = _now()
         source = {"provider": "explicit user question response", "question_id": question_id,
                   "scope": record["scope"], "answered_at": stamp,
@@ -350,6 +361,8 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
         blocked = {job_hash for q in book["question_handoffs"].values() if q["status"] == "pending"
                    for job_hash, context in q["contexts"].items() if context["required"] and not context.get("resolved")}
         booklet.write_private(Path(bookpath), book)
+    if after_save is not None:
+        after_save(affected)
     if connection is not None:
         import time
         # Restrict recovery to question handoffs. queue.resume is broader and

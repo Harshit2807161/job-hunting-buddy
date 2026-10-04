@@ -24,7 +24,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 @contextmanager
-def workspace(fragment=""):
+def workspace(fragment="", state=None):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(ROOT / ".local-browsers"))
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(BUILD)))
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -51,6 +51,8 @@ def workspace(fragment=""):
                    {"ref": "why", "question": "Why this company? Please, no AI text.", "type": "textarea", "required": False,
                     "status": "blank", "category": "substantive_written", "answer": None, "candidate_wording_required": True}],
         "approval": {"can_approve": True, "revision": "exact-draft-revision", "blank_questions": [{"ref": "why", "question": "Why this company? Please, no AI text.", "required": False, "type": "textarea"}]}}
+    if state is not None:
+        state.update(overview=overview, detail=detail, question=question)
     def respond(route):
         path = route.request.url.removeprefix(base).split("?")[0]
         if route.request.method == "POST":
@@ -61,7 +63,9 @@ def workspace(fragment=""):
             elif path.endswith("/approve"):
                 detail["approval"]["can_approve"] = False
                 detail["approval"]["approval"] = {"state": "approved"}
-            value = {"status": "answered", "state": "approved", "job_hash": KEY}
+            value = {"status": "answered", "state": "approved", "job_hash": KEY,
+                "affected_jobs": [KEY], "resumed_jobs": [KEY], "automation_paused": True,
+                "applications": [{"job_hash": KEY, "state": "queued", "remaining_required_questions": 0}]}
         elif path == "/api/v1/session": value = {"csrf_token": "synthetic-csrf"}
         elif path == "/api/v1/overview": value = overview
         elif path == f"/api/v1/applications/{KEY}": value = detail
@@ -125,3 +129,67 @@ def test_review_deep_link_opens_only_requested_draft_without_approval():
         page.keyboard.press("Escape")
         assert page.get_by_role("dialog").count() == 0 and "#review/" not in page.url
         assert errors == []
+
+
+def test_saved_answer_keeps_paused_queue_feedback_after_question_disappears():
+    with workspace() as (page, actions, errors):
+        page.get_by_label("Answer: May we contact your current employer?").select_option("false")
+        page.get_by_role("button", name="Save answer", exact=True).click()
+        page.get_by_text("Answer saved", exact=True).wait_for()
+        page.get_by_text("Filling is paused. Queued answers will be used when automation resumes.", exact=False).wait_for()
+        assert page.get_by_text("You’re all caught up", exact=True).is_visible()
+        assert len(actions) == 1 and errors == []
+
+
+def test_open_review_refreshes_and_clears_blank_ack_when_draft_changes():
+    state = {}
+    with workspace(f"#review/{KEY}", state=state) as (page, actions, errors):
+        ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")
+        ack.wait_for(); ack.check()
+        button = page.get_by_role("button", name="Approve and submit this application", exact=True)
+        assert button.is_enabled()
+        state["detail"]["approval"]["revision"] = "new-draft-revision"
+        state["detail"]["fields"][0]["answer"] = "Updated Synthetic Candidate"
+        page.get_by_text("Updated Synthetic Candidate", exact=True).wait_for(timeout=10000)
+        assert not ack.is_checked() and button.is_disabled()
+        assert actions == [] and errors == []
+
+
+def test_question_changes_preserve_text_but_require_explicit_version_refresh():
+    state = {}
+    with workspace(state=state) as (page, actions, errors):
+        answer = page.get_by_label("Answer: May we contact your current employer?")
+        answer.select_option("false")
+        state["question"]["updated_at"] = "changed-question-revision"
+        page.get_by_text("This question changed while you were answering.", exact=False).wait_for(timeout=10000)
+        button = page.get_by_role("button", name="Save answer", exact=True)
+        assert answer.input_value() == "false" and button.is_disabled() and actions == []
+        page.get_by_role("button", name="Use updated question", exact=True).click()
+        button.click()
+        page.get_by_text("Answer saved", exact=True).wait_for()
+        assert actions[0][1]["revision"] == "changed-question-revision" and errors == []
+
+
+def test_exact_review_question_can_be_answered_inline_without_approving():
+    state = {}
+    with workspace(f"#review/{KEY}", state=state) as (page, actions, errors):
+        page.get_by_text("Synthetic Candidate", exact=True).wait_for()
+        state["detail"]["state"] = "waiting_input"
+        state["detail"]["questions"] = [state["question"]]
+        dialog = page.get_by_role("dialog")
+        dialog.get_by_text("Your input for this application", exact=True).wait_for(timeout=10000)
+        dialog.get_by_label("Answer: May we contact your current employer?").select_option("true")
+        dialog.get_by_role("button", name="Save answer", exact=True).click()
+        dialog.get_by_text("Answer saved", exact=True).wait_for()
+        assert len(actions) == 1 and actions[0][0].endswith("/answer") and errors == []
+
+
+def test_required_pending_question_disables_approval_despite_stale_approve_hint():
+    state = {}
+    with workspace(f"#review/{KEY}", state=state) as (page, actions, errors):
+        ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")
+        ack.wait_for(); ack.check()
+        state["detail"]["questions"] = [state["question"]]
+        page.get_by_role("dialog").get_by_text("Your input for this application", exact=True).wait_for(timeout=10000)
+        assert page.get_by_role("button", name="Approve and submit this application", exact=True).is_disabled()
+        assert actions == [] and errors == []

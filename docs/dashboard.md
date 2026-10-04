@@ -61,6 +61,14 @@ pause. Queued edits remain idle until automation is resumed; the dashboard does
 not remove the pause. Active, unknown or clicked final attempts prevent the
 edit, and running, submitted, skipped and uncertain applications are never
 requeued. Any newly prepared draft requires a new review and approval.
+After saving, the dashboard reports whether the application is queued or still
+waiting for other required answers. If the private answer saves but the database
+transition fails, it reports the saved answer with unconfirmed queue status,
+without claiming filling started. Open reviews poll for changes, clear all blank
+acknowledgments when the revision changes, and show questions for that exact job
+inline. Unsaved answers survive question refreshes; a changed question requires
+explicit version confirmation before saving.
+
 Answering a question does **not** approve submission. Credential and verification
 code questions are excluded from this booklet UI. Substantive prompts requiring
 the candidate's own wording must be answered by the candidate or deliberately

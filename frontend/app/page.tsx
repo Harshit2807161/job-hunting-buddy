@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Application = { id: string; company: string; title: string; location: string; url: string | null; board: string;
   state: string; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
@@ -42,11 +42,25 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.grid}</svg>;
 }
 
-function QuestionForm({ question, onSaved }: { question: Question; onSaved: () => void }) {
+type AnswerResult = { resume_pending?: boolean; saved_at?: number; status: string; affected_jobs: string[]; resumed_jobs: string[]; automation_paused: boolean;
+  applications: { job_hash: string; state: string; remaining_required_questions: number }[] };
+
+function AnswerFeedback({ result, applications = [], paused }: { result: AnswerResult; applications?: Application[]; paused?: boolean }) {
+  return <div className="notice success" role="status"><b>Answer saved</b>
+    {result.resume_pending && <p>Queue status could not be confirmed. Your answer is saved; refresh to check recovery before taking another action.</p>}
+    <p>{(paused ?? result.automation_paused) ? "Filling is paused. Queued answers will be used when automation resumes." : "The agent will use your saved answer when filling resumes."} Submission still requires your approval.</p>
+    {result.applications?.map(item => { const current = applications.find(a => a.id === item.job_hash); const state = current && current.updated_at >= (result.saved_at ?? Infinity) ? current.state : item.state;
+      return <p key={item.job_hash}>{current ? `${current.company}: ` : "Application: "}{state === "waiting_input" ? `Waiting for ${item.remaining_required_questions} more required answer${item.remaining_required_questions === 1 ? "" : "s"}.` : state === "queued" ? "Queued for filling." : stateNames[state] || state}</p>; })}
+  </div>;
+}
+
+function QuestionForm({ question, onSaved }: { question: Question; onSaved: (result: AnswerResult) => void }) {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [revision, setRevision] = useState(question.updated_at);
+  const stale = revision !== question.updated_at;
   const context = question.contexts[0];
   const choices = question.kind === "role" ? ["sde", "ml"] : [...new Set(question.contexts.flatMap(c => c.choices))];
   const multi = ["multiselect", "checkboxes"].includes(context.type);
@@ -57,9 +71,9 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: () =
       const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => { if (!r.ok) throw Error("Local dashboard unavailable"); return r.json(); });
       const answer = multi ? selected : checkbox ? value === "true" : context.type === "number" ? Number(value) : value;
       const response = await fetch(`/api/v1/questions/${question.id}/answer`, { method: "POST", headers: {
-        "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token }, body: JSON.stringify({ value: decline ? null : answer, decline, revision: question.updated_at }) });
+        "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token }, body: JSON.stringify({ value: decline ? null : answer, decline, revision }) });
       if (!response.ok) { const message = await response.json(); throw Error(message.detail || "Could not save your answer"); }
-      onSaved();
+      onSaved(await response.json());
     } catch (e) { setError(e instanceof Error ? e.message : "Could not save your answer"); }
     finally { setBusy(false); }
   }
@@ -71,9 +85,10 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: () =
       choices.length || checkbox ? <select aria-label={`Answer: ${question.question}`} value={value} onChange={e => setValue(e.target.value)}><option value="">Choose your answer</option>{(checkbox ? ["true", "false"] : choices).map(choice => <option key={choice} value={choice}>{checkbox ? choice === "true" ? "Yes — select checkbox" : "No — leave unchecked" : question.kind === "role" ? choice === "sde" ? "SDE resume" : "AI / ML resume" : choice}</option>)}</select> :
       <textarea aria-label={`Answer: ${question.question}`} value={value} onChange={e => setValue(e.target.value)} placeholder="Your exact answer" rows={3}/>
     }
+    {stale && <div className="notice warning" role="alert">This question changed while you were answering. Your text is preserved. Review the latest question and choices, then <button className="text-button" onClick={() => { setRevision(question.updated_at); setSelected([]); if (choices.length && !choices.includes(value)) setValue(""); setError(""); }}>Use updated question</button>.</div>}
     {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="question-actions"><button className="primary small" disabled={busy || (multi ? !selected.length : !value.trim())} onClick={() => save()}>{busy ? "Saving…" : "Save answer"}<Icon name="arrow" size={14}/></button>
-      {!question.required && <button className="text-button" disabled={busy} onClick={() => save(true)}>Leave unanswered</button>}
+    <div className="question-actions"><button className="primary small" disabled={busy || stale || (multi ? !selected.length : !value.trim()) || (context.type === "number" && !Number.isFinite(Number(value)))} onClick={() => save()}>{busy ? "Saving…" : "Save answer"}<Icon name="arrow" size={14}/></button>
+      {!question.required && <button className="text-button" disabled={busy || stale} onClick={() => save(true)}>Leave unanswered</button>}
     </div><p className="privacy-caption">Saved for this employer. Filling can resume after required answers are complete; submission always needs your approval.</p>
   </article>;
 }
@@ -81,7 +96,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: () =
 type ReviewDetail = { job_hash: string; state: string; inventory_complete: boolean; resume_role: string | null;
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
-  role_fit_notes?: string[];
+  role_fit_notes?: string[]; questions?: Question[];
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
     answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean }[];
   incident: { state: string; summary: string; blank_questions: { ref: string; question: string }[] } | null;
@@ -94,20 +109,36 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState("");
+  const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
+  const busyRef = useRef(false);
+  const revisionRef = useRef<string | undefined>(undefined);
+  const [detailRefresh, setDetailRefresh] = useState(0);
   useEffect(() => {
-    let active = true;
-    fetch(`/api/v1/applications/${app.id}`, { cache: "no-store" }).then(async r => {
-      if (!r.ok) throw Error("Detailed review is unavailable");
-      const value = await r.json(); if (active) setDetail(value);
-    }).catch(e => active && setError(e.message));
-    return () => { active = false; };
-  }, [app.id]);
+    let active = true; let inFlight = false; const controller = new AbortController();
+    async function poll() {
+      if (inFlight || busyRef.current) return; inFlight = true;
+      try {
+        const response = await fetch(`/api/v1/applications/${app.id}`, { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw Error("Detailed review is unavailable");
+        const value: ReviewDetail = await response.json();
+        if (active && !busyRef.current) {
+          if (revisionRef.current !== value.approval.revision) setAcknowledged([]);
+          revisionRef.current = value.approval.revision; setDetail(value); setError("");
+        }
+      } catch (e) { if (active) { setError(e instanceof Error ? e.message : "Detailed review is unavailable"); setDetail(null); setAcknowledged([]); } }
+      finally { inFlight = false; }
+    }
+    poll(); const interval = setInterval(poll, 5000);
+    return () => { active = false; controller.abort(); clearInterval(interval); };
+  }, [app.id, detailRefresh]);
   const blanks = detail?.approval.blank_questions || [];
   const optionalBlanks = blanks.filter(q => !q.required);
-  const canApprove = !!detail?.approval.can_approve && !!detail.approval.revision &&
+  const canApprove = detail?.state === "waiting_review" && detail.inventory_complete &&
+    !blanks.some(q => q.required) && !detail.questions?.some(q => q.required) &&
+    !!detail?.approval.can_approve && !!detail.approval.revision &&
     optionalBlanks.every(q => acknowledged.includes(q.ref));
   async function changeApproval(action: "approve" | "revoke") {
-    setBusy(true); setError("");
+    busyRef.current = true; setBusy(true); setError("");
     try {
       const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json());
       const response = await fetch(`/api/v1/applications/${app.id}/${action}`, { method: "POST",
@@ -119,7 +150,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       const updated = await fetch(`/api/v1/applications/${app.id}`, { cache: "no-store" }).then(r => r.json());
       setDetail(updated); setAcknowledged([]);
     } catch (e) { setError(e instanceof Error ? e.message : "Approval could not be saved"); }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); setDetailRefresh(v => v + 1); }
   }
   const displayAnswer = (answer: ReviewDetail["fields"][number]["answer"]) =>
     answer === null ? "Left blank" : typeof answer === "boolean" ? answer ? "Yes" : "No" : Array.isArray(answer) ? answer.join(", ") : String(answer);
@@ -132,6 +163,8 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {detail && !detail.inventory_complete && <div className="notice warning">Full form inventory is unverified. Listed answers do not establish that every application question was reviewed. Approval is disabled.</div>}
       {detail?.automation_paused && <div className="notice warning">Automation is paused. Saving an answer or approval does not restart the agent.</div>}
       <div className="document-strip"><Icon name="briefcase" size={17}/><div><b>{detail?.resume_role ? `${detail.resume_role.toUpperCase()} document variant` : "Document variant not recorded"}</b><p>{detail?.documents.map(d => `${d.kind.replaceAll("_", " ")}: ${d.filename}`).join(" · ") || "No document manifest available"}</p></div></div>
+      {answerFeedback && <AnswerFeedback result={answerFeedback} paused={detail?.automation_paused}/>}
+      {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
       <h3 className="review-section-title">Every application question <span>{detail?.fields.length ?? "—"}</span></h3>
       {!detail && !error && <div className="table-empty">Loading the saved field inventory…</div>}
       <div className="review-field-list">{detail?.fields.map((field, i) => <div key={`${field.ref}-${i}`} className={field.answer === null ? "review-field blank" : "review-field"}><div className="review-field-title"><b>{field.question}</b><span>{field.required === null ? "Requirement unknown" : field.required ? "Required" : "Optional"}</span></div>{field.proposed && <div className="candidate-wording">Proposed wording · Check this grounded draft before approving.</div>}<p>{displayAnswer(field.answer)}</p>{field.candidate_wording_required && <div className="candidate-wording">The employer requests your own wording. The agent must not write this answer.</div>}</div>)}</div>
@@ -158,6 +191,7 @@ export default function Dashboard() {
   const [view, setView] = useState("overview");
   const [allQuestions, setAllQuestions] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
   const reload = useCallback(() => setRefresh(v => v + 1), []);
   const openReview = useCallback((application: Application) => {
     window.history.replaceState(null, "", `#review/${application.id}`);
@@ -171,7 +205,7 @@ export default function Dashboard() {
     const followReviewLink = () => {
       const match = /^#review\/([a-f0-9]{64})$/.exec(window.location.hash);
       const application = match && data?.applications.find(item => item.id === match[1]);
-      if (application) setPreview(current => current?.id === application.id ? current : application);
+      if (application) setPreview(application);
     };
     followReviewLink();
     window.addEventListener("hashchange", followReviewLink);
@@ -234,7 +268,8 @@ export default function Dashboard() {
         {summary?.uncertain ? <div className="agent-warning"><Icon name="shield" size={16}/>{summary.uncertain} outcome{summary.uncertain > 1 ? "s" : ""} need verification. No automatic replay.</div> : <div className="agent-safety"><Icon name="shield" size={15}/>Unknown answers pause their application.</div>}
       </section></div>
       <section id="questions" className="questions-section"><div className="section-heading"><div><h2>Your input{questionCount > 0 && <span className="count-badge">{questionCount}</span>}</h2><p>Answer once. The right applications pick up where they left off.</p></div></div>
-        {questionCount ? <><div className="questions-grid">{data?.questions.slice(0, allQuestions || view === "questions" ? undefined : 4).map(q => <QuestionForm key={q.id+q.updated_at} question={q} onSaved={reload}/>)}</div>{questionCount > 4 && view !== "questions" && <button className="text-button" onClick={() => setAllQuestions(v => !v)}>{allQuestions ? "Show fewer questions" : `Show all ${questionCount} pending questions`}</button>}</> : <div className="clear-state"><span><Icon name="check" size={18}/></span><div><b>{data?.booklet_available ? "You’re all caught up" : "Waiting for the answer booklet"}</b><p>{data?.booklet_available ? "No new candidate questions right now. Each completed draft still requires your review and approval." : "Question status will appear when private storage is available."}</p></div></div>}
+        {answerFeedback && <AnswerFeedback result={answerFeedback} applications={data?.applications} paused={data?.automation_paused}/>}
+        {questionCount ? <><div className="questions-grid">{data?.questions.slice(0, allQuestions || view === "questions" ? undefined : 4).map(q => <QuestionForm key={q.id} question={q} onSaved={result => { setAnswerFeedback(result); reload(); }}/>)}</div>{questionCount > 4 && view !== "questions" && <button className="text-button" onClick={() => setAllQuestions(v => !v)}>{allQuestions ? "Show fewer questions" : `Show all ${questionCount} pending questions`}</button>}</> : <div className="clear-state"><span><Icon name="check" size={18}/></span><div><b>{data?.booklet_available ? "You’re all caught up" : "Waiting for the answer booklet"}</b><p>{data?.booklet_available ? "No new candidate questions right now. Each completed draft still requires your review and approval." : "Question status will appear when private storage is available."}</p></div></div>}
       </section>
       <section id="applications" className="panel applications-panel"><div className="panel-heading"><div><h2>Applications</h2><p>A clear view of every stage.</p></div><span className="muted-tag">{data?.applications.length ?? "—"} tracked</span></div>
         <div className="table-toolbar"><div className="tabs">{[["all", "All"], ["submitted", "Submitted"], ["waiting_review", "Ready"], ["attention", "Needs attention"]].map(([id, label]) => <button key={id} className={tab === id ? "selected" : ""} onClick={() => setTab(id as Tab)}>{label}</button>)}</div><div className="table-filters"><label className="search"><Icon name="search" size={15}/><input aria-label="Search applications" placeholder="Search applications…" value={query} onChange={e => setQuery(e.target.value)}/></label><select value={board} onChange={e => setBoard(e.target.value)} aria-label="Filter job board"><option value="all">All boards</option>{[...new Set(data?.applications.map(a => a.board))].sort().map(b => <option key={b}>{b}</option>)}</select></div></div>
@@ -243,6 +278,6 @@ export default function Dashboard() {
       </section><footer className="page-footer"><span><Icon name="shield" size={13}/>Local workspace. Candidate data stays private.</span><span>{data ? `Last updated ${timeLabel(data.generated_at)} PT` : "Waiting for local API"}</span></footer>
       </div>
     </main>
-    {preview && <ReviewModal application={preview} close={closeReview} onChanged={reload}/>}
+    {preview && <ReviewModal key={preview.id} application={preview} close={closeReview} onChanged={reload}/>}
   </div>;
 }

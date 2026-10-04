@@ -276,10 +276,15 @@ class DashboardStore:
         if not complete_inventory or row["state"] != "waiting_review":
             approval = {**approval, "can_approve": False, "reason": "Already submitted" if row["state"] == "submitted"
                         else "Full form inventory must be captured before approval"}
+        pending_questions = [q for q in self.pending(queue_states={job_hash: row["state"]})
+                             if any(c["job_hash"] == job_hash for c in q["contexts"])]
+        if any(any(c["job_hash"] == job_hash and c["required"] for c in q["contexts"]) for q in pending_questions):
+            approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
         fit = packet.get("role_fit", {})
         fit_notes = [_text(note if isinstance(note, str) else note.get("reason") or note.get("message"), 1500)
                      for note in fit.get("review_notes", []) if isinstance(note, (dict, str))] if isinstance(fit, dict) else []
         return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
+            "questions": pending_questions,
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
@@ -546,7 +551,7 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
         if not HASH.fullmatch(job_hash):
             raise HTTPException(404, "Unknown application")
         try:
-            with store.answer_lock:
+            with store.answer_lock, questions._locked(store.book_path):
                 details = store.details(job_hash)
                 if (not details["inventory_complete"] or details["state"] != "waiting_review"
                         or not details["approval"].get("can_approve")):
@@ -578,6 +583,7 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
         if not re.fullmatch(r"q_[a-f0-9]{24}", question_id):
             raise HTTPException(404, "Unknown question")
         with store.answer_lock:
+            saved_jobs = []
             try:
                 record = store.book().get("question_handoffs", {}).get(question_id)
                 if not record or questions._SECRET.search(record.get("question", "")):
@@ -585,9 +591,11 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                 if record.get("status") != "pending" or record.get("updated_at") != payload.revision:
                     raise HTTPException(409, "Question changed; refresh before answering")
                 with store.connection(write=True) as conn:
-                    review_edits = _prepare_review_edits(conn, record)
+                    review_edits = []
                     affected = questions.answer(question_id, payload.value, store.book_path,
-                                                conn, decline=payload.decline)
+                                                conn, decline=payload.decline, expected_revision=payload.revision,
+                                                before_save=lambda current: review_edits.extend(_prepare_review_edits(conn, current)),
+                                                after_save=saved_jobs.extend)
                     # This transition is an explicit candidate edit, not a
                     # generic resume. Paused workers leave queued edits alone
                     # until the user resumes automation; the edit is durable.
@@ -598,10 +606,31 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     conn.commit()
                     queued = [key for key in affected if (row := conn.execute("SELECT state FROM applications WHERE job_hash=?", (key,)).fetchone())
                               and row[0] == "queued"]
-                return {"status": "answered", "affected_jobs": affected, "resumed_jobs": queued}
+                    pending = store.book().get("question_handoffs", {}).values()
+                    states = []
+                    for key in affected:
+                        row = conn.execute("SELECT state FROM applications WHERE job_hash=?", (key,)).fetchone()
+                        remaining = sum(1 for q in pending if q.get("status") == "pending"
+                            and (context := q.get("contexts", {}).get(key))
+                            and context.get("required") and not context.get("resolved"))
+                        states.append({"job_hash": key, "state": row[0] if row else "untracked",
+                                       "remaining_required_questions": remaining})
+                return {"status": "answered", "affected_jobs": affected, "resumed_jobs": queued,
+                        "applications": states, "automation_paused": store.paused(),
+                        "saved_at": int(datetime.now(timezone.utc).timestamp())}
+            except questions.QuestionChanged:
+                raise HTTPException(409, "Question changed; refresh before answering") from None
             except (ValueError, TypeError):
                 raise HTTPException(422, "Answer does not match this question; optional questions alone may be declined") from None
             except (OSError, sqlite3.Error):
+                if saved_jobs:
+                    # Candidate evidence is durable even if the separate SQL
+                    # transition failed. Do not invite a duplicate answer or
+                    # claim filling started; reconciliation confirms the queue.
+                    return JSONResponse(status_code=202, content={"status": "answered", "affected_jobs": saved_jobs,
+                        "resumed_jobs": [], "applications": [], "resume_pending": True,
+                        "automation_paused": store.paused(),
+                        "saved_at": int(datetime.now(timezone.utc).timestamp())})
                 raise HTTPException(503, "Answer storage is unavailable; refresh and retry") from None
 
     build = Path(static_dir or root / "frontend" / "out")
