@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -103,6 +104,7 @@ def test_capture_rejects_symlink_without_touching_referenced_file(tmp_path):
 
 
 def test_fixture_browser_writes_valid_fresh_capture(tmp_path):
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).resolve().parents[2] / ".local-browsers"))
     async def run():
         from playwright.async_api import async_playwright
         async with async_playwright() as pw:
