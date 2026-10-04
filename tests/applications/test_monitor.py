@@ -159,7 +159,7 @@ def test_new_log_issue_is_deferred_not_lost_and_raw_secrets_never_prompted(setup
     assert len(calls) == 4
 
 
-@pytest.mark.parametrize("failure_mode", ["repair", "tests", "changed_head", "booklet", "receipt", "revoked"])
+@pytest.mark.parametrize("failure_mode", ["repair", "tests", "changed_head", "booklet", "receipt", "manual_receipt", "revoked"])
 def test_unsuccessful_or_untrusted_repairs_remain_quarantined(setup, failure_mode):
     root, authpath, _ = setup
     failure(setup)
@@ -173,6 +173,8 @@ def test_unsuccessful_or_untrusted_repairs_remain_quarantined(setup, failure_mod
             booklet.write_private(root / "private" / "answer-booklet.json", {"answers": {"fictional": "changed"}})
         elif failure_mode == "receipt":
             booklet.write_private(root / "private" / "board-evaluation" / "example" / "submission-receipt.json", {"state": "submitted"})
+        elif failure_mode == "manual_receipt":
+            booklet.write_private(root / "private" / "applications" / "synthetic" / "submission-receipt.json", {"state": "submitted"})
         elif failure_mode == "revoked":
             booklet.write_private(authpath, {**json.loads(authpath.read_text()), "enabled": False})
     def failing(command):

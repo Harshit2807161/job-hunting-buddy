@@ -46,6 +46,13 @@ not submit real applications in development, test, or scheduled automation.
 A later explicit request to submit one named application authorizes only that
 interactive action after its retained answers and documents have been checked;
 record the authorization and live receipt privately. Other drafts keep their guards.
+An explicit, finite request to keep submitting new Phase 1 Greenhouse jobs can
+enable the separate overnight policy in `docs/overnight-submissions.md`. Require
+its private authorization, independent environment gate, two retained-answer
+audits, and positive receipt before spreadsheet tracking. Existing drafts remain
+outside that scope. The authority expires without renewal; technical repairs use
+the serialized supervisor in `docs/overnight-monitoring.md` and must pass checks
+before preparation or submission resumes.
 Unknown factual answers and unresolved verification challenges are explicit handoffs.
 Explicitly authorized application email verification may use the candidate's
 existing mailbox session. Report fixture and live-site

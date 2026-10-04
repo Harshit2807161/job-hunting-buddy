@@ -216,7 +216,8 @@ def protected_data(auth, database=None):
              config.ROOT / "private" / "application-tracker.json"}
     private = config.ROOT / "private"
     for pattern in ("authorized-submissions/**/*.json", "board-evaluation/**/submission-receipt.json",
-                    "applications/**/receipt.json", "*vault*.json", "browser-use-harness/**/auth.json"):
+                    "applications/**/receipt.json", "applications/**/submission-receipt.json",
+                    "*vault*.json", "browser-use-harness/**/auth.json"):
         paths.update(private.glob(pattern))
     digest = hashlib.sha256()
     for path in sorted(paths):
