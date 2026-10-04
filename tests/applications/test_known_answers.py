@@ -189,3 +189,49 @@ def test_preparation_fills_verified_preferences_and_parks_only_new_travel_withou
     assert result["state"] == "waiting_input"
     assert [item["question"] for item in result["missing"]] == [travel["label"]]
     assert cli.filled == {"relocate": True, "offices": [choice for choice in OFFICES if "United Kingdom" not in choice]}
+
+
+@pytest.mark.parametrize("label", ["Are you open to travel?", "Are you willing to travel up to 20% of the time? *",
+                                  "Are you willing to travel 25%+ of the time on average?*"])
+def test_explicit_business_travel_preference_handles_observed_templates(label):
+    values = facts()
+    values["preferences.travel"] = booklet.answer(True, {"question": "Travel up to 25%?", "reply": "all the time", "authorized_by": "user"})
+    assert key_for_field(field(label), values) == "preferences.travel"
+    values["preferences.travel"]["status"] = "needs_input"
+    assert key_for_field(field(label), values) is None
+
+
+@pytest.mark.parametrize("label", ["Have you traveled internationally for business?",
+                                 "Do you have unrestricted international travel documentation?",
+                                 "How many days did you travel last year?"])
+def test_travel_willingness_never_invents_travel_history_or_documents(label):
+    values = facts();values["preferences.travel"] = booklet.answer(True, "synthetic approved willingness")
+    assert key_for_field(field(label), values) is None
+
+
+@pytest.mark.parametrize("value,expected", [("2026-12-14", "preferences.start_date"),
+    ("December 14", None), ("December 2026", None), ("2026-12", None), ("2026-02-30", None)])
+def test_residency_start_uses_only_explicit_valid_full_date(value, expected):
+    values = facts();values["preferences.start_date"] = booklet.answer(value, "synthetic approved availability")
+    assert key_for_field(field("Earliest residency start date?", kind="text", choices=()), values) == expected
+
+
+@pytest.mark.parametrize("choice", ["10-12 Months", "10\u201312 Months"])
+def test_fullest_residency_commitment_uses_exact_approved_observed_range(choice):
+    values = facts()
+    values["preferences.residency_commitment"] = booklet.answer("10-12 Months", {
+        "question": "How many months in a row can you commit to?", "reply": "fullest", "authorized_by": "user"})
+    question = field("How many months in a row can you commit to?", kind="multiselect", choices=["4-6 Months", "7-9 Months", choice])
+    key = known_answers.enrich(question, {}, values)
+    assert key_for_field(question, values) == key and values[key]["value"] == [choice]
+    values["preferences.residency_commitment"]["status"] = "needs_input"
+    assert known_answers.enrich(question, {}, values) is None
+    assert key_for_field(question, values) is None
+
+
+@pytest.mark.parametrize("choices,value", [(["4-6 Months", "7-9 Months"], "10-12 Months"),
+    (["10-12 Months", "10\u201312 Months"], "10-12 Months"), (["10-12 Months"], "As long as possible")])
+def test_commitment_never_expands_or_guesses_an_unapproved_or_ambiguous_range(choices, value):
+    values = facts();values["preferences.residency_commitment"] = booklet.answer(value, "synthetic approved reply")
+    question = field("How many months in a row can you commit to?", kind="multiselect", choices=choices)
+    assert known_answers.enrich(question, {}, values) is None

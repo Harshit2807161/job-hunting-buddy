@@ -63,6 +63,21 @@ def key_for_field(field, answers):
     key = aliases.get(label)
     if key and (item := _verified(answers, key)) and isinstance(item.get("value"), bool):
         return key
+    if (label in {"are you open to travel?", "are you willing to travel up to 20% of the time?",
+                  "are you willing to travel 25%+ of the time on average?"}
+            and field.get("type") in {"radio", "select", "combobox", "checkbox"}):
+        travel = _verified(answers, "preferences.travel")
+        if travel and isinstance(travel.get("value"), bool):
+            return "preferences.travel"
+    if label == "earliest residency start date?" and field.get("type") in {"text", "date"}:
+        start = _verified(answers, "preferences.start_date")
+        if start and isinstance(start.get("value"), str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", start["value"]):
+            try:
+                date.fromisoformat(start["value"])
+            except ValueError:
+                pass
+            else:
+                return "preferences.start_date"
     if label == "state/country of residence" and field.get("type") in {"text", "combobox", "select"}:
         # This is contact residence, never the country of the job or nationality.
         state = _verified(answers, "identity.state")
@@ -156,6 +171,15 @@ def enrich(field, job, answers, *, as_of=None):
         if records:
             value = "\n".join(dict.fromkeys(item["value"] for item in records.values()))
             evidence = {"records": records}
+    elif label == "how many months in a row can you commit to?" and field.get("type") == "multiselect":
+        commitment = _verified(answers, "preferences.residency_commitment")
+        def approved_range(text):
+            return isinstance(text, str) and re.fullmatch(r"10\s*[-\u2011\u2013\u2014]\s*12\s+months", normalize(text))
+        if commitment and approved_range(commitment.get("value")):
+            selected = [choice for choice in choices if approved_range(choice)]
+            if len(selected) == 1:
+                value, evidence = selected, {"records": {"preferences.residency_commitment": commitment},
+                                            "criterion": "Explicit approved residency commitment, matched to observed range"}
     elif label == _DISCOVERY and field.get("type") in {"multiselect", "radio", "select", "combobox"}:
         source = _verified(answers, "standing.discovery_source")
         if source and isinstance(source.get("value"), str):
