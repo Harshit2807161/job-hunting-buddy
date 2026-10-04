@@ -132,6 +132,41 @@ def _logs(state, issues):
     return counts
 
 
+def _preclick_issues(connection, tables, auth, issues):
+    """A retryable no-click attempt can need code repair without a failed draft."""
+    if not auth or not {"applications", "authorized_submission_attempts"} <= tables:
+        return
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(authorized_submission_attempts)")}
+    if not {"job_hash", "authorization_id", "updated_at", "result_json", "attempt_path"} <= columns:
+        return
+    rows = connection.execute(
+        "SELECT t.job_hash,t.authorization_id,t.attempt_path,t.result_json FROM authorized_submission_attempts t "
+        "JOIN applications a ON a.job_hash=t.job_hash WHERE t.state='waiting_review' "
+        "AND a.state='waiting_review' AND t.updated_at>=?", (overnight._timestamp(auth["authorized_at"]),))
+    for row in rows:
+        if (not isinstance(row["job_hash"], str) or not re.fullmatch(r"[a-f0-9]{64}", row["job_hash"])
+                or row["authorization_id"] != auth["authorization_id"]):
+            continue
+        try:
+            path, attempt, _ = overnight._read_private(row["attempt_path"])
+            result = json.loads(row["result_json"] or "{}")
+        except (OSError, ValueError, TypeError):
+            continue
+        if (attempt.get("runtime_click_started") is not False or attempt.get("state") != "waiting_review"
+                or attempt.get("job_hash") != row["job_hash"]
+                or attempt.get("authorization_id") != row["authorization_id"] or not isinstance(result, dict)):
+            continue
+        kind = result.get("error_kind")
+        if kind == "BrowserOperationError" and result.get("retryable") is True:
+            kind = "browser_mechanics"  # Only this explicit pre-click retry contract.
+        if (result.get("state") != "waiting_review" or result.get("retryable") is not True
+                or not isinstance(kind, str) or kind not in TECHNICAL_KINDS
+                or result.get("click_started") not in (None, False) or result.get("submitted")
+                or any(result.get(key) for key in ("missing", "verification", "unknown_questions", "unknown_answers"))):
+            continue
+        _merge(issues, _issue("authorized_submission", kind, "runtime", str(path.relative_to(config.ROOT)), row["job_hash"]))
+
+
 def snapshot(state, auth, database=None):
     now = int(time.time())
     health = {"observed_at": now, "application_states": {}, "source_states": {},
@@ -150,6 +185,7 @@ def snapshot(state, auth, database=None):
                 health["confirmed_submissions"] = connection.execute("SELECT COUNT(*) FROM confirmed_submissions").fetchone()[0]
             if "authorized_submission_attempts" in tables:
                 health["uncertain_submissions"] = connection.execute("SELECT COUNT(*) FROM authorized_submission_attempts WHERE state IN ('in_progress','uncertain')").fetchone()[0]
+            _preclick_issues(connection, tables, auth, issues)
             if "applications" in tables and auth:
                 start = overnight._timestamp(auth["authorized_at"])
                 for row in connection.execute("SELECT job_hash,packet FROM applications WHERE state IN ('failed','retry') AND updated_at>=?", (start,)):

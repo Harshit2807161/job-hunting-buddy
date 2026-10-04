@@ -304,6 +304,8 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     from .overnight import drain as drain_authorized
     summary["authorized_submissions"] = await drain_authorized(
         conn, book_path, limit=application_limit, submitter=submission_runner)
+    from .submission_notices import notify_uncertain
+    summary["submission_outcome_notices"] = notify_uncertain(conn, send_email=send_email)
     # Refresh from the authoritative ledger, including earlier batches and
     # answered questions. Never leave a stale outbox after successful resumption.
     try:

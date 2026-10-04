@@ -295,3 +295,51 @@ def test_repair_budget_and_authority_change_stop_new_actions(setup):
     state["authorization_id"] = "different-authorization"
     booklet.write_private(monitor.directory() / "state.json", state)
     assert monitor.once(run=lambda *a, **k: pytest.fail("changed authority ignored"), inspect_repository=repo)["state"] == "authorization_changed"
+
+
+def preclick(setup, *, clicked=False, age=0, application_state="waiting_review", attempt_state="waiting_review",
+             auth_id=None, **result_changes):
+    root, _, now = setup
+    auth_id = auth_id or monitor.authorization()["authorization_id"]
+    job_hash = "f" * 64
+    path = root / "private" / "authorized-submissions" / job_hash / "attempt.json"
+    booklet.write_private(path, {"state": attempt_state, "job_hash": job_hash, "authorization_id": auth_id,
+                                 "runtime_click_started": clicked})
+    result = {"state": "waiting_review", "retryable": True, "error_kind": "browser_transport",
+              "click_started": False, **result_changes}
+    with sqlite3.connect(config.DB_PATH) as conn:
+        for name in ("job_hash", "authorization_id", "attempt_path", "result_json", "updated_at"):
+            conn.execute(f"ALTER TABLE authorized_submission_attempts ADD COLUMN {name}")
+        conn.execute("INSERT INTO applications VALUES (?,?,NULL,?)", (job_hash, application_state, now))
+        conn.execute("INSERT INTO authorized_submission_attempts(id,state,job_hash,authorization_id,attempt_path,result_json,updated_at) "
+                     "VALUES ('preclick',?,?,?,?,?,?)", (attempt_state, job_hash, auth_id, str(path), json.dumps(result), now-age))
+    return path
+
+
+@pytest.mark.parametrize("kind", ["browser_transport", "BrowserOperationError"])
+def test_retryable_authorized_preclick_failure_gets_one_repair_without_rewriting_attempt(setup, kind):
+    path = preclick(setup, error_kind=kind, raw_error="synthetic-secret-do-not-print")
+    original = path.read_bytes()
+    calls = []
+    assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "validated"
+    assert len(calls) == 4
+    assert '"component": "authorized_submission"' in calls[0][1]
+    assert "synthetic-secret-do-not-print" not in calls[0][1]
+    assert path.read_bytes() == original
+    assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "healthy"
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("changes", [
+    {"clicked": True}, {"clicked": None}, {"attempt_state": "uncertain"},
+    {"attempt_state": "in_progress"}, {"application_state": "submission_uncertain"},
+    {"application_state": "waiting_input"}, {"missing": [{"question": "New required fact"}]},
+    {"unknown_questions": [{"question": "New fact"}]}, {"verification": {"kind": "captcha"}},
+    {"error_kind": "RuntimeError"}, {"retryable": False}, {"click_started": True},
+    {"error_kind": "BrowserOperationError", "retryable": False},
+    {"state": "waiting_input"}, {"auth_id": "a" * 64}, {"age": 120},
+])
+def test_pressed_unknown_and_unclassified_submission_failures_never_trigger_repair(setup, changes):
+    preclick(setup, **changes)
+    assert monitor.once(run=lambda *args, **kwargs: pytest.fail("ineligible pre-click repair"),
+                        inspect_repository=repo)["state"] == "healthy"
