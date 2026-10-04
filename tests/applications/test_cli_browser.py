@@ -60,12 +60,21 @@ def test_cli_timeout_reaps_process_before_releasing_lane(monkeypatch, tmp_path):
     monkeypatch.setattr("jhb.applications.cli_browser.ROOT", tmp_path)
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
     executable = tmp_path / "sleep-cli"
-    executable.write_text(f"#!{sys.executable}\nimport os,time\nfrom pathlib import Path\nPath({str(tmp_path / 'pid')!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n")
+    executable.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
     executable.chmod(0o700)
+    # The timeout includes interpreter startup. Capture the real process in
+    # the parent so a slow startup cannot race a child-written PID marker.
+    spawned, real_popen = [], subprocess.Popen
+    def spawn(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+    monkeypatch.setattr("jhb.applications.cli_browser.subprocess.Popen", spawn)
     client = BrowserUseCLI(executable=str(executable), timeout=1)
     with pytest.raises(TimeoutError, match="timed out"):
         client.call("observe")
-    pid = int((tmp_path / "pid").read_text())
+    assert len(spawned) == 1 and spawned[0].returncode is not None
+    pid = spawned[0].pid
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert client.last_failure["kind"] == "timeout"
