@@ -61,3 +61,21 @@ def test_profile_refresh_preserves_explicit_user_override(tmp_path):
     result = booklet.import_observations(path, [observation("identity.email", "sam.profile@example.org")], captured_at="now")
     assert result["answers"]["identity.email"]["value"] == "sam.approved@example.org"
     assert result["source_observations"]["identity.email"][0]["value"] == "sam.profile@example.org"
+
+
+def test_skills_keep_complete_chosen_resume_and_verified_courses_without_mutation():
+    book = {"answers": {}, "roles": {
+        "sde": {"role.skills": booklet.answer("Python, React, PostgreSQL", "synthetic SDE resume"),
+                "role.education": booklet.answer("BS Computing\nCoursework: Algorithms,\n Databases", "synthetic SDE resume")},
+        "ml": {"role.skills": booklet.answer("Python, PyTorch", "synthetic ML resume"),
+               "role.education": booklet.answer("MS Computing\nCoursework: Deep Learning", "synthetic ML resume")}},
+        "workflow_preferences": {"skill_set_answers": {"include_coursework": True, "source": "explicit synthetic policy"}}}
+    answer = booklet.for_role(book, "sde")["role.skills"]
+    assert answer["value"] == "Python, React, PostgreSQL\nRelevant coursework: Algorithms, Databases"
+    assert answer["source"]["coursework"] == "synthetic SDE resume"
+    assert "PyTorch" not in answer["value"] and "Deep Learning" not in answer["value"]
+    assert book["roles"]["sde"]["role.skills"]["value"] == "Python, React, PostgreSQL"
+    book["roles"]["sde"]["role.education"]["status"] = "needs_input"
+    assert booklet.for_role(book, "sde")["role.skills"]["value"] == "Python, React, PostgreSQL"
+    book["workflow_preferences"]["skill_set_answers"]["include_coursework"] = False
+    assert booklet.for_role(book, "ml")["role.skills"]["value"] == "Python, PyTorch"

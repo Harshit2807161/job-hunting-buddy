@@ -119,6 +119,20 @@ def for_role(book: dict, role: str) -> dict:
     if role not in {"sde", "ml"}:
         raise ValueError("Choose sde or ml explicitly for ambiguous jobs")
     values = {**book["answers"], **book["roles"][role]}
+    # Broad skills prompts retain the full chosen resume skill list. Include
+    # its coursework only when the candidate explicitly requested this policy;
+    # never borrow skills/courses from the other role or an unverified source.
+    policy = book.get("workflow_preferences", {}).get("skill_set_answers", {})
+    skills, education = values.get("role.skills", {}), book["roles"][role].get("role.education", {})
+    if (policy.get("include_coursework") is True and skills.get("status") == "verified"
+            and education.get("status") == "verified" and isinstance(skills.get("value"), str)
+            and isinstance(education.get("value"), str)):
+        courses = re.search(r"\bCoursework:\s*(.+)\Z", education["value"], re.DOTALL)
+        if courses:
+            text = re.sub(r"\s+", " ", courses[1]).strip()
+            values["role.skills"] = answer(skills["value"] + "\nRelevant coursework: " + text,
+                {"skills": skills["source"], "coursework": education["source"],
+                 "policy": policy.get("source", "explicit candidate coursework preference")})
     records = book.get("education_records", [])
     for index, record in enumerate(records):
         if record.get("status") == "verified":
