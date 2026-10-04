@@ -33,6 +33,7 @@ MECHANICAL_ERRORS = {
     "Uploaded filename did not appear in the form", "Checkbox did not retain the approved answer",
     "Native select did not retain the approved answer", "Dropdown did not retain the selected answer",
     "Form did not retain the exact answer", "Observed continuation button is unavailable",
+    "Dropdown catalog is still loading",
 }
 
 

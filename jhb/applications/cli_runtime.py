@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -160,6 +161,7 @@ def option_matches(label, value, *, field_id="", field_label=""):
 def dispatch(request, helpers):
     raw_cdp, js, wait = helpers["cdp"], helpers["js"], helpers["wait"]
     woke_for_scroll = False
+    woke_for_catalog = False
     def cdp(method, **params):
         nonlocal woke_for_scroll
         if helpers.get("jhb_cdp_timeout") and method.startswith("Input."):
@@ -169,7 +171,7 @@ def dispatch(request, helpers):
         except (TimeoutError, RuntimeError) as exc:
             scroll_timeout = (method == "Input.dispatchMouseEvent" and params.get("type") == "mouseWheel"
                               and (isinstance(exc, TimeoutError) or "timed out" in str(exc)))
-            if not scroll_timeout or woke_for_scroll or not request.get("target_id"):
+            if not scroll_timeout or woke_for_scroll or woke_for_catalog or not request.get("target_id"):
                 raise
             owned = helpers["current_tab"]()
             if (owned["targetId"] != request["target_id"] or not is_greenhouse(owned["url"])
@@ -262,6 +264,11 @@ def dispatch(request, helpers):
     def control_value(ref):
         return js("(()=>{const e=document.getElementById("+json.dumps(ref)+
                   ");return e?{value:e.value,checked:e.checked,selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||[...(e.closest('.select__value-container')?.querySelectorAll('.select__multi-value__label')||[])].map(e=>e.innerText).join(', ')||'',countryCode:e.closest('.select__value-container')?.querySelector('.iti__flag')?.className||'',invalid:e.getAttribute('aria-invalid')==='true'}:null})()")
+
+    def catalog_loading(ref):
+        return js("(()=>{const e=document.getElementById("+json.dumps(ref)+
+                  ");const p=e?.closest('.select__control')||e?.closest('.select__container')||e?.closest('.select')||e?.closest('.select__value-container');"
+                  "return !!p&&[...p.querySelectorAll('.select__loading-indicator')].some(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none')})()")
 
     def keypress(key, code=None):
         virtual = {"Home": 36, "End": 35, "ArrowDown": 40, "ArrowUp": 38, "Escape": 27}.get(key, 0)
@@ -550,12 +557,50 @@ def dispatch(request, helpers):
                         match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref, field_label=field["label"])]
                         if match:
                             break
+                    # Some background-tab catalog requests remain Loading after
+                    # the full ordinary budget. Wake only this owned job, once,
+                    # and retry the same approved search through native input.
+                    if (not match and (ref == "candidate-location" or ref.startswith("school--"))
+                            and not woke_for_catalog and not woke_for_scroll
+                            and request.get("target_id") and catalog_loading(ref)):
+                        expected = greenhouse_identity(request.get("expected_url"))
+                        owned = helpers["current_tab"]()
+                        if (not expected or owned.get("targetId") != request["target_id"]
+                                or greenhouse_identity(owned.get("url")) != expected
+                                or greenhouse_identity(js("location.href")) != expected):
+                            raise ValueError("Owned application tab changed during recovery")
+                        if js("window.__jhbGuard===true") is not True:
+                            raise ValueError("Application submission guard changed during catalog recovery")
+                        deadline = time.monotonic() + 8
+                        helpers["activate_tab"](owned["targetId"])
+                        woke_for_catalog = True
+                        activated = helpers["current_tab"]()
+                        if (activated.get("targetId") != request["target_id"]
+                                or greenhouse_identity(activated.get("url")) != expected
+                                or greenhouse_identity(js("location.href")) != expected):
+                            raise ValueError("Owned application tab changed during recovery")
+                        if js("window.__jhbGuard===true") is not True:
+                            raise ValueError("Application submission guard changed during catalog recovery")
+                        type_text(backend, query)
+                        for _ in range(32):
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            wait(min(0.25, remaining))
+                            options = options_for(field)
+                            match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value,
+                                                                         field_id=ref, field_label=field["label"])]
+                            if match:
+                                break
                     if match:
                         break
             if len(match) != 1:
+                loading = (not match and (ref == "candidate-location" or ref.startswith("school--")) and catalog_loading(ref))
                 type_text(backend, "")
                 cdp("Input.dispatchKeyEvent", type="keyDown", key="Escape", code="Escape")
                 cdp("Input.dispatchKeyEvent", type="keyUp", key="Escape", code="Escape")
+                if loading:
+                    raise ValueError("Dropdown catalog is still loading")
                 raise ValueError("Stored answer is absent from dropdown options" if not match else "Stored answer matches multiple dropdown options")
             label = match[0].get("name", {}).get("value", "")
             click(match[0]["backendDOMNodeId"])

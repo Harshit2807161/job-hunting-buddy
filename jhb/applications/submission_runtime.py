@@ -26,6 +26,41 @@ TERMINAL = re.compile(r"(?:submit(?: application)?|apply(?: now)?|send applicati
 CONFIRMATION = re.compile(r"your application (?:was successfully submitted|has been submitted successfully|has been received)|(?:we have|we've|we) received your application|thank you for applying", re.I)
 
 
+def _native_form_submit(helpers, button, approved_refs):
+    """Read the exact AX node's native form owner, never infer from its label."""
+    if not str(button.get("ref", "")).isdigit() or int(button["ref"]) <= 0:
+        return False
+    remote = helpers["cdp"]("DOM.resolveNode", backendNodeId=int(button["ref"]))
+    object_id = remote.get("object", {}).get("objectId")
+    if not object_id:
+        return False
+    try:
+        result = helpers["cdp"]("Runtime.callFunctionOn", objectId=object_id,
+            functionDeclaration="""function(refs) {
+                const e=this,w=e.ownerDocument?.defaultView;
+                if(!w || !(e instanceof w.HTMLButtonElement || e instanceof w.HTMLInputElement)
+                    || e.type!=='submit' || e.matches(':disabled') || e.getAttribute('aria-disabled')==='true'
+                    || !e.getClientRects().length || w.getComputedStyle(e).visibility==='hidden') return false;
+                const form=e.form;
+                if(!(form instanceof w.HTMLFormElement)) return false;
+                return refs.some(ref=>{
+                    const control=e.ownerDocument.getElementById(ref);
+                    return !!control && (control.form===form || form.contains(control));
+                });
+            }""", arguments=[{"value": approved_refs}], returnByValue=True)
+        return not result.get("exceptionDetails") and result.get("result", {}).get("value") is True
+    finally:
+        helpers["cdp"]("Runtime.releaseObject", objectId=object_id)
+
+
+def _visible_application_submit(helpers, approved_refs):
+    nodes = helpers["cdp"]("Accessibility.getFullAXTree")["nodes"]
+    return any(_native_form_submit(helpers, {"ref": str(node.get("backendDOMNodeId", "")),
+                                            "label": node.get("name", {}).get("value", "")}, approved_refs)
+               for node in nodes if not node.get("ignored") and node.get("role", {}).get("value") == "button"
+               and TERMINAL.fullmatch(normalize(node.get("name", {}).get("value", ""))))
+
+
 def _control_state(helpers, field):
     if field["type"] == "file":
         return helpers["js"]("(()=>{const label="+json.dumps(normalize(field["label"]))+";const groups=[...document.querySelectorAll('.file-upload')].filter(e=>{const labelText=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0];return labelText.trim().replace(/[ *]+$/,'').toLowerCase()===label});return groups.length===1?{value:groups[0].querySelector('.file-upload__filename p')?.innerText||'',receipt:groups[0].__jhbUploadReceipt||null}:null})()")
@@ -124,7 +159,9 @@ def _checks(request, helpers, packet, attempt):
             present = (record["ref"], record["key"]) in visible_keys
         if not present:
             return {"state": "waiting_review", "reason": "A prepared application record disappeared", "click_started": False}
-    terminals = [b for b in snapshot["buttons"] if TERMINAL.fullmatch(normalize(b["label"]))]
+    approved_refs = [r["ref"] for r in records if not str(r.get("ref", "")).startswith("uploaded:")]
+    terminals = [b for b in snapshot["buttons"] if TERMINAL.fullmatch(normalize(b["label"]))
+                 and _native_form_submit(helpers, b, approved_refs)]
     if len(terminals) != 1:
         return {"state": "waiting_review", "reason": "Final submission control is unavailable or ambiguous", "click_started": False}
     return {"fields": checked, "retained": retained, "button": terminals[0], "double_check_count": len(checked)}
@@ -219,7 +256,8 @@ def dispatch(request, helpers):
                 helpers["wait"](0.25)
                 body = helpers["js"]("document.body.innerText")
                 current_url = helpers["js"]("location.href")
-                visible_terminal = helpers["js"]("[...document.querySelectorAll('button,input[type=submit],[role=button]')].some(e=>!e.disabled&&e.getClientRects().length&&/^(submit(?: application)?|apply(?: now)?|send application|finish application)$/i.test((e.innerText||e.value||'').trim()))")
+                visible_terminal = _visible_application_submit(helpers, [r["ref"] for r in packet.get("filled", [])
+                                                                        if not str(r.get("ref", "")).startswith("uploaded:")])
                 parsed = urlsplit(current_url)
                 host_allowed = parsed.scheme == "https" and parsed.hostname in {"boards.greenhouse.io", "job-boards.greenhouse.io", "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
                 confirmation = CONFIRMATION.search(body)
