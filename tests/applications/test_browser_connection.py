@@ -23,7 +23,7 @@ class Response:
     def read(self, limit): self.read_limit = limit; return self.body[:limit]
 
 
-@pytest.mark.parametrize("endpoint", ["http://127.0.0.1:12345", "http://localhost:12345/", SOCKET])
+@pytest.mark.parametrize("endpoint", ["http://127.0.0.1:12345", "http://localhost:12345/"])
 def test_readonly_check_is_bounded_and_accepts_exact_loopback_chrome(endpoint):
     calls = []
     response = Response()
@@ -59,7 +59,7 @@ def test_response_must_identify_chrome_and_scoped_local_browser_socket(body):
 
 
 def test_configured_websocket_identity_must_still_exist():
-    assert not connection.available(SOCKET+"-stale", opener=lambda *a, **kw: Response())
+    assert not connection.available(SOCKET+"-stale", active_files=[], runner=lambda *a, **kw: pytest.fail("Stale path started CLI"))
 
 
 @pytest.mark.parametrize("change", ["redirect", "non200", "oversize", "malformed"])

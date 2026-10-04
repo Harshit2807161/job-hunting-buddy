@@ -38,7 +38,7 @@ def _gate(mode):
             return "portal_required"
     elif os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") != "1" or os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED") != "1":
         return "portal_disabled"
-    endpoint = os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS", "")
+    endpoint = os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL", "")
     try:
         parsed = urlsplit(endpoint)
         if (parsed.scheme not in {"http", "https", "ws", "wss"} or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}

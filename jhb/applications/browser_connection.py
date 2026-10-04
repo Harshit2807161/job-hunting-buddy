@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
+import stat
+import subprocess
+from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -31,18 +35,79 @@ def endpoint_parts(endpoint):
     return parsed
 
 
-def available(endpoint=None, *, opener=None):
-    """Only GET /json/version; no CDP calls, proxies, redirects or auth."""
+def _active_match(parsed, files=None):
+    """Bind the port/path to a bounded current Chrome profile record."""
+    if files is None:
+        home = Path.home()
+        files = [home / parent / "DevToolsActivePort" for parent in (
+            "Library/Application Support/Google/Chrome", "Library/Application Support/Google/Chrome Canary",
+            "Library/Application Support/Chromium", ".config/google-chrome", ".config/chromium")]
+    for path in files:
+        path = Path(path)
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+                continue
+            with path.open("rb") as handle:
+                content = handle.read(4097)
+            if len(content) > 4096:
+                continue
+            lines = content.decode("utf-8").splitlines()
+            if len(lines) != 2 or lines[0] != str(parsed.port):
+                continue
+            candidate = endpoint_parts(f"ws://127.0.0.1:{parsed.port}"+lines[1])
+            if parsed.scheme in {"ws", "wss"} and candidate.path != parsed.path:
+                continue
+            return (str(path), info.st_dev, info.st_ino, info.st_mtime_ns, tuple(lines))
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
+
+
+def _existing_daemon(parsed, *, runner=None, files=None):
+    before = _active_match(parsed, files)
+    if before is None:
+        return False
+    from .. import config
+    env = dict(os.environ)
+    env.pop("BU_NAME", None)
+    env.update(BH_HOME=str(config.ROOT / "private" / "browser-use-harness"),
+               BH_REQUIRE_EXISTING_DAEMON="1", BH_TELEMETRY="0")
+    result = (runner or subprocess.run)(["browser-use", "doctor", "--json", "--require-existing-daemon"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT, check=False, env=env)
+    if result.returncode != 0 or not isinstance(result.stdout, bytes) or len(result.stdout) > MAX_BYTES:
+        return False
+    report = json.loads(result.stdout)
+    daemon = report.get("daemon", {}) if isinstance(report, dict) else {}
+    return (isinstance(report, dict) and type(report.get("schema_version")) is int and report["schema_version"] == 1
+            and report.get("healthy") is True and report.get("require_existing_daemon") is True
+            and isinstance(daemon, dict) and daemon.get("name") == "default"
+            and daemon.get("alive") is True and daemon.get("browser_ready") is True
+            and _active_match(parsed, files) == before)
+
+
+def available(endpoint=None, *, opener=None, runner=None, active_files=None):
+    """Read-only HTTP or strict existing-daemon CLI health; never starts Chrome."""
     try:
         parsed = endpoint_parts(endpoint if endpoint is not None else
-                                os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS", ""))
+                                os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL", ""))
+        if parsed.scheme in {"ws", "wss"}:
+            return _existing_daemon(parsed, runner=runner, files=active_files)
         # Do not delegate localhost resolution to environmental DNS settings.
         host = "[::1]" if parsed.hostname == "::1" else "127.0.0.1"
         origin = host+":"+str(parsed.port)
         scheme = "https" if parsed.scheme in {"https", "wss"} else "http"
         url = urlunsplit((scheme, origin, "/json/version", "", ""))
         reader = opener or build_opener(ProxyHandler({}), NoRedirect()).open
-        with reader(Request(url, method="GET", headers={"Accept": "application/json"}), timeout=TIMEOUT) as response:
+        try:
+            response = reader(Request(url, method="GET", headers={"Accept": "application/json"}), timeout=TIMEOUT)
+        except HTTPError as exc:
+            if exc.code == 404 and exc.geturl() == url:
+                return _existing_daemon(parsed, runner=runner, files=active_files)
+            return False
+        with response:
+            if response.status == 404 and response.geturl() == url:
+                return _existing_daemon(parsed, runner=runner, files=active_files)
             if response.status != 200 or response.geturl() != url:
                 return False
             content = response.read(MAX_BYTES+1)
@@ -56,5 +121,5 @@ def available(endpoint=None, *, opener=None):
         return (socket.scheme in {"ws", "wss"} and socket.port == parsed.port
                 and (socket.hostname == "::1") == (parsed.hostname == "::1")
                 and (parsed.scheme not in {"ws", "wss"} or socket.path == parsed.path))
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
         return False

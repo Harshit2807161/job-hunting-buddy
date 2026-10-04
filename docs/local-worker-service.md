@@ -91,8 +91,15 @@ browser validation.
 
 Both local service lanes and the scheduled `jhb-apply pipeline` entry check the
 existing loopback Chrome endpoint before opening SQLite or claiming candidate
-jobs. A bounded, credential-free GET of `/json/version` must identify Chrome and
-a matching local browser websocket. Redirects, proxies, remote endpoints and
+jobs. Legacy HTTP endpoints use a bounded, credential-free GET of `/json/version`
+to identify Chrome and a matching local browser websocket. Chrome's newer
+default-profile debugging can return HTTP 404 while its direct websocket works.
+For configured direct websockets, or that HTTP 404 case, a bounded local
+`DevToolsActivePort` record must match the configured port and websocket path
+where present. The official `browser-use doctor --json --require-existing-daemon`
+must then confirm the existing default daemon has a healthy attached browser;
+the port record must remain unchanged through that check. This strict doctor
+does not start, repair, discover, or reconnect a daemon. Redirects, proxies, remote endpoints and
 oversized responses are rejected. A closed or unreachable browser yields
 `blocked / local_browser_disconnected`, refreshes private dashboard status, and
 leaves job attempts untouched. This check never starts Chrome or sends email.
