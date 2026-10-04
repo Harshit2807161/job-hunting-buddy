@@ -83,7 +83,18 @@ def prepare_records(request, helpers):
                 if not check_only and not js('('+expr(current)+')?.checked===true'):
                     node=backend(expr(current));_settled_click(node,cdp,wait,helpers['click_at_xy']);wait(.15)
                 if not js('('+expr(current)+')?.checked===true'):raise ValueError('Current-employment choice was not retained')
-            else:expected['input[name="end_date"]']=month(record['end_date'])
+            else:
+                if record.get('current') is False:
+                    # End-date visibility alone does not prove a completed
+                    # record: some editors expose it while "current" remains
+                    # checked. Do not infer False for records lacking this fact.
+                    current="(()=>{const a=[...document.querySelectorAll('input[type=checkbox][name=current]')];if(a.length>1)throw Error('Ambiguous current-employment control');return a[0]??null})()"
+                    if js('('+current+')?.checked===true'):
+                        if check_only:raise ValueError('Saved completed employment is incorrectly marked current')
+                        node=backend(current);_settled_click(node,cdp,wait,helpers['click_at_xy']);wait(.15)
+                        if not js('('+current+')?.checked===false'):
+                            raise ValueError('Completed-employment choice was not retained')
+                expected['input[name="end_date"]']=month(record['end_date'])
             if not check_only:
                 for selector,wanted in expected.items():type_value(selector,wanted)
                 click('Update')
@@ -98,6 +109,8 @@ def prepare_records(request, helpers):
                     wait(.15)
             if any(value(selector)!=wanted for selector,wanted in expected.items()):
                 raise ValueError('Saved Workable record did not retain its verified fields')
+            if record.get('current') is False and js('('+current+')?.checked===true'):
+                raise ValueError('Saved completed employment is incorrectly marked current')
             click('Cancel' if check_only else 'Update')
             for _ in range(12):
                 if value(first) is None and len(buttons(edit))==1:break
