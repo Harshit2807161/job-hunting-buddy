@@ -50,6 +50,12 @@ hands them to the candidate; it never submits them.
 - A local HTML/JSON review packet, screenshot and event log accompany each
   outcome. Notifications go to a private local outbox; email is separately opt-in.
   The persistent Chrome tab stays open. No automation operation submits a form.
+- After a separately authorized, confirmed submission, a durable private receipt
+  ledger automatically updates the configured existing application spreadsheet.
+  Canonical ATS identities and legacy employer/role/date entries prevent duplicate
+  rows. Pending deliveries reconcile in the pipeline's final stage; an uncertain
+  append is checked by reading before any retry. See
+  [submission-tracking.md](submission-tracking.md).
 
 ## Authentication and submission boundaries
 
@@ -80,7 +86,8 @@ The interactive review command releases it only when the candidate types
 
 Submission explicitly directed by the user in a separate instruction is
 outside the preparation worker. After receipt is confirmed, its private ledger
-can record `submitted`; that state cannot be resumed, claimed or prepared again.
+records `submitted` through `confirm-submission` and synchronizes its tracker;
+that state cannot be resumed, claimed or prepared again.
 The review command opens no browser for completed records, and preparation
 notifications exclude them. This does not authorize unattended submission.
 

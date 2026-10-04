@@ -102,8 +102,11 @@ def claim(conn, lease_seconds=1200):
 def finish(conn, job_hash, state, packet=None):
     if state not in STATES - {"queued", "running"}:
         raise ValueError("Invalid terminal/handoff state")
-    conn.execute("UPDATE applications SET state=?,lease_until=NULL,updated_at=?,packet=?,notified_at=NULL WHERE job_hash=?",
-                 (state, int(time.time()), str(packet) if packet else None, job_hash))
+    # A preparation worker can finish from an older snapshot after an
+    # interactive submission was confirmed. Preserve that terminal record.
+    conn.execute("UPDATE applications SET state=?,lease_until=NULL,updated_at=?,packet=?,notified_at=NULL "
+                 "WHERE job_hash=? AND (state!='submitted' OR ?='submitted')",
+                 (state, int(time.time()), str(packet) if packet else None, job_hash, state))
     conn.commit()
 
 

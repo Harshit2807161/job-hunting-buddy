@@ -51,5 +51,13 @@ Explicitly authorized application email verification may use the candidate's
 existing mailbox session. Report fixture and live-site
 validation separately.
 
+After an explicitly authorized application is confirmed submitted, record its
+private receipt and sync the configured existing application spreadsheet as the
+final pipeline step. Follow `docs/submission-tracking.md`; deduplicate existing
+entries, preserve their column/date format, and verify the appended row. Review
+drafts, submit attempts, and expired sessions are not confirmed submissions.
+Keep tracker configuration, evidence and sync history private. A failed sheet
+update must retain the confirmed submission for later reconciliation.
+
 Run `.venv/bin/python -m pytest -q`; browser tests require the local Chromium
 installation. Do not use API credentials or subscription authentication in CI.

@@ -32,6 +32,14 @@ def main(argv=None):
     work.add_argument("--interactive", action="store_true")
     work.add_argument("--review-seconds", type=int, default=0)
     sub.add_parser("status")
+    confirm = sub.add_parser("confirm-submission")
+    submitted_job = confirm.add_mutually_exclusive_group(required=True)
+    submitted_job.add_argument("--job-file", type=Path)
+    submitted_job.add_argument("--job-hash")
+    confirm.add_argument("--receipt", type=Path, required=True)
+    confirm.add_argument("--config", type=Path)
+    sync = sub.add_parser("sync-tracker")
+    sync.add_argument("--config", type=Path)
     pipeline = sub.add_parser("pipeline")
     pipeline.add_argument("--if-enabled", action="store_true")
     pipeline.add_argument("--planner", choices=["codex", "deterministic"], default="codex")
@@ -117,6 +125,23 @@ def main(argv=None):
         if args.command == "status":
             for row in conn.execute("SELECT job_hash,state,attempts,packet FROM applications ORDER BY updated_at DESC"):
                 print(json.dumps(dict(row)))
+        elif args.command == "confirm-submission":
+            from .tracking import record_confirmed, _private_json
+            if args.job_file:
+                _, job, _ = _private_json(args.job_file)
+            else:
+                row = conn.execute("SELECT job_json FROM applications WHERE job_hash=?", (args.job_hash,)).fetchone()
+                if not row:
+                    raise ValueError("Application ID not found")
+                job = json.loads(row[0])
+            result = record_confirmed(conn, job, args.receipt, config_path=args.config)
+            print(json.dumps(result))
+            return 0 if result["tracking"]["state"] in {"complete", "disabled"} else 1
+        elif args.command == "sync-tracker":
+            from .tracking import sync_pending
+            result = sync_pending(conn, config_path=args.config)
+            print(json.dumps(result))
+            return 0 if result["state"] in {"complete", "disabled"} else 1
         elif args.command == "resume":
             queue.resume(conn, args.job_hash)
         elif args.command == "source-status":

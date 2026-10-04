@@ -255,6 +255,10 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         summary["questions_notified"] = notify_new(conn, book_path, send_email=send_email)
     notify_pending(conn, send_email=send_email)
     notify_source_handoffs(conn, send_email=send_email)
+    # Delivery is the final stage for separately confirmed receipts. Preparation
+    # outcomes and submitted markers cannot create tracker entries here.
+    from .tracking import sync_pending
+    summary["submission_tracking"] = sync_pending(conn)
     return summary
 
 

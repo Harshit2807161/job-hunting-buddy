@@ -80,3 +80,16 @@ def test_verified_embed_and_hosted_job_share_application_identity(conn):
     assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?token=1234")
     assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?for=example&for=other&token=1234")
     assert not queue.is_greenhouse("https://boards.greenhouse.io/embed/job_app?for=example&token=1234&token=5678")
+
+
+@pytest.mark.parametrize("stale_state", ["waiting_review", "waiting_input", "waiting_login", "failed", "skipped"])
+def test_stale_preparation_finish_preserves_confirmed_submission(conn, stale_state):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/5678")])
+    claimed = queue.claim(conn)
+    queue.finish(conn, claimed["job_hash"], "submitted", "synthetic-confirmation.json")
+    before = dict(conn.execute("SELECT * FROM applications").fetchone())
+
+    queue.finish(conn, claimed["job_hash"], stale_state, "stale-preparation.json")
+
+    assert dict(conn.execute("SELECT * FROM applications").fetchone()) == before
+    assert queue.claim(conn) is None

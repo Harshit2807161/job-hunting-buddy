@@ -148,12 +148,29 @@ and repeated crashed claims stop after three attempts. Transient source errors
 use bounded exponential backoff. Review and verification handoffs do not retry
 without explicit intervention. Closing or submitting a draft manually does not
 automatically change its ledger state; update the recorded state before reusing
-capacity. The pipeline does not delete tabs or drafts to reclaim space.
+capacity. Record actual submission evidence with `confirm-submission` rather than
+changing a draft state based on a click. The pipeline does not delete tabs or
+drafts to reclaim space.
 
 If a user answers a question while a worker still holds an older booklet
 snapshot, the newer explicit answer is preserved. Once all current required
 questions have answers, that job queues a fresh pass in the next bounded cycle.
 An incompatible answer stays at a question handoff rather than retrying forever.
+
+## Final step: submission tracking
+
+After a separately authorized submission succeeds, the agent records the exact
+job's private success receipt with `confirm-submission`. This durably records the
+submission and automatically synchronizes the configured existing spreadsheet.
+The final stage of subsequent pipeline cycles reconciles pending sheet deliveries;
+it never submits drafts or infers success from preparation results.
+
+Sheet logging preserves the existing eight-column format, checks canonical ATS
+job links and legacy employer/role/date entries, and verifies every appended row.
+An uncertain write stays pending for read-only reconciliation instead of being
+blindly repeated. Configuration, credentials and receipts remain private; CI
+uses synthetic tool responses. See [submission-tracking.md](submission-tracking.md)
+for configuration and receipt recording commands.
 
 ## Validation boundaries
 
