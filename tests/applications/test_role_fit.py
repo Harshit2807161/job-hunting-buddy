@@ -51,7 +51,9 @@ def executor(verdict, calls):
     def run(command, **kwargs):
         calls.append(kwargs["input"])
         assert "OPENAI_API_KEY" not in kwargs["env"] and "CODEX_API_KEY" not in kwargs["env"]
-        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps(verdict))
+        schema = json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
+        assert set(schema["required"]) == set(schema["properties"])
+        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps({"review_notes": [], **verdict}))
         return SimpleNamespace(returncode=0)
     return run
 
@@ -185,7 +187,7 @@ def test_policy_bump_and_availability_change_invalidate_semantic_cache(inputs, m
     monkeypatch.setattr(role_fit, 'POLICY', current_policy)
     new = role_fit.assess(job, book, role, execute=run)
     assert old['evidence_hash'] != new['evidence_hash'] and len(calls) == 2
-    assert new['review_notes'] == []  # Optional new schema remains compatible with older verdict shape.
+    assert new['review_notes'] == []  # No qualification gap is represented by an empty array.
     book['answers'] = {'preferences.start_date':answer('January 2027','Synthetic approved availability')}
     changed = role_fit.assess(job, book, role, execute=run)
     assert changed['evidence_hash'] != new['evidence_hash'] and len(calls) == 3
