@@ -355,3 +355,10 @@ education records. Chrome exposes these numeric inputs as AX `spinbutton`
 controls. The adapter now recognizes that role and extracts calendar years only
 from verified valid original dates, retaining expected-graduation provenance.
 Malformed dates and different record indexes cannot receive a guessed year.
+
+When the worker-owned browser tab limit is reached before opening a job, the
+application or authenticated LinkedIn source claim waits for 60 seconds without
+spending a technical retry attempt. The manager only refunds its still-current,
+untouched claim; completed, changed, or submitted claims stay protected. This
+capacity wait creates no candidate question or failure email and is not counted
+as a prepared application. Reusing an existing exact-job tab remains allowed.

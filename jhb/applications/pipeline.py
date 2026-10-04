@@ -26,6 +26,10 @@ TRANSIENT_KINDS = {"TimeoutError", "TimeoutExpired", "ConnectionError", "Connect
 
 
 def _exception_recovery(exc):
+    from .cli_browser import BrowserOperationError
+    if (isinstance(exc, BrowserOperationError) and getattr(exc, "condition", None) == "browser_capacity"
+            and getattr(exc, "mutation_started", None) is False):
+        return {"retryable": True, "error_kind": "browser_capacity", "mutation_started": False}
     kind = type(exc).__name__
     if kind in TRANSIENT_KINDS:
         return {"retryable": True, "error_kind": kind}
@@ -44,6 +48,13 @@ def _recoverable(result):
     return (result.get("state") == "failed" and result.get("retryable") is True
             and result.get("error_kind") in TRANSIENT_KINDS and not result.get("missing")
             and not result.get("verification") and not result.get("submitted"))
+
+
+def _capacity_wait(result):
+    return (result.get("state") in {"failed", "error"} and result.get("error_kind") == "browser_capacity"
+            and result.get("mutation_started") is False and not result.get("filled")
+            and not result.get("missing") and not result.get("verification")
+            and not result.get("submitted") and not result.get("runtime_click_started"))
 
 
 def recover_technical_failures(conn):
@@ -224,7 +235,11 @@ async def _resolve_one(item, resolver, semaphore, timeout, authenticated_resolve
                         item["job"], isolated_outcome=None, timeout=timeout), timeout=timeout + 10)
                     if isinstance(local, dict) and local.get("state") in states - {"ambiguous", "error"}:
                         return local
-                except Exception:
+                except Exception as exc:
+                    recovery = _exception_recovery(exc)
+                    if recovery.get("error_kind") == "browser_capacity":
+                        return {"state": "error", "board_type": "linkedin", "reason": "Waiting for browser tab capacity",
+                                "evidence": [], **recovery}
                     pass
             outcome = await asyncio.wait_for(resolver(item["job"], timeout=timeout), timeout=timeout + 10)
             if not isinstance(outcome, dict) or outcome.get("state") not in states:
@@ -408,6 +423,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         state = outcome.get("state", "error")
         board = outcome.get("board_type") or outcome.get("ats") or ("greenhouse" if state == "greenhouse" else "unknown")
         path = _source_artifact(item, outcome)
+        if _capacity_wait(outcome) and source_queue.defer_capacity(conn, item, evidence_path=path):
+            summary["browser_capacity_deferred"] = summary.get("browser_capacity_deferred", 0) + 1
+            continue
         application_url = outcome.get("application_url")
         if state in {"greenhouse", "not_greenhouse"}:
             summary["applications_queued"] += _route_source(conn, item, outcome, path)
@@ -456,6 +474,10 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
             results = await asyncio.gather(*[_prepare_one(item, runner, book, semaphore, application_timeout, planner_name)
                                             for item in items])
             for item, (result, packet) in zip(items, results):
+                if _capacity_wait(result) and queue.defer_capacity(conn, item, packet=packet):
+                    summary["browser_capacity_deferred"] = summary.get("browser_capacity_deferred", 0) + 1
+                    summary["states"]["retry"] = summary["states"].get("retry", 0) + 1
+                    continue
                 from .questions import collect, reconcile
                 collect(item["job"], result, book_path, observed_book=book)
                 reconcile(item["job"], result, book_path)

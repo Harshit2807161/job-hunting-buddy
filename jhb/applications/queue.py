@@ -135,3 +135,18 @@ def retry(conn, job_hash, *, error_kind, packet=None, retry_seconds=300, max_att
     ).rowcount
     conn.commit()
     return bool(changed)
+
+
+def defer_capacity(conn, item, *, packet=None, retry_seconds=60):
+    """Release only this untouched claim without spending a browser-failure try."""
+    if type(retry_seconds) is not int or not 30 <= retry_seconds <= 600:
+        raise ValueError("Browser capacity delay must be between 30 and 600 seconds")
+    now = int(time.time())
+    changed = conn.execute(
+        "UPDATE applications SET state='retry',available_at=?,error_kind='browser_capacity',"
+        "lease_until=NULL,attempts=attempts-1,updated_at=?,packet=COALESCE(?,packet) "
+        "WHERE job_hash=? AND state='running' AND attempts=? AND attempts>0",
+        (now+retry_seconds, now, str(packet) if packet else None, item["job_hash"], item["attempts"]),
+    ).rowcount
+    conn.commit()
+    return bool(changed)

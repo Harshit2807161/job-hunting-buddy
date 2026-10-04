@@ -21,6 +21,11 @@ from .planner import CodexPlanner, completed_cs_degree_answer, deterministic_pla
 def failure_result(exc, actions=None):
     """Classify transport/mechanics separately from unknown answers, without secrets."""
     from .cli_browser import BrowserOperationError
+    if (isinstance(exc, BrowserOperationError) and getattr(exc, "condition", None) == "browser_capacity"
+            and getattr(exc, "mutation_started", None) is False):
+        return {"state": "failed", "reason": "Waiting for browser tab capacity",
+                "error_kind": "browser_capacity", "retryable": True, "mutation_started": False,
+                "events": [{"event": "browser_capacity_wait"}], "filled": []}
     kind = type(exc).__name__
     retryable = isinstance(exc, (TimeoutError, ConnectionError, subprocess.TimeoutExpired, FileNotFoundError))
     if isinstance(exc, BrowserOperationError) and exc.retryable:

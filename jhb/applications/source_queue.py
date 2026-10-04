@@ -95,3 +95,19 @@ def resume(conn, source_job_hash):
     conn.execute("UPDATE application_sources SET state='queued',lease_until=NULL,attempts=0,available_at=0,notified_at=NULL,updated_at=? "
                  "WHERE source_job_hash=? AND state NOT IN ('running','resolved')", (int(time.time()), source_job_hash))
     conn.commit()
+
+
+def defer_capacity(conn, item, *, evidence_path=None, retry_seconds=60):
+    """A full local browser is not a failed public-source inspection."""
+    if type(retry_seconds) is not int or not 30 <= retry_seconds <= 600:
+        raise ValueError("Browser capacity delay must be between 30 and 600 seconds")
+    now = int(time.time())
+    changed = conn.execute(
+        "UPDATE application_sources SET state='retry',available_at=?,lease_until=NULL,"
+        "attempts=attempts-1,updated_at=?,evidence_path=COALESCE(?,evidence_path) "
+        "WHERE source_job_hash=? AND state='running' AND attempts=? AND attempts>0",
+        (now+retry_seconds, now, str(evidence_path) if evidence_path else None,
+         item["source_job_hash"], item["attempts"]),
+    ).rowcount
+    conn.commit()
+    return bool(changed)
