@@ -206,7 +206,9 @@ class DashboardStore:
                 "category": _text(field.get("category"), 100), "status": _text(field.get("status"), 100),
                 "candidate_wording_required": field.get("candidate_wording_required") is True,
                 "step": field.get("step") if isinstance(field.get("step"), (str, int)) else None,
-                "answer": value, "answer_key": _text(field.get("answer_key")), "has_source": bool(record and record.get("source"))})
+                "answer": value, "answer_key": _text(field.get("answer_key")), "has_source": bool(record and record.get("source")),
+                "proposed": bool(field.get("proposed") or record and (record.get("proposed") or
+                    isinstance(record.get("source"), dict) and record["source"].get("kind") == "grounded_narrative"))})
         documents = [{"kind": record["key"].split(".")[-1], "filename": Path(str(record.get("value"))).name}
                      for record in filled if str(record.get("key", "")).startswith("documents.")]
         issues = []
@@ -273,7 +275,10 @@ class DashboardStore:
         if not complete_inventory or row["state"] != "waiting_review":
             approval = {**approval, "can_approve": False, "reason": "Already submitted" if row["state"] == "submitted"
                         else "Full form inventory must be captured before approval"}
-        return {"job_hash": job_hash, "state": row["state"], "fields": output,
+        fit = packet.get("role_fit", {})
+        fit_notes = [_text(note if isinstance(note, str) else note.get("reason") or note.get("message"), 1500)
+                     for note in fit.get("review_notes", []) if isinstance(note, (dict, str))] if isinstance(fit, dict) else []
+        return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,

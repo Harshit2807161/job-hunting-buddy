@@ -8,7 +8,8 @@ from .booklet import normalize
 
 
 def candidate_wording_requested(label):
-    return bool(re.search(r'\b(?:no|do not use|don\x27t use)\s+(?:ai|artificial intelligence)(?:[- ]generated)?\s+(?:text|content|answers?|responses?)\b',normalize(label)))
+    return bool(re.search(r'\b(?:no|without(?: using)?|do not use|don\x27t use)\s+(?:ai|artificial intelligence|chatgpt)\b|'
+                         r'\b(?:your|my|their) own (?:words|wording)\b|\bhuman[- ]written\b', normalize(label)))
 
 
 def candidate_response(record):
@@ -53,6 +54,8 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
         records.append({'ref':field['ref'],'question':field['label'],'type':field['type'],
                         'required':field['required'],'status':status,'answer_key':key,
                         'category':category(field,key),'source':retained.get('source') if retained else approved.get('source'),
+                        'proposed':bool(retained and (retained.get('proposed') or approved.get('proposed') or
+                            isinstance(retained.get('source'),dict) and retained['source'].get('kind')=='grounded_narrative')),
                         'step':field.get('observed_step',0),'choices':[o['label'] for o in field.get('options',[])],
                         'candidate_wording_required':wording})
     # Workable's saved rows are independently reopened/read by its preparer.

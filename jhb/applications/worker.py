@@ -147,7 +147,7 @@ def role_for_job(job):
     return None
 
 
-async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_steps=8, cli_actions=None):
+async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_steps=8, cli_actions=None, narrative_preferences=None):
     if not demo_origin and cli_actions is None:
         raise ValueError("Live preparation requires the Browser Use CLI")
     located = _located_us_from_country(answers)
@@ -157,6 +157,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         answers.pop("standing.located_us", None)
     actions = cli_actions or BrowserActions(page, demo_origin=demo_origin)
     observed_fields = {}
+    narrative_calls = 0
     observed_step = 0
     def outcome(result, *, stable=False):
         from .review_inventory import build
@@ -251,6 +252,12 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             if existing.get("status") in {"verified", "declined"}:
                 continue
             record = proposal(field, narrative_job, answers)
+            if not record and os.environ.get("JHB_GROUNDED_NARRATIVES") == "1" and narrative_calls < 3:
+                from .grounded_narratives import draft, intent
+                if intent(field, narrative_job.get("company")):
+                    narrative_calls += 1
+                    proposed = await asyncio.to_thread(draft, field, narrative_job, answers, preferences=narrative_preferences)
+                    record = proposed.get("record") if proposed.get("state") == "proposed" else None
             if record:
                 # Exact observed prompts and verified selected-role facts give
                 # these qualitative answers provenance, without new screening
@@ -279,7 +286,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 await actions.fill(field, record["value"])
                 education_row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
-                filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"]}
+                filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"],
+                    **({"proposed": True} if record.get("proposed") else {})}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
             except ValueError as exc:
                 filled.pop((field["label"], field["ref"]), None)
@@ -563,7 +571,8 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
             if board == "workday":
                 from .workday import approved_credential_store
                 vault = approved_credential_store(job["url"], answers)
-            result, actions = await prepare(None, job, answers, planner, vault, cli_actions=actions)
+            result, actions = await prepare(None, job, answers, planner, vault, cli_actions=actions,
+                                            narrative_preferences=policy.get("narrative_style", {}))
         except Exception as exc:
             result = failure_result(exc, actions)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
@@ -589,7 +598,8 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         page = context.pages[0] if context.pages else await context.new_page()
         try:
             try:
-                result, actions = await prepare(page, job, answers, planner, vault, demo_origin=demo_origin)
+                result, actions = await prepare(page, job, answers, planner, vault, demo_origin=demo_origin,
+                                                narrative_preferences=policy.get("narrative_style", {}))
             except Exception as exc:
                 # Exceptions may contain DOM or private values; store only safe class metadata.
                 result, actions = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}", "events": [], "filled": []}, None

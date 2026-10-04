@@ -45,8 +45,9 @@ def workspace(fragment=""):
         "questions": [question], "activity": [], "pipeline": None, "submission_pipeline": None}
     detail = {"job_hash": KEY, "state": "waiting_review", "inventory_complete": True, "resume_role": "sde", "automation_paused": True,
         "documents": [{"kind": "resume", "filename": "synthetic-sde.pdf"}], "reviewer_issues": [], "incident": None,
+        "role_fit_notes": ["This posting prefers another year of experience."],
         "fields": [{"ref": "name", "question": "Full Name", "type": "text", "required": True, "status": "answered", "category": "profile_fact",
-                    "answer": "Synthetic Candidate", "candidate_wording_required": False},
+                    "answer": "Synthetic Candidate", "candidate_wording_required": False, "proposed": True},
                    {"ref": "why", "question": "Why this company? Please, no AI text.", "type": "textarea", "required": False,
                     "status": "blank", "category": "substantive_written", "answer": None, "candidate_wording_required": True}],
         "approval": {"can_approve": True, "revision": "exact-draft-revision", "blank_questions": [{"ref": "why", "question": "Why this company? Please, no AI text.", "required": False, "type": "textarea"}]}}
@@ -98,6 +99,9 @@ def test_review_shows_all_fields_and_never_prechecks_optional_blank_or_autoappro
         page.get_by_role("button", name="Review Synthetic Employer application").click()
         page.get_by_text("Synthetic Candidate", exact=True).wait_for()
         assert page.get_by_text("Left blank", exact=True).is_visible()
+        assert page.get_by_text("Proposed wording · Check this grounded draft before approving.", exact=True).is_visible()
+        assert page.get_by_text("Role-fit considerations", exact=True).is_visible()
+        assert page.get_by_text("This posting prefers another year of experience.", exact=True).is_visible()
         assert page.get_by_text("The employer requests your own wording. The agent must not write this answer.", exact=True).is_visible()
         button = page.get_by_role("button", name="Approve and submit this application", exact=True)
         ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")

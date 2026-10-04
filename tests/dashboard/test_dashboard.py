@@ -387,3 +387,16 @@ def test_candidate_reply_never_requeues_protected_application_states(portal, sta
                            json={"value": "Synthetic answer", "revision": q["updated_at"]})
     assert response.status_code == 200 and response.json()["resumed_jobs"] == []
     assert conn.execute("SELECT state FROM applications").fetchone()[0] == state
+
+
+def test_proposed_wording_and_role_fit_notes_are_visible_distinct_from_final_reviewer_issues(portal):
+    root, conn, book, client, headers = portal
+    job, folder, packet = add_job(conn, root, complete=True)
+    packet["filled"][0]["source"] = {"kind": "grounded_narrative", "review_status": "proposed", "support": []}
+    packet["role_fit"] = {"review_notes": ["The posting prefers one extra year of experience.", {"reason": "Discuss distributed systems depth in review."}]}
+    booklet.write_private(folder / "packet.json", packet)
+    response = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert response["fields"][0]["proposed"] is True
+    assert response["fields"][1]["proposed"] is False
+    assert response["role_fit_notes"] == ["The posting prefers one extra year of experience.", "Discuss distributed systems depth in review."]
+    assert response["reviewer_issues"] == []
