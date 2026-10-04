@@ -1,4 +1,27 @@
-# job-hunting-buddy — Phase 1
+# job-hunting-buddy
+
+Discover jobs, prepare applications in the candidate’s local browser, and keep
+submission under the candidate’s control through a private review dashboard.
+Phase 2 is developed on a feature branch; `main` and `v0.1.0` retain Phase 1.
+
+## Phase 2: prepare, review, approve
+
+The local Next.js/FastAPI dashboard shows application status, every observed
+question, selected documents, screenshots, and receipt-confirmed daily counts.
+Only an explicit per-draft **Approve and submit** click authorizes the final
+browser action. Changed answers or documents require another review; uncertain
+attempts never replay automatically. Candidate data stays in ignored local files.
+
+- [Run the dashboard](docs/dashboard.md) and [local workers](docs/local-worker-service.md).
+- [Review and approval contract](docs/portal-review.md).
+- [Phase 1 → Phase 2 pipeline](docs/pipeline.md) and [board coverage](docs/board-adapter-evaluation.md).
+- [Submission receipt and spreadsheet tracking](docs/submission-tracking.md).
+
+Greenhouse and Ashby support guarded submission after approval. Workable and
+Lever currently support preparation; other recognized boards retain explicit
+adapter handoffs. Fixture tests and live compatibility are documented separately.
+
+## Phase 1 discovery
 
 Polls for new-grad SWE/SDE and ML/AI/Data Science openings in the USA and emails
 you when one appears.
