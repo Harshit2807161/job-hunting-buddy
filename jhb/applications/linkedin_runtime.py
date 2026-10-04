@@ -56,6 +56,8 @@ def dispatch(request, helpers):
     if linkedin_id(js("location.href")) != job_id:
         return {"state": "blocked", "board_type": "linkedin", "handoff": "waiting_login",
                 "reason": "LinkedIn requires authentication or verification", "evidence": []}
+    source_target = helpers["current_tab"]()["targetId"]
+    source_url = js("location.href")
     nodes = cdp("Accessibility.getFullAXTree")["nodes"]
     controls = [node for node in nodes if not node.get("ignored") and node.get("backendDOMNodeId")
                 and node.get("role", {}).get("value") in {"button", "link"}
@@ -87,8 +89,17 @@ def dispatch(request, helpers):
         final = js("location.href")
         if job_identity(final) == expected_identity:
             evidence.append({"url": final, "operation": "reused_observed_apply_destination"})
-            return {"state": "destination", "application_url": final, "evidence": evidence}
+            return {"state": "destination", "application_url": final, "evidence": evidence,
+                    "tab_navigation": {"native_apply_clicked": False, "source_target_id": source_target,
+                        "source_url": source_url, "destination_target_id": reusable[0]["targetId"],
+                        "before_target_ids": [t["targetId"] for t in helpers["list_tabs"]()],
+                        "expected_identity": list(expected_identity)}}
     before = {tab["targetId"] for tab in helpers["list_tabs"]()}
+    # Preserve all page IDs, including filtered startup placeholders. Ownership
+    # requires a genuinely new popup from this exact source's native action.
+    before.update(t["targetId"] for t in cdp("Target.getTargets").get("targetInfos", []) if t.get("type") == "page")
+    if helpers.get("jhb_before_apply_click"):
+        helpers["jhb_before_apply_click"]()
     _settled_click(node["backendDOMNodeId"], cdp, wait, helpers["click_at_xy"])
     found = None
     for _ in range(20):
@@ -109,6 +120,8 @@ def dispatch(request, helpers):
             return {"state": "ambiguous", "board_type": "linkedin", "reason": "Job changed during Apply navigation", "evidence": evidence}
         helpers["activate_tab"](helpers["current_tab"]()["targetId"])
         wait(0.2)
+        if helpers.get("jhb_before_apply_click"):
+            helpers["jhb_before_apply_click"]()
         _settled_click(node["backendDOMNodeId"], cdp, wait, helpers["click_at_xy"])
         for _ in range(40):
             wait(0.25)
@@ -131,4 +144,7 @@ def dispatch(request, helpers):
         return {"state": "ambiguous", "board_type": "linkedin", "reason": "Apply destination is not a public HTTPS page",
                 "evidence": evidence}
     evidence.append({"url": final, "operation": "observed_apply_destination", "expected_href": expected})
-    return {"state": "destination", "application_url": final, "evidence": evidence}
+    return {"state": "destination", "application_url": final, "evidence": evidence,
+            "tab_navigation": {"native_apply_clicked": True, "source_target_id": source_target,
+                "source_url": source_url, "destination_target_id": found["targetId"],
+                "before_target_ids": sorted(before), "expected_identity": list(expected_identity) if expected_identity else None}}

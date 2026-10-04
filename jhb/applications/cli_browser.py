@@ -24,6 +24,15 @@ class BrowserOperationError(ValueError):
         self.retryable = retryable
 
 
+class BrowserCapacityError(BrowserOperationError):
+    """Technical backpressure before tab creation or candidate mutation."""
+    condition = "browser_capacity"
+    mutation_started = False
+
+    def __init__(self, message):
+        super().__init__(message, retryable=True)
+
+
 MECHANICAL_ERRORS = {
     "Observed control has invalid click geometry", "Observed control has no clickable area",
     "Observed control is obstructed at its click position",
@@ -107,9 +116,12 @@ class BrowserUseCLI:
             "import sys,json\n"
             f"sys.path.insert(0,{str(ROOT)!r})\n"
             f"from {self._dispatch_module} import dispatch\n"
+            "from jhb.applications.tab_lifecycle import dispatch_owned,TabCapacityReached\n"
             "try:\n"
             "    helpers=dict(globals());helpers['jhb_cdp_timeout']=15\n"
-            f"    result=dispatch(json.loads({request!r}),helpers)\n"
+            f"    result=dispatch_owned(json.loads({request!r}),helpers,dispatch,dispatcher_name={self._dispatch_module!r},root={str(ROOT)!r})\n"
+            "except TabCapacityReached as exc:\n"
+            "    result={'error':str(exc),'condition':'browser_capacity','mutation_started':False}\n"
             "except ValueError as exc:\n"
             "    result={'error':str(exc)}\n"
             f"print({MARKER!r}+json.dumps(result,ensure_ascii=False))\n"
@@ -163,6 +175,9 @@ class BrowserUseCLI:
                 response = json.loads(line[len(MARKER):])
                 if isinstance(response, dict) and response.get("error"):
                     message = response["error"]
+                    if response.get("condition") == "browser_capacity" and response.get("mutation_started") is False:
+                        self.last_failure = {"operation": operation, "kind": "browser_capacity", "mutation_started": False}
+                        raise BrowserCapacityError(message)
                     self.last_failure = {"operation": operation,
                                          "kind": "browser_mechanics" if message in MECHANICAL_ERRORS else "invalid_operation"}
                     raise BrowserOperationError(message, retryable=message in MECHANICAL_ERRORS)
@@ -243,6 +258,13 @@ class BrowserUseCLI:
 
     async def screenshot(self, path: Path):
         return await self.invoke("screenshot", path=str(path.resolve()))
+
+    async def cleanup_tabs(self):
+        """Close only ledger-owned, durably confirmed and evidenced tabs."""
+        result = await self.invoke("cleanup_tabs")
+        if self.target_id in result.get("closed_targets", []):
+            self.target_id, self.expected_url = None, None
+        return result
 
     async def human_takeover(self, acknowledgement):
         return await self.invoke("takeover", acknowledgement=acknowledgement)

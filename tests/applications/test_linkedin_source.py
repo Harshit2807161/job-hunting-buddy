@@ -33,6 +33,7 @@ def test_resolver_never_exposes_form_fill_or_submit_operations():
 def helpers(control_names):
     tabs=[{'targetId':'owned','url':'https://www.linkedin.com/jobs/view/123/'}]
     return {'list_tabs':lambda:tabs,'switch_tab':lambda t:None,'wait':lambda t:None,
+        'current_tab':lambda:tabs[0],
         'js':lambda expression:'https://www.linkedin.com/jobs/view/123/',
         'cdp':lambda *args,**kwargs:{'nodes':[{'backendDOMNodeId':i+1,'role':{'value':'button'},'name':{'value':label}} for i,label in enumerate(control_names)]}}
 
