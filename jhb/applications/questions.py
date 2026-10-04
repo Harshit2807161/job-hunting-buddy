@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import booklet
 from .queue import greenhouse_identity
 
-_EDUCATION = re.compile(r"(?:school|degree|discipline|start_date|end_date)--\d+")
+_EDUCATION = re.compile(r"(?:school|degree|discipline|start_date|end_date|start-year|end-year)--\d+")
 _SECRET = re.compile(
     r"\bpassword\b|passphrase|captcha|verification[_ ]*(?:code|token)|one[- ]time|two[- ]factor|"
     r"(?:security|authentication|recovery|backup|login|sign[- ]in)\s*(?:code|token)|"

@@ -46,3 +46,9 @@ also block approval. Legacy packets without a capture manifest retain their
 existing review policy until a fresh preparation pass replaces them. Capture
 regressions use synthetic files and an isolated Chromium fixture, not live
 candidate-browser validation.
+
+Repeated education year questions are bound to their original degree record.
+Identical start/end year labels produce separate indexed questions and explicit
+answers apply only to that row. Older answers without a degree reference remain
+in the audit history but cannot override every degree's verified dates. A fresh
+verified fill resolves old technical handoffs without deleting their history.

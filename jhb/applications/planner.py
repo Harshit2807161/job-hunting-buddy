@@ -94,8 +94,13 @@ def key_for_field(field, answers):
             return "identity.phone_national"
     # The worker filters these records by employer scope. An exact approved
     # employer answer takes precedence over a reusable standing default.
+    education_year = re.fullmatch(r"(start|end)-year--(\d+)", field["ref"])
     for key, item in answers.items():
         if key.startswith("custom.") and normalize(item.get("question", "")) == label:
+            # Older ledgers merged identical year labels across degrees. Such
+            # an unscoped answer cannot overwrite both original indexed dates.
+            if education_year and item.get("field_ref") != field["ref"]:
+                continue
             if item.get("field_ref") and item["field_ref"] != field["ref"]:
                 continue
             if item.get("country_context") and item["country_context"] != field.get("country_context"):
@@ -119,7 +124,6 @@ def key_for_field(field, answers):
         key = f"education.{education[2]}.{column}"
         if key in answers:
             return key
-    education_year = re.fullmatch(r"(start|end)-year--(\d+)", field["ref"])
     if (education_year and field.get("type") == "number"
             and label == education_year[1] + " date year"):
         key = f"education.{education_year[2]}.{education_year[1]}_year"
