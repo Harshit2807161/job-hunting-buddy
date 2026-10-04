@@ -168,6 +168,23 @@ def _checks(request, helpers, packet, attempt):
 
 
 def dispatch(request, helpers):
+    raw_cdp = helpers["cdp"]
+    input_stalled = None
+    def input_cdp(method, **params):
+        nonlocal input_stalled
+        # Browser Use's IPC timeout is separate from Chrome's protocol fields.
+        # Preserve the controller's bounded input budget for wheel/hover/press.
+        if method.startswith("Input.") and helpers.get("jhb_cdp_timeout"):
+            params["_response_timeout"] = helpers["jhb_cdp_timeout"]
+        try:
+            return raw_cdp(method, **params)
+        except (TimeoutError, RuntimeError) as exc:
+            # Only a native hover/wheel timeout demonstrates stalled rendering.
+            # Generic CLI failures and terminal presses never authorize a wake.
+            if (method == "Input.dispatchMouseEvent" and params.get("type") in {"mouseMoved", "mouseWheel"}
+                    and (isinstance(exc, TimeoutError) or "Input.dispatchMouseEvent timed out" in str(exc))):
+                input_stalled = exc
+            raise
     operation = request.get("operation")
     if operation not in {"locate", "check", "document", "submit"}:
         raise ValueError("Unsupported authorized submission operation")
@@ -230,7 +247,7 @@ def dispatch(request, helpers):
         if not node:
             raise ValueError("The verified terminal button changed")
         clicked = False
-        def native_submit(x, y):
+        def native_press(x, y):
             nonlocal clicked
             # Geometry is now settled. Re-read authority immediately before
             # consuming the one-shot attempt; expiry cannot be bypassed by work.
@@ -245,13 +262,44 @@ def dispatch(request, helpers):
             write_private(Path(request["attempt_path"]), current)
             clicked = True
             helpers["js"]("window.__jhbGuard=false")
-            cdp = helpers["cdp"]
-            cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
-            cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y, buttons=0)
-            cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
-            cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
+            input_cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
+            input_cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
+        def prime_pointer(x, y):
+            # Clear a retained pointer press and hover only while submission is
+            # guarded. IPC failure here cannot consume the one-shot click.
+            if helpers["js"]("window.__jhbGuard===true") is not True:
+                raise ValueError("Pointer priming requires the application guard")
+            input_cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
+            input_cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y, buttons=0)
+            helpers["wait"](0.05)
+            # Hover can move or cover the button. Settle its exact DOM node
+            # again, then re-read authority and retained fields before pressing.
+            _settled_click(node["backendDOMNodeId"], input_cdp, helpers["wait"], native_press)
+        def verify_guarded_owned_draft():
+            _, current, _ = load_gate(request["authorization_path"], request["attempt_path"])
+            owned = helpers["current_tab"]()
+            identity = greenhouse_identity(current["application_url"])
+            if (owned.get("targetId") != request["target_id"]
+                    or greenhouse_identity(owned.get("url", "")) != identity
+                    or greenhouse_identity(helpers["js"]("location.href")) != identity
+                    or helpers["js"]("window.__jhbGuard===true") is not True):
+                raise ValueError("Owned application identity or guard changed during pointer recovery")
+            if _checks(request, helpers, packet, current) != second:
+                raise ValueError("Retained application changed during pointer recovery")
         try:
-            _settled_click(node["backendDOMNodeId"], helpers["cdp"], helpers["wait"], native_submit)
+            try:
+                _settled_click(node["backendDOMNodeId"], input_cdp, helpers["wait"], prime_pointer)
+            except (TimeoutError, RuntimeError):
+                if clicked or input_stalled is None or not callable(helpers.get("activate_tab")):
+                    raise
+                # A hidden renderer may stop servicing native input. Wake only
+                # this verified, guarded draft once, before consuming the click.
+                verify_guarded_owned_draft()
+                helpers["activate_tab"](request["target_id"])
+                helpers["wait"](0.5)
+                verify_guarded_owned_draft()
+                input_stalled = None
+                _settled_click(node["backendDOMNodeId"], input_cdp, helpers["wait"], prime_pointer)
             for _ in range(40):
                 helpers["wait"](0.25)
                 body = helpers["js"]("document.body.innerText")

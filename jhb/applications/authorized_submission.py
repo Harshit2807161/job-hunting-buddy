@@ -154,11 +154,16 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
             latest = json.loads(safe_attempt.read_text())
         except (OSError, ValueError, TypeError):
             safe_attempt, latest = None, {}
+        transport = isinstance(exc, RuntimeError) and str(exc) in {
+            "Browser Use CLI failed; run browser-use --doctor",
+            "Browser Use CLI returned no structured result",
+        }
         result = {"state": "uncertain" if latest.get("runtime_click_started") else "waiting_review",
-                  "reason": "Authorized submission needs technical review", "error_kind": type(exc).__name__,
+                  "reason": "Authorized submission needs technical review",
+                  "error_kind": "browser_transport" if transport else type(exc).__name__,
                   "click_started": bool(latest.get("runtime_click_started")),
                   "retryable": not latest.get("runtime_click_started") and (
-                      isinstance(exc, (TimeoutError, ConnectionError, FileNotFoundError))
+                      transport or isinstance(exc, (TimeoutError, ConnectionError, FileNotFoundError))
                       or isinstance(exc, BrowserOperationError) and exc.retryable)}
         if safe_attempt:
             write_private(attempt_path.parent / "runtime-error.json", result)
