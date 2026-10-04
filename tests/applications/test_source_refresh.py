@@ -105,6 +105,46 @@ def test_default_pipeline_refreshes_stale_source_then_passes_verified_country_sa
     assert json.loads((directory / "source-refresh.json").read_text())["source_refresh"]["method"] == "isolated_playwright_mcp"
 
 
+def test_ambiguous_refreshed_country_cannot_reuse_stale_us_authorization(setup, monkeypatch):
+    conn, book = setup
+    queue.enqueue(conn, [{"url": URL, "dedupe_hash": "synthetic-old-source", "title": "Software Engineer", "work_country": "United States",
+                          "locations": ["United States"],
+                          "verified_job_description": description(retrieved_at=time.time()-86401)}])
+    text = "Python backend engineering role available in United States or Canada."
+    latest = description(text=text, sha256=hashlib.sha256(text.encode()).hexdigest(), country_context=None)
+    monkeypatch.setattr(eligibility, "fetch_description", lambda *a, **k: None)
+    async def mcp(*args, **kwargs): return outcome(verified_job_description=latest)
+    from jhb.applications import worker as worker_module
+    from jhb.applications.planner import deterministic_plan
+    class Form:
+        blocked_requests = 0
+        values = []
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {"fields": [{"ref": "authorization", "label": "Work authorization", "type": "combobox", "required": True}],
+                    "buttons": [{"ref": "submit", "label": "Submit application"}]}
+        async def fill(self, field, value): self.values.append(value)
+    form = Form()
+    seen = []
+    async def prepare(candidate, *args, **kwargs):
+        seen.append(candidate)
+        assert candidate["work_country"] is None
+        # Exercise the real observer/planner: even old US location metadata
+        # cannot turn an ambiguous current jurisdiction into a verified answer.
+        result, _ = await worker_module.prepare(None, candidate, {
+            "eligibility.authorized_us": booklet.answer(True, "Synthetic verified US authorization"),
+            "eligibility.authorized_canada": booklet.answer(False, "Synthetic verified Canadian authorization")},
+            deterministic_plan, None, cli_actions=form)
+        return result, book.parent / "review.html"
+    monkeypatch.setattr(worker_module, "run_job", prepare)
+    result = pipeline.run_cycle(conn, book, resolver=mcp)
+    assert result["applications_prepared"] == len(seen) == 1
+    assert result["states"] == {"waiting_input": 1} and form.values == []
+    handoff = next(iter(booklet.load(book)["question_handoffs"].values()))
+    assert handoff["question"] == "Work authorization" and handoff["status"] == "pending"
+
+
 @pytest.mark.parametrize("result,expected", [(outcome(state="error"), "retry"),
                                            (outcome(verified_job_description=None), "unsupported"),
                                            (outcome(closed=True), "skipped")])

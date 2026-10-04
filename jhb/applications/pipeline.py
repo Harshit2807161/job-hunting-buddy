@@ -369,7 +369,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                 return refreshed, await write_packet(None, directory, job, refreshed)
             context = refreshed["context"]
             booklet.write_private(directory / "public-job-context.json", context)
-            job = {**job, "work_country": context.get("country_context") or job.get("work_country"),
+            # The refreshed source owns jurisdiction evidence. An ambiguous or
+            # absent current country must not inherit an older US binding.
+            job = {**job, "work_country": context.get("country_context"),
                    "advertised_salary_ranges": context.get("advertised_salary_ranges", []),
                    "verified_job_description": context["verified_job_description"]}
             return await run_job(job, book, **kwargs)
