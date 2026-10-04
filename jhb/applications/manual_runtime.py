@@ -429,8 +429,6 @@ def dispatch(request, helpers):
         wait(0.3)
         return {"continued": True}
     if operation == "screenshot":
-        path = Path(request["path"])
-        helpers["capture_screenshot"](str(path), full=True)
-        path.chmod(0o600)
-        return {"screenshot": str(path)}
+        from .screenshot_runtime import capture_from_top
+        return capture_from_top(request, helpers)
     raise ValueError("Unsupported manual CLI operation")

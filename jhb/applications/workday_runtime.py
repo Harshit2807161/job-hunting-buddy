@@ -201,8 +201,8 @@ def dispatch(request, helpers):
         from ..config import ROOT
         if not path.is_relative_to((ROOT/"private").resolve()):
             raise ValueError("Workday screenshots must remain private")
-        helpers["screenshot"](str(path))
-        return {"path": str(path)}
+        from .screenshot_runtime import capture_from_top
+        return capture_from_top({**request, 'path':str(path)}, helpers)
     if operation == "begin":
         manual = [b for b in buttons() if normalize(b["label"]) == "apply manually"]
         if len(manual) == 1:
