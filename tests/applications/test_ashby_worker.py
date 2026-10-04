@@ -15,7 +15,9 @@ def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_
     from jhb import eligibility
     from jhb.applications import role_fit
     monkeypatch.setattr(eligibility,'assess_job',lambda job:{'state':'eligible','reason':'Synthetic verified JD','policy':'synthetic'})
-    monkeypatch.setattr(role_fit,'assess',lambda job,book,role:{'state':'eligible','reason':'Synthetic role-fit dependency'})
+    fit = {'state':'eligible','reason':'Synthetic role-fit dependency',
+           'review_notes':['Two-year preference exceeds documented experience; review this minor gap.']}
+    monkeypatch.setattr(role_fit,'assess',lambda job,book,role:fit)
     instances=[]
     class FixtureCLI:
         blocked_requests=0
@@ -45,7 +47,9 @@ def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_
     assert instances[0].fills=={'name':'Sam Example','resume':str(sde)}
     assert result['board']=='ashby' and result['planner_skill']=='skills/prepare-ashby/SKILL.md'
     assert result['selected_role']=='sde'
-    assert json.loads((path.parent/'packet.json').read_text())['selected_role']=='sde'
+    packet=json.loads((path.parent/'packet.json').read_text())
+    assert packet['selected_role']=='sde'
+    assert packet['role_fit']==fit and result['role_fit']==fit
     if unknown:assert result['missing'][0]['question']=='Are you licensed in Example State?'
     audit=json.loads((path.parent/'planner-audit.json').read_text())
     assert audit[0]['board']=='ashby' and audit[0]['skill']=='skills/prepare-ashby/SKILL.md'

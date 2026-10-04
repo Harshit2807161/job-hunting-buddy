@@ -9,6 +9,7 @@ import pytest
 
 from jhb import config
 from jhb.applications import boards, role_fit
+from jhb.applications.booklet import answer
 
 URL = "https://jobs.ashbyhq.com/synthetic/11111111-2222-3333-4444-555555555555"
 
@@ -86,3 +87,107 @@ def test_ci_and_missing_verified_description_never_launch_live_reviewer(inputs, 
     assert role_fit.assess(*inputs)["state"] == "unsupported"
     inputs[0]["verified_job_description"]["text"] = "Modified unverified description"
     assert role_fit.assess(*inputs)["state"] == "unsupported"
+
+
+def update_description(job, text):
+    job['verified_job_description'].update(text=text, sha256=hashlib.sha256(text.encode()).hexdigest())
+
+
+def test_minor_early_career_experience_gap_survives_as_honest_review_note(inputs, monkeypatch):
+    monkeypatch.setenv('JHB_ROLE_FIT_REVIEW', '1')
+    job, book, role = inputs
+    update_description(job, 'Junior data engineer: build Python and SQL data pipelines. Requires two years of relevant experience.')
+    book['roles'][role]['role.experience'] = answer(
+        'Synthetic Analytics  Jan 2025 – Apr 2026\nEngineer\n• Built Python/SQL validation pipelines.', 'Synthetic resume')
+    original = json.dumps(book, sort_keys=True)
+    calls = []
+    result = role_fit.assess(job, book, role, execute=executor({
+        'verdict':'fit', 'reason':'Strong transferable early-career pipeline skills support preparation for personal review.',
+        'matched_requirements':['Verified Python and SQL pipeline work'], 'unsupported_core_requirements':[],
+        'review_notes':['The role lists two years; documented relevant work is about sixteen months, not two years.']}, calls))
+    assert result['state'] == 'eligible'
+    assert result['unsupported_core_requirements'] == []
+    assert result['review_notes'] == ['The role lists two years; documented relevant work is about sixteen months, not two years.']
+    assert json.dumps(book, sort_keys=True) == original
+    supplied = json.loads(calls[0].split('EVIDENCE:\n', 1)[1])
+    assert supplied['candidate']['role.experience']['value'] == book['roles'][role]['role.experience']['value']
+    assert 'do not round it up' in calls[0].lower()
+    assert 'personal portal review' in calls[0]
+
+
+def test_expected_degree_and_verified_availability_are_evidence_not_an_earned_degree(inputs, monkeypatch):
+    monkeypatch.setenv('JHB_ROLE_FIT_REVIEW', '1')
+    job, book, role = inputs
+    book['answers'] = {'preferences.start_date':answer('January 2027', 'Synthetic approved availability'),
+                      'eligibility.authorized_us':answer(False, 'Synthetic factual answer')}
+    book['education_records'] = [{'status':'verified', 'source':'Synthetic resume', 'degree':'Master of Science',
+        'major':'Computer Science', 'end_date':'2026-12-14', 'expected':True}]
+    before = json.dumps(book, sort_keys=True)
+    calls = []
+    result = role_fit.assess(job, book, role, execute=executor({
+        'verdict':'fit', 'reason':'The expected degree precedes the verified proposed start.',
+        'matched_requirements':['Relevant verified engineering skills'], 'unsupported_core_requirements':[],
+        'review_notes':['MS expected December 2026; not currently earned. Proposed availability is January 2027.']}, calls))
+    supplied = json.loads(calls[0].split('EVIDENCE:\n', 1)[1])
+    assert result['state'] == 'eligible'
+    assert supplied['earliest_availability'] == {'value':'January 2027', 'calendar_value':'2027-01',
+        'precision':'month', 'source':'Synthetic approved availability', 'status':'verified'}
+    assert supplied['education'][0]['expected'] is True
+    assert 'eligibility.authorized_us' not in supplied['candidate']
+    assert json.dumps(book, sort_keys=True) == before
+    assert 'immediately or at application time' in calls[0]
+
+
+@pytest.mark.parametrize('value,expected,precision', [
+    ('Jan 2027', '2027-01', 'month'), ('2027-01', '2027-01', 'month'),
+    ('2027-01-14', '2027-01-14', 'day'), ('2027-02-30', None, None), ('ASAP', None, None),
+])
+def test_availability_preserves_original_calendar_precision_and_rejects_guessing(inputs, value, expected, precision):
+    job, book, role = inputs
+    book['answers'] = {'preferences.start_date':answer(value, 'Synthetic approved availability')}
+    result = role_fit.evidence(job, book, role)['earliest_availability']
+    if expected is None:
+        assert result is None
+    else:
+        assert result['calendar_value'] == expected and result['precision'] == precision and result['value'] == value
+    book['answers']['preferences.start_date']['status'] = 'needs_input'
+    assert role_fit.evidence(job, book, role)['earliest_availability'] is None
+    book['answers']['preferences.start_date'] = answer(value, '')
+    assert role_fit.evidence(job, book, role)['earliest_availability'] is None
+
+
+@pytest.mark.parametrize('title,description,gap', [
+    ('Senior Data Scientist', 'Own department-wide architecture, mentor teams; eight years of production experience required.',
+     'Actual senior architecture/leadership and eight years of professional depth unsupported'),
+    ('Software Engineer', 'Design embedded real-time robotics motion controllers and sensor firmware.',
+     'Core embedded robotics motion-control specialization unsupported'),
+])
+def test_real_seniority_and_core_specialization_are_still_hard_mismatches(inputs, monkeypatch, title, description, gap):
+    monkeypatch.setenv('JHB_ROLE_FIT_REVIEW', '1')
+    job, book, role = inputs
+    job['title'] = title
+    update_description(job, description)
+    result = role_fit.assess(job, book, role, execute=executor({
+        'verdict':'not_fit', 'reason':gap, 'matched_requirements':['Python syntax only'],
+        'unsupported_core_requirements':[gap], 'review_notes':[]}, []))
+    assert result['state'] == 'skipped' and result['unsupported_core_requirements'] == [gap]
+
+
+def test_policy_bump_and_availability_change_invalidate_semantic_cache(inputs, monkeypatch):
+    monkeypatch.setenv('JHB_ROLE_FIT_REVIEW', '1')
+    job, book, role = inputs
+    current_policy = role_fit.POLICY
+    calls = []
+    run = executor({'verdict':'fit', 'reason':'Relevant APIs', 'matched_requirements':['Verified REST APIs'],
+                    'unsupported_core_requirements':[]}, calls)
+    monkeypatch.setattr(role_fit, 'POLICY', 'resume-core-role-fit-v1')
+    old = role_fit.assess(job, book, role, execute=run)
+    monkeypatch.setattr(role_fit, 'POLICY', current_policy)
+    new = role_fit.assess(job, book, role, execute=run)
+    assert old['evidence_hash'] != new['evidence_hash'] and len(calls) == 2
+    assert new['review_notes'] == []  # Optional new schema remains compatible with older verdict shape.
+    book['answers'] = {'preferences.start_date':answer('January 2027','Synthetic approved availability')}
+    changed = role_fit.assess(job, book, role, execute=run)
+    assert changed['evidence_hash'] != new['evidence_hash'] and len(calls) == 3
+    assert role_fit.assess(job, book, role, execute=run)['evidence_hash'] == changed['evidence_hash']
+    assert len(calls) == 3

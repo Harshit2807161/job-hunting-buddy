@@ -56,6 +56,14 @@ and submission of an older review draft. Resume-backed role-fit review follows
 official-description verification, before any browser action. When independent
 semantic review is enabled, submission requires an eligible independent verdict
 bound to the current job description, selected role, and verified career evidence.
+The fit screen rejects unsupported core specializations and genuinely senior
+roles. A small shortfall against a generic junior experience requirement can
+proceed to personal portal review when relevant transferable skills are strong;
+the exact gap remains in `packet.role_fit.review_notes`. Verified availability
+helps assess a degree expected before the proposed start, while that degree
+remains expected in candidate records and factual application answers. This
+does not satisfy a requirement to hold the degree immediately. Policy changes
+invalidate older semantic fit decisions.
 
 The manager writes `private/pipeline-status.json` with its current stage and
 aggregate queue counts, refreshing every 15 seconds during asynchronous work.

@@ -567,6 +567,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         except Exception as exc:
             result = failure_result(exc, actions)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
+        result["role_fit"] = fit
         result.update(board=board, planner_skill=adapter(board).get("skill"))
         # Keep the persistent browser and the unsaved draft open at handoff.
         packet = await persist(None, directory, job, result, cli_actions=actions)
