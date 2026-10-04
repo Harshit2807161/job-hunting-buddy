@@ -34,7 +34,7 @@ private artifacts; candidate answers are not reproduced here.
 | [Harvey — Software Engineer, New Grad (2027)](https://jobs.ashbyhq.com/harvey/b0996df6-6b6e-42be-a4f9-0084536068f5/application) | Ashby | Adapter found 23 fields and verified all 22 required fields, including a selected location autocomplete, checkbox groups and team matching. The calendar requires an explicitly approved exact date; it was handled through observed calendar controls. |
 | [Parasail — Software Engineer, Forward Deploy — New Graduate '27](https://jobs.ashbyhq.com/parasail/da595923-4e35-4ba1-875d-383276069cf7) | Ashby | Actual form requires only name, email and PDF resume. All three retained; guarded draft ready for review. No graduation-screening question appeared, so posting eligibility remains a review consideration. |
 | [Texas Sports Academy — AI Operations Associate](https://apply.workable.com/texas-sports-academy-main/j/FC4151F98F/) | Workable | Public application, native contact fields, separate resume/avatar uploads, text cover letter and education/experience repeaters. Manual preparation reached review with no submission; reusable Workable execution remains incomplete. |
-| [Broadridge — Junior Full Stack Software Engineer (Hybrid)](https://broadridge.wd5.myworkdayjobs.com/careers/job/Newark-NJ/Full-Stack-Software-Engineer--Hybrid-_JR1086388) | Workday | No Google option appeared. An explicitly approved tenant account unlocked the seven-step wizard. Contact information, resume, education and employment repeaters were retained; two new factual checks paused Application Questions. Later disclosure/review steps remain unvalidated until those answers arrive. |
+| [Broadridge — Junior Full Stack Software Engineer (Hybrid)](https://broadridge.wd5.myworkdayjobs.com/careers/job/Newark-NJ/Full-Stack-Software-Engineer--Hybrid-_JR1086388) | Workday | No Google option appeared. An explicitly approved tenant account unlocked the wizard. Live CLI validation reached guarded Review, step six after authentication, with contact information, resume, education/employment repeaters, all nine application questions, voluntary disclosures and self-identification retained. No final submission occurred. |
 
 These results cover the observed postings and controls. A ready draft means
 reviewable field completion, not a submitted application or a guarantee of
@@ -51,6 +51,14 @@ employer eligibility. No final-submit action is part of the evaluation.
 | Workable native inputs | Reuse native text, file and button actions with observed Workable labels and attributes. Resume and avatar file inputs must be distinguished; dynamic input IDs alone are insufficient. |
 | Workable education/experience repeaters | Add reusable repeater support before automatic dispatch. Live manual work identified Add/Update/Edit controls, month/year dates, current-employment controls and duplicate summary textarea IDs. A future graduation date rejected by the picker was retained truthfully in degree text and the original resume, with the end-date field left blank. |
 | Workday tenant access and multi-page state | A dedicated adapter is justified by the seven-step wizard, saved repeaters, degree/major catalogs, date spinbuttons and sticky-footer occlusion. The observed tenant has no Google route; explicit site-specific instructions govern account creation. Catalog values must be checked after the popup closes; month/year controls cannot be treated as ordinary textboxes. |
+
+The observed Workday wizard returned a transient server error while advancing.
+One site-directed refresh recovered the saved contact and experience sections,
+but questionnaire selections reset. Recovery must re-audit each restored section
+and re-enter only previously verified answers before continuing. The final Review
+page confirmed retained values across all sections. No Skills field, education
+date controls, sexual-orientation question or separate cover-letter upload was
+offered on this tenant's observed form; other tenants may differ.
 
 The current `ManualATSCLI` is an explicit Ashby scope around the existing CLI
 transport; it is not wired into the scheduled dispatcher. Location autocomplete
