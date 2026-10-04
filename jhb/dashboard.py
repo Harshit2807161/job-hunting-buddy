@@ -304,7 +304,7 @@ class DashboardStore:
             if kind in {"applications", "sources", "sheet_delivery"} and isinstance(values, dict)}
         allowed_reasons = {"repair_quarantine", "draft_capacity", "candidate_answers_required", "automation_paused",
                            "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted",
-                           "portal_disabled", "portal_required", "local_browser_unavailable", "no_approvals",
+                           "portal_disabled", "portal_required", "local_browser_unavailable", "local_browser_disconnected", "no_approvals",
                            "external_approval_active", "operation_failed", "operation_interrupted", "approval_crash_recovered",
                            "service_window_ended", "service_window_changed"}
         safe["reason_codes"] = [reason for reason in data.get("reason_codes", []) if reason in allowed_reasons]

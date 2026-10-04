@@ -46,7 +46,27 @@ def _gate(mode):
             return "local_browser_unavailable"
     except ValueError:
         return "local_browser_unavailable"
+    from .browser_connection import available
+    if not available(endpoint):
+        return "local_browser_disconnected"
     return None
+
+
+def record_gate(mode, reason):
+    """Publish a gate outcome without opening SQLite or overwriting an owner."""
+    state = "paused" if reason == "automation_paused" else "blocked" if reason in {
+        "repair_quarantine", "local_browser_disconnected"} else "disabled"
+    if reason != "ci_disabled":
+        with _worker_lock("approved-worker.lock" if mode == "approved" else "application-worker.lock") as owned:
+            if owned:
+                if mode == "approved":
+                    SubmissionStatus().update(status=state, reason=reason)
+                else:
+                    from .pipeline_status import Heartbeat
+                    # Disabled is a service outcome; the dashboard's pipeline
+                    # status vocabulary uses blocked for a stopped dispatch.
+                    Heartbeat(None).update(status=state if state != "disabled" else "blocked", reasons=[reason])
+    return {"state": state, "reason_code": reason}
 
 
 @contextmanager
@@ -154,14 +174,7 @@ def once(mode, *, book_path=booklet.DEFAULT_PATH, connector=None, prepare=None, 
         raise ValueError("Unknown worker service mode")
     reason = _gate(mode)
     if reason:
-        state = "paused" if reason == "automation_paused" else "blocked" if reason == "repair_quarantine" else "disabled"
-        if mode == "approved" and reason != "ci_disabled":
-            # Own the status destination even for a gate outcome. Do not replace
-            # an active dispatch's heartbeat from a second service process.
-            with _approved_lock() as owned:
-                if owned:
-                    SubmissionStatus().update(status=state, reason=reason)
-        return {"state": state, "reason_code": reason}
+        return record_gate(mode, reason)
     if mode == "prepare":
         if prepare is None:
             from .pipeline import run_cycle
@@ -182,7 +195,7 @@ def once(mode, *, book_path=booklet.DEFAULT_PATH, connector=None, prepare=None, 
         # Pause/repair may have arrived between the first gate and lock claim.
         reason = _gate(mode)
         if reason:
-            state = "paused" if reason == "automation_paused" else "blocked" if reason == "repair_quarantine" else "disabled"
+            state = "paused" if reason == "automation_paused" else "blocked" if reason in {"repair_quarantine", "local_browser_disconnected"} else "disabled"
             SubmissionStatus().update(status=state, reason=reason)
             return {"state": state, "reason_code": reason}
         conn = (connector or store.connect)()

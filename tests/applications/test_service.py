@@ -19,6 +19,8 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setenv("JHB_REQUIRE_PORTAL_APPROVAL", "1")
     monkeypatch.setenv("JHB_PORTAL_SUBMISSIONS_ENABLED", "1")
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
+    from jhb.applications import browser_connection
+    monkeypatch.setattr(browser_connection, "available", lambda *a, **kw: True)
     database = tmp_path / "synthetic.sqlite3"
     book = tmp_path / "private" / "book.json"
     return lambda: store.connect(database), book

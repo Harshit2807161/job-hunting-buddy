@@ -88,3 +88,13 @@ and fixture file locks. It covers pauses, quarantine, CI, local-browser scope,
 bounded settings, idle approvals, concurrent ownership, live heartbeat timing,
 and expiry. These checks do not submit real applications or constitute live
 browser validation.
+
+Both local service lanes and the scheduled `jhb-apply pipeline` entry check the
+existing loopback Chrome endpoint before opening SQLite or claiming candidate
+jobs. A bounded, credential-free GET of `/json/version` must identify Chrome and
+a matching local browser websocket. Redirects, proxies, remote endpoints and
+oversized responses are rejected. A closed or unreachable browser yields
+`blocked / local_browser_disconnected`, refreshes private dashboard status, and
+leaves job attempts untouched. This check never starts Chrome or sends email.
+Phase 1 discovery and separate isolated source classification remain available;
+the candidate reconnects Chrome explicitly before preparation resumes.

@@ -74,6 +74,9 @@ def main(argv=None):
     letter.add_argument("--replacements", type=Path, required=True)
     letter.add_argument("--output", type=Path, required=True)
     args = ap.parse_args(argv)
+    if args.command == "pipeline" and os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
+        print(json.dumps({"state": "disabled", "reason_code": "ci_disabled"}))
+        return 0
     config.load_dotenv()
     config.refresh_from_env()
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(config.ROOT / ".local-browsers"))
@@ -119,6 +122,18 @@ def main(argv=None):
         return 0
     if args.command in {"worker", "pipeline"} and args.if_enabled and os.environ.get("JHB_APPLICATIONS_ENABLED") != "1":
         return 0
+    if args.command == "pipeline":
+        from .browser_connection import available
+        reason = None
+        for path, candidate in [(config.ROOT / "private" / "pipeline-pause.json", "automation_paused"),
+                                (config.ROOT / "private" / "overnight-monitor" / "repair-pending.json", "repair_quarantine")]:
+            if path.exists() or path.is_symlink():
+                reason = candidate
+                break
+        if reason or not available():
+            from .service import record_gate
+            print(json.dumps(record_gate("prepare", reason or "local_browser_disconnected")))
+            return 0
     conn = store.connect()
     queue.initialize(conn)
     try:

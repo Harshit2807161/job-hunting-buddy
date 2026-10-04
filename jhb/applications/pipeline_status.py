@@ -15,7 +15,8 @@ STAGES = {"initializing", "source_resolution", "preparation", "submission", "not
 PROCESSED = {"sources_checked", "applications_queued", "sources_replayed", "applications_prepared",
              "question_handoffs", "auto_requeued", "technical_recovered", "technical_retries"}
 REASONS = {"repair_quarantine", "manager_active", "draft_capacity", "candidate_answers_required",
-           "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted", "automation_paused"}
+           "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted", "automation_paused",
+           "local_browser_disconnected", "local_browser_unavailable", "preparation_disabled", "portal_required"}
 
 
 def _timestamp(now=None):
@@ -25,6 +26,8 @@ def _timestamp(now=None):
 def aggregates(conn):
     """No queue initialization, candidate records, or application URL exposure."""
     result = {}
+    if conn is None:
+        return result
     for key, table in [("applications", "applications"), ("sources", "application_sources"),
                        ("sheet_delivery", "submission_sheet_delivery")]:
         try:
