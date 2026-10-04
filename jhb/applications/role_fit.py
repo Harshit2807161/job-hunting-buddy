@@ -57,11 +57,18 @@ def evidence(job, book, role):
     """Exclude identity/disclosures/credentials: this review needs career evidence."""
     candidate = {key: item for key, item in book.get("roles", {}).get(role, {}).items()
                  if key.startswith("role.") and item.get("status") == "verified"}
+    values = {**book.get("answers", {}), **book.get("roles", {}).get(role, {})}
+    preferences = {key: values[key] for key in ("preferences.relocation", "preferences.remote")
+                   if values.get(key, {}).get("status") == "verified" and values[key].get("source")}
+    policy = book.get("workflow_preferences", {})
+    if policy.get("source") and policy.get("office_locations"):
+        preferences["office_locations"] = {"value": policy["office_locations"], "source": policy["source"]}
     return {"policy": POLICY, "job": {k: job.get(k) for k in ("url", "title", "company")},
             "description": verified_description(job), "selected_role": role,
             "candidate": candidate,
             "assessment_date": datetime.now(timezone.utc).date().isoformat(),
             "earliest_availability": _verified_availability(book, role),
+            "work_preferences": preferences,
             "education": [r for r in book.get("education_records", []) if r.get("status") == "verified"]}
 
 
@@ -121,6 +128,9 @@ specializations, unrelated disciplines, quota-carrying sales jobs, and actual se
 work unsupported by the resume. Judge seniority using title, scope, autonomy, leadership,
 and the depth of required experience together. A genuinely senior role needing substantial
 professional experience is a hard mismatch even when some tools match.
+Reuse supplied verified work_preferences: do not request confirmation of relocation or office
+willingness that is already explicitly saved. Willingness does not establish legal eligibility,
+current residence, or prior onsite experience; keep those factual questions separate.
 Do not automatically reject an otherwise strong junior/early-career match because documented
 experience is slightly below a generic one-to-three-year requirement. For example, a two-year
 listing and roughly sixteen months of relevant internships/work may be a potential fit when

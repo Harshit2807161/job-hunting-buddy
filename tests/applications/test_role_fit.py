@@ -41,6 +41,22 @@ def test_robotics_company_backend_role_is_not_rejected_by_company_name(inputs):
     assert role_fit.assess({**job, "company": "Synthetic Robotics"}, book, role)["state"] == "eligible"
 
 
+def test_work_preferences_reuse_verified_willingness_without_identity_or_disclosures(inputs):
+    job, book, role = inputs
+    book['answers'] = {'preferences.relocation': answer(True, 'Synthetic explicit relocation preference'),
+                       'preferences.remote': answer(None), 'identity.email': answer('sam@example.test'),
+                       'disclosure.gender': answer('Synthetic private disclosure')}
+    book['workflow_preferences'] = {'office_locations': 'Willing to work onsite or hybrid',
+                                    'source': 'Synthetic explicit office preference'}
+    data = role_fit.evidence(job, book, role)
+    assert set(data['work_preferences']) == {'preferences.relocation', 'office_locations'}
+    assert data['work_preferences']['preferences.relocation']['value'] is True
+    assert 'sam@example.test' not in json.dumps(data)
+    before = role_fit.evidence_hash(job, book, role)
+    book['answers']['preferences.relocation']['value'] = False
+    assert role_fit.evidence_hash(job, book, role) != before
+
+
 def test_explicit_exact_job_exclusion_precedes_fit(inputs):
     job, book, role = inputs
     book["job_exclusions"] = {job["dedupe_hash"]: {"status": "verified", "source": "Explicit synthetic user refusal"}}
