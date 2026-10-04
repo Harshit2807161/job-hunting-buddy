@@ -321,9 +321,9 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
             raise ValueError("This question cannot become a shared profile default")
         # Validate and serialize candidate edits against CLI/worker ledger writers
         # before revoking approvals or changing durable queue state.
-        if before_save is not None:
-            before_save(record)
         stamp = _now()
+        if before_save is not None:
+            before_save(record, stamp)
         source = {"provider": "explicit user question response", "question_id": question_id,
                   "scope": record["scope"], "answered_at": stamp,
                   "contexts": list(record["contexts"])}

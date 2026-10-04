@@ -484,6 +484,36 @@ def _prepare_review_edits(conn, question):
     return reviewed
 
 
+def _prepare_review_edit_intents(conn, question, book_path, answer_revision):
+    """Bind durable refill intent to an explicit edit of this reviewed snapshot.
+
+    Generic answered records cannot requeue reviewed applications. This private
+    proof survives a book/SQL boundary failure without authorizing submission.
+    Incomplete legacy drafts get no automatic reviewed-edit recovery proof.
+    """
+    from .applications import approvals
+    snapshots = {}
+    for job_hash, context in question.get("contexts", {}).items():
+        if context.get("resolved") or not HASH.fullmatch(job_hash):
+            continue
+        try:
+            _, binding, revision = approvals._draft(conn, job_hash, book_path)
+            snapshots[job_hash] = (binding, revision)
+        except (ValueError, OSError, KeyError, TypeError):
+            continue
+    reviewed = _prepare_review_edits(conn, question)
+    for job_hash in reviewed:
+        if job_hash not in snapshots:
+            continue
+        binding, revision = snapshots[job_hash]
+        question.setdefault("candidate_edit_intents", {})[job_hash] = {
+            "provider": "local_dashboard_explicit_edit", "question_id": question["id"],
+            "answer_revision": answer_revision, "job_hash": job_hash,
+            "packet_path": binding["packet_path"], "packet_sha256": binding["packet_sha256"],
+            "review_revision": revision, "review_binding": binding, "approval_revoked": True}
+    return reviewed
+
+
 def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
     root = Path(root or config.ROOT).resolve()
     store = DashboardStore(root, Path(db_path or config.DB_PATH).absolute(),
@@ -594,7 +624,8 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     review_edits = []
                     affected = questions.answer(question_id, payload.value, store.book_path,
                                                 conn, decline=payload.decline, expected_revision=payload.revision,
-                                                before_save=lambda current: review_edits.extend(_prepare_review_edits(conn, current)),
+                                                before_save=lambda current, stamp: review_edits.extend(
+                                                    _prepare_review_edit_intents(conn, current, store.book_path, stamp)),
                                                 after_save=saved_jobs.extend)
                     # This transition is an explicit candidate edit, not a
                     # generic resume. Paused workers leave queued edits alone

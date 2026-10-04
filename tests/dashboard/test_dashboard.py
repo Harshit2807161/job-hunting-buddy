@@ -484,3 +484,40 @@ def test_required_ledger_question_prevents_approval_of_previously_complete_inven
         json={"revision": prior["approval"]["revision"], "acknowledged_blank_refs": ["why"]})
     assert response.status_code == 409
     assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
+
+
+
+def test_failed_optional_edit_sql_keeps_exact_durable_refill_intent_and_revoked_authority(portal, monkeypatch):
+    root, conn, book, client, headers = portal
+    job, folder, _ = reviewable(portal)
+    q = pending_question(job, book, "Why this company?", "why", required=False)
+    old_packet, binding, revision = approvals._draft(conn, job["dedupe_hash"], book)
+    approvals.approve(conn, job["dedupe_hash"], revision, ["why"], book)
+    real_answer = questions.answer
+    def save_then_queue_failure(*args, **kwargs):
+        real_answer(*(*args[:3], None), **kwargs)
+        raise sqlite3.OperationalError("Synthetic database transition unavailable")
+    monkeypatch.setattr(questions, "answer", save_then_queue_failure)
+    response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
+        json={"value": "Candidate's own synthetic answer", "revision": q["updated_at"]})
+    assert response.status_code == 202 and response.json()["resume_pending"] is True
+    record = booklet.load(book)["question_handoffs"][q["id"]]
+    intent = record["candidate_edit_intents"][job["dedupe_hash"]]
+    assert intent == {"provider": "local_dashboard_explicit_edit", "question_id": q["id"],
+        "answer_revision": record["answer_revision"], "job_hash": job["dedupe_hash"],
+        "packet_path": str(folder / "packet.json"), "packet_sha256": binding["packet_sha256"],
+        "review_revision": revision, "review_binding": binding, "approval_revoked": True}
+    assert approvals._digest(intent["review_binding"]) == intent["review_revision"]
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "waiting_review"
+    assert conn.execute("SELECT state FROM application_approvals").fetchone()[0] == "revoked"
+    assert json.loads((folder / "packet.json").read_text()) == old_packet
+
+
+def test_ordinary_answer_has_no_review_edit_intent(portal):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    q = pending_question(job, book)
+    response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
+        json={"value": False, "revision": q["updated_at"]})
+    assert response.status_code == 200
+    assert not booklet.load(book)["question_handoffs"][q["id"]].get("candidate_edit_intents")
