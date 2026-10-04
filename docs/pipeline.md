@@ -256,10 +256,12 @@ is handed off before further filling. Screenshots are optional evidence and
 cannot turn a valid preparation result into a file-not-found failure.
 
 One existing Phase 1 Greenhouse job completed through the real connected
-pipeline using the local Browser Use CLI: 22 retained fields/documents, zero
+pipeline using the local Browser Use CLI: 23 retained fields/documents, zero
 missing required answers, a working final submit control, and its submission
-guard still enabled. SMTP accepted its review notification; the delivery key
-was persisted. Two recovered jobs redirected outside supported individual forms
+guard still enabled. The attached resume was re-uploaded from the approved SDE
+source with a matching SHA-256 and retained in the review packet even after
+Greenhouse removed its file input. SMTP accepted its review notification; the
+delivery key was persisted. Two recovered jobs redirected outside supported individual forms
 and stopped as unsupported. A fresh scheduled wrapper cycle exited successfully
 without another review or failure email. Exact job and browser evidence stay in
 ignored private artifacts. These live checks are separate from synthetic tests.

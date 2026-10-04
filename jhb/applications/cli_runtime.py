@@ -391,7 +391,8 @@ def dispatch(request, helpers):
                            "type": kind, "required": item["required"], "options": item["options"],
                            **({"separate_phone_country": item["separate_phone_country"]} if kind == "tel" else {})})
         for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:((e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0]).trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||'',required:e.getAttribute('aria-required')==='true'}))"):
-            if upload["label"] in {"Resume/CV", "Resume", "Cover Letter"}:
+            upload["label"] = upload["label"].rstrip(" *")
+            if upload["label"]:
                 fields.append({"ref": "uploaded:"+upload["label"], "label": upload["label"],
                                "type": "file", "required": upload["required"], "options": []})
         buttons = [{"ref": str(n["backendDOMNodeId"]), "label": n.get("name", {}).get("value", "")}
