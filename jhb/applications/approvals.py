@@ -164,7 +164,8 @@ def _facts(book, job, role):
     return _digest({"answers": booklet.for_role(book, role), "education": book.get("education_records", []),
                     "preferences": book.get("workflow_preferences", {}),
                     "custom": {k: v for k, v in book.get("custom_answers", {}).items()
-                               if v.get("scope") == scope and (not v.get("job_hash") or v["job_hash"] == job["dedupe_hash"])},
+                               if v.get("scope") == scope and (not v.get("job_hash") or v["job_hash"] == job["dedupe_hash"])
+                               and (not v.get("job_hashes") or job["dedupe_hash"] in v["job_hashes"])},
                     "role_override": book.get("job_role_answers", {}).get(job["dedupe_hash"]),
                     "document_override": book.get("job_document_answers", {}).get(job["dedupe_hash"]),
                     "exclusion": book.get("job_exclusions", {}).get(job["dedupe_hash"])})

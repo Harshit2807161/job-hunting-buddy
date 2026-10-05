@@ -19,6 +19,8 @@ def context(tmp_path, monkeypatch):
     booklet.write_private(bookpath, {'schema_version':1,'answers':{'identity.email':booklet.answer('sam@example.org','synthetic resume')},
         'roles':{'sde':{},'ml':{}},'custom_answers':{
             'custom.other':{'scope':{'ats':'ashby','region':'global','board':'other'},'value':'PRIVATE_OTHER_EMPLOYER'},
+            'custom.sibling':{'scope':{'ats':'ashby','region':'global','board':'example'},
+                              'job_hashes':['b'*64],'value':'PRIVATE_SIBLING_ANSWER'},
             'custom.here':{'scope':{'ats':'ashby','region':'global','board':'example'},'value':'CURRENT_EMPLOYER'}},
         'education_records':[{'school':'Example University','degree':"Master's",'major':'CS','end_date':'2027-12-14','expected':True,'status':'verified','source':'synthetic resume'}]})
     job={'dedupe_hash':'a'*64,'url':'https://jobs.ashbyhq.com/example/11111111-1111-1111-1111-111111111111/application','title':'Engineer','company':'Example'}
@@ -32,6 +34,7 @@ def fake_result(verdict):
         assert 'features.shell_tool=false' in command
         assert 'OPENAI_API_KEY' not in kwargs['env'] and 'CODEX_API_KEY' not in kwargs['env']
         assert 'PRIVATE_OTHER_EMPLOYER' not in kwargs['input']
+        assert 'PRIVATE_SIBLING_ANSWER' not in kwargs['input']
         assert 'CURRENT_EMPLOYER' in kwargs['input']
         assert '2027-12-14' in kwargs['input'] and '"expected": true' in kwargs['input']
         Path(command[command.index('--output-last-message')+1]).write_text(json.dumps(verdict))
@@ -71,3 +74,14 @@ def test_bad_schema_and_cli_failures_never_approve(context):
 def test_ci_cannot_launch_subscription_reviewer(context,monkeypatch):
     monkeypatch.setenv('CI','true')
     assert review.review_application(*context[:4])['verdict']=='handoff'
+
+
+def test_approval_binds_only_custom_answers_for_its_actual_context(context):
+    from jhb.applications.approvals import _facts
+    job, _, _, _, path = context
+    book = booklet.load(path)
+    before = _facts(book, job, 'sde')
+    book['custom_answers']['custom.sibling']['value'] = 'Changed answer for another posting'
+    assert _facts(book, job, 'sde') == before
+    book['custom_answers']['custom.sibling']['job_hashes'].append(job['dedupe_hash'])
+    assert _facts(book, job, 'sde') != before

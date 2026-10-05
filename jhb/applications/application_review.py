@@ -42,7 +42,8 @@ def review_application(job, manifest, checks, auth, *, execute=None, book_path=N
     from .questions import _scope
     scope = _scope(job)
     scoped_custom = {key: value for key, value in book.get("custom_answers", {}).items()
-                     if value.get("scope") == scope and (not value.get("job_hash") or value["job_hash"] == job_hash)}
+                     if value.get("scope") == scope and (not value.get("job_hash") or value["job_hash"] == job_hash)
+                     and (not value.get("job_hashes") or job_hash in value["job_hashes"])}
     evidence = {
         "job": {key: job.get(key) for key in ("url", "title", "company", "verified_job_description")},
         "selected_role": role, "manifest": manifest, "retained_checks": checks,
