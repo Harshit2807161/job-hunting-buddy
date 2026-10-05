@@ -69,6 +69,31 @@ def test_school_requires_one_actual_original_institution_choice(choices):
     assert education.derive(f, answers(), as_of=TODAY) is None
 
 
+def school_option(name, country="United States", domain="example.edu"):
+    label = f"{name} {country} {domain}"
+    return {"label": label, "value": label, "school_metadata": {
+        "name": name, "country": country, "domain": domain, "source": "owned_native_school_option"}}
+
+
+def test_structured_native_school_name_matches_exactly_and_keeps_full_action_label():
+    choice = school_option("Example University")
+    f = {**field("school"), "options": [school_option("Example University System"), choice,
+                                         school_option("Example University Extension")]}
+    value, evidence = education.derive(f, answers(), as_of=TODAY)
+    assert value == {"query": "Example University", "choice": choice["label"]}
+    assert evidence["projection"]["selected_native_option"] == choice
+
+
+@pytest.mark.parametrize("options", [
+    [school_option("Example University North Campus")], [school_option("Example University Extension")],
+    [school_option("Example University"), school_option("Example University", "Canada", "example.ca")],
+    [{"label": "Example University United States example.edu"}],
+    [{**school_option("Example University"), "label": "Different University United States example.edu"}],
+])
+def test_native_school_metadata_never_uses_prefix_or_ambiguous_institution_match(options):
+    assert education.derive({**field("school"), "options": options}, answers(), as_of=TODAY) is None
+
+
 @pytest.mark.parametrize("change", ["unverified", "earned", "expired", "different_school", "missing_source", "malformed"])
 def test_school_basis_rejects_stale_or_unverified_current_study(change):
     a = answers()
@@ -178,5 +203,60 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelec
                 assert projected is None  # A foreign listbox cannot supply a choice.
             assert page.evaluate("window.submissions") == 0
             assert page.evaluate("window.__jhbGuard") is True
+        finally:
+            browser.close()
+
+
+def test_structured_school_commit_retains_primary_name_and_full_native_choice_proof():
+    from playwright.sync_api import sync_playwright
+    from jhb.applications.submission_runtime import _ashby_control_state, _checks
+    from jhb.applications import review_inventory
+    from jhb.applications.planner import key_for_field
+    html = '''<form class=ashby-application-form-container><div data-field-path=_systemfield_education_history>
+<label class=ashby-application-form-question-title>School Name</label>
+<div class=ashby-application-form-question-description>For most recent or in progress degree.</div>
+<input role=combobox aria-expanded=false oninput="menu(this)"><div id=options role=listbox></div>
+</div><button type=submit>Submit</button></form><script>window.commits=0;window.submissions=0;
+document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
+function menu(e){e.setAttribute('aria-controls','options');e.setAttribute('aria-expanded','true');
+document.querySelector('#options').innerHTML=e.value?'<div role="option" onclick="choose()"><span class="_canonicalSchoolResultName_fixture">Example University</span> <span class="_canonicalSchoolResultCountry_fixture">United States</span> <span class="_canonicalSchoolResultDomain_fixture">example.edu</span></div>':''}
+function choose(){window.commits++;const e=document.querySelector('input');e.value='Example University';e.setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelector('input').setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}});
+</script>'''
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(); page = browser.new_page()
+        page.route("**/*", lambda route: route.fulfill(status=200, content_type="text/html", body=html)); page.goto(URL)
+        session = page.context.new_cdp_session(page)
+        helpers = {"cdp": lambda method, **params: session.send(method, params), "js": page.evaluate,
+                   "wait": lambda seconds: page.wait_for_timeout(seconds * 1000), "click_at_xy": page.mouse.click,
+                   "list_tabs": lambda: [{"targetId": "fixture", "url": URL}],
+                   "current_tab": lambda: {"targetId": "fixture"}, "switch_tab": lambda target: None}
+        def call(op, **payload): return dispatch({"operation": op, "scope": application_scope(URL), **payload}, helpers)
+        try:
+            call("open", url=URL); observed = call("observe")["fields"][0]
+            catalog = call("describe", field=observed, query="Example University")
+            assert page.locator("input").input_value() == ""
+            assert catalog["choice_details"] == [{k: v for k, v in school_option("Example University").items() if k != "value"}]
+            observed["options"] = catalog["choice_details"]
+            value, evidence = education.derive(observed, answers(), as_of=TODAY)
+            assert call("fill", field=observed, value=value)["verified"]
+            assert page.locator("input").input_value() == "Example University"
+            assert _ashby_control_state(helpers, observed)["selected"] == value["choice"]
+            cached = call("describe", field=observed, query="Example University")
+            assert cached["choice_details"] == catalog["choice_details"]
+            assert page.evaluate("window.commits") == 1
+            key = "custom.synthetic.school"
+            record = {**booklet.answer(value, evidence), "question": "School Name", "field_ref": observed["ref"]}
+            filled = [{"ref": observed["ref"], "question": "School Name", "key": key, "value": value, "source": evidence}]
+            packet = {"job": {"url": URL}, "filled": filled,
+                      **review_inventory.build([observed], filled, {key: record}, key_for_field, complete=True)}
+            audit = lambda: _checks({"target_id": "fixture", "documents": {}}, helpers, packet, {
+                "application_url": URL, "authorization_scope": "one exact application explicitly approved in the local review portal"})
+            assert audit()["retained"][0]["state"]["selected"] == value["choice"]
+            page.locator("input").fill("Example University")
+            page.keyboard.press("Escape")
+            assert page.evaluate("document.querySelector('input').__jhbSchoolSelection") is None
+            assert audit()["state"] == "waiting_review"
+            assert page.evaluate("window.submissions") == 0 and page.evaluate("window.__jhbGuard") is True
         finally:
             browser.close()

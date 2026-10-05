@@ -188,6 +188,15 @@ not infer a completed qualification. Synthetic fixtures cover owned catalog
 commit, absent/ambiguous schools, changed instructions, original record validation
 and date consistency. Its live validation also remains pending.
 
+A subsequent live Browser Use read inspected ten owned school options and restored
+the original blank query. The native markup separates institution name, country
+and domain; the accessibility label concatenates all three. The adapter now uses
+those structured spans for exact institution matching, keeps the complete option
+label for the click, and retains a scoped native-commit proof when the input only
+displays the primary name. Synthetic fixtures cover this final audit, proof
+invalidation after edits, and wrong-campus/Extension/ambiguous option rejection.
+That live read establishes the option shape, not a completed live school fill.
+
 The Browser Use transport currently counts waiting for the shared browser lane
 inside its operation timeout. An explicit interactive batch can allow more
 bounded queue time while retaining the same lock, exact-tab scope and process

@@ -86,6 +86,7 @@ class ManualATSCLI(BrowserUseCLI):
                           "Observed manual field has changed", "Autocomplete did not retain the committed choice",
                           "Foreground recovery field, target or guard changed",
                           "Foreground recovery requires an authentication or verification handoff",
+                          "Native school selection metadata did not retain",
                           "Lever location choice is absent or ambiguous", "Observed Lever location choice changed",
                           "Lever location did not retain a committed catalog choice"}
             if isinstance(exc, BrowserOperationError) and str(exc) in mechanical:
@@ -138,7 +139,15 @@ class ManualATSCLI(BrowserUseCLI):
                     if not catalog.get("choices") or catalog.get("truncated"):
                         from .cli_browser import BrowserOperationError
                         raise BrowserOperationError("Autocomplete school catalog is unavailable", retryable=True)
-                    field["options"] = [{"label": v, "value": v} for v in catalog["choices"]]
+                    details = catalog.get("choice_details", [])
+                    field["options"] = []
+                    for label in catalog["choices"]:
+                        matches = [d for d in details if isinstance(d, dict) and d.get("label") == label
+                                   and isinstance(d.get("school_metadata"), dict)]
+                        option = {"label": label, "value": label}
+                        if len(matches) == 1:
+                            option["school_metadata"] = matches[0]["school_metadata"]
+                        field["options"].append(option)
         return snapshot
 
     async def ensure_profile(self, answers):

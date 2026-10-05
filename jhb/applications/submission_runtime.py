@@ -116,9 +116,18 @@ def _ashby_control_state(helpers, field):
             "return {selected:selected.map(o=>o.label),value:'',invalid:[...g.querySelectorAll('input')].filter(owned).some(e=>e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid))}})()")
     expression = ("[...("+group+").querySelectorAll('input,textarea,select')].filter(e=>e.closest('[data-field-path]')==="+group+")["+str(field["control_index"])+"]"
                   if field["ref"].startswith("ashby:") else "document.getElementById("+json.dumps(field["ref"])+")")
-    return helpers["js"]("(()=>{const e="+expression+";return e?{value:e.type==='file'?e.files?.[0]?.name||'':e.value,checked:e.checked,"
+    state = helpers["js"]("(()=>{const e="+expression+";return e?{value:e.type==='file'?e.files?.[0]?.name||'':e.value,checked:e.checked,"
         "selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.getAttribute('role')==='combobox'&&e.getAttribute('aria-expanded')==='false'?e.value:'',"
         "receipt:e.__jhbUploadReceipt||null,invalid:e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)}:null})()")
+    from .ashby_education import school_control, retained_school_catalog
+    if state and school_control(field):
+        proof = helpers["js"]("(()=>{const e="+expression+";return e?{proof:e.__jhbSchoolSelection||null,expanded:e.getAttribute('aria-expanded')}:null})()")
+        if proof:
+            catalog = retained_school_catalog(proof["proof"], field, application_scope(helpers["js"]("location.href")),
+                                              {**state, "expanded": proof["expanded"]})
+            if catalog:
+                state["selected"] = catalog["selected_choice"]
+    return state
 
 
 def _control_state(helpers, field, board="greenhouse"):

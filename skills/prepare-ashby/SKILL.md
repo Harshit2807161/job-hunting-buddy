@@ -64,6 +64,13 @@ sourced and fall within that same record's end month. This does not represent
 the current degree as already completed. Changed or clipped instructions require
 a new binding.
 
+Ashby's school option may expose a primary institution name plus separate country
+and website-domain spans. Match the exact observed primary name, preserving the
+full accessibility label for its native option click. Do not strip arbitrary
+suffixes or accept prefixes such as another campus, System, or Extension. A
+verified native commit can bind the primary-name input display to that full option;
+typing the display name alone cannot establish the selection.
+
 For a blank residence autocomplete, the adapter can temporarily search using
 the verified state, inspect only its owned result list, and restore the blank
 before planning. Match both state and country to distinguish similarly named

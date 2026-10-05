@@ -291,6 +291,12 @@ def dispatch(request, helpers):
                      or bool(field.get("description_truncated")) != bool(requested.get("description_truncated")))):
             raise ValueError("Observed manual field has changed")
         def residence_catalog(expr):
+            from .ashby_education import retained_school_catalog
+            school_proof = js("(()=>{const e="+expr+";return e?.__jhbSchoolSelection||null})()") if school_control(field) else None
+            if school_proof:
+                found = retained_school_catalog(school_proof, field, scope, state(expr))
+                if found:
+                    return found
             proof = js("(()=>{const e="+expr+";return e?.__jhbResidenceCatalog||null})()")
             retained = state(expr)
             binding = {"scope": scope, "ref": field["ref"], "label": field["label"], "required": field.get("required"),
@@ -300,8 +306,34 @@ def dispatch(request, helpers):
                     and isinstance(proof.get("choices"), list) and 0 < len(proof["choices"]) <= 50
                     and all(isinstance(x, str) and 0 < len(x) <= 500 for x in proof["choices"])
                     and proof["choices"].count(proof.get("selected")) == 1):
-                return proof["choices"]
+                return {"choices": proof["choices"]}
             return None
+        def school_options(nodes):
+            if not school_control(field):
+                return []
+            from .ashby_education import structured_school_option
+            results = []
+            for node in nodes[:50]:
+                label = node.get("name", {}).get("value", "")
+                item = {"label": label}
+                obj = cdp("DOM.resolveNode", backendNodeId=node["backendDOMNodeId"])["object"]["objectId"]
+                try:
+                    detail = cdp("Runtime.callFunctionOn", objectId=obj, returnByValue=True,
+                        functionDeclaration="""function(){const read=name=>{const nodes=[...this.querySelectorAll('span[class*="_canonicalSchoolResult'+name+'_"]')].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden');return nodes.length===1?nodes[0].innerText.trim():null};return {name:read('Name'),country:read('Country'),domain:read('Domain'),source:'owned_native_school_option'}}""")["result"].get("value")
+                finally:
+                    cdp("Runtime.releaseObject", objectId=obj)
+                if structured_school_option({"label": label, "school_metadata": detail}):
+                    item["school_metadata"] = detail
+                results.append(item)
+            return results
+        def remember_school(expr, options, selected, choice):
+            from .ashby_education import selection_binding, retained_school_catalog
+            proof = {"binding": selection_binding(field, scope), "options": options, "selected": selected, "choice": choice}
+            if not retained_school_catalog(proof, field, scope, state(expr)):
+                raise ValueError("Native school selection metadata did not retain")
+            js("(()=>{const e="+expr+";if(!e)return; e.__jhbSchoolSelection="+json.dumps(proof)+
+               ";if(!e.__jhbSchoolListener){const clear=()=>{delete e.__jhbSchoolSelection};"
+               "e.addEventListener('input',clear,{capture:true});e.addEventListener('change',clear,{capture:true});e.__jhbSchoolListener=true}})()")
         def remember_residence(expr, labels, selected):
             if not catalog_control or len(labels)>50 or any(not x or len(x)>500 for x in labels):
                 return
@@ -354,8 +386,9 @@ def dispatch(request, helpers):
                         raise ValueError("Observed manual control is unavailable")
                 cached = residence_catalog(expr)
                 if cached:
-                    return {"choices":cached,"type":"combobox","truncated":False,"source":"retained_owned_native_catalog"}
+                    return {**cached,"type":"combobox","truncated":False,"source":"retained_owned_native_catalog"}
                 existing_query = query is not None and bool(before["value"])
+                details = []
                 try:
                     if query is not None and not existing_query:
                         type_text(expr, query)
@@ -373,8 +406,10 @@ def dispatch(request, helpers):
                     labels = []
                     for _ in range(20 if query is not None else 8):
                         wait(0.25 if query is not None else 0.15)
-                        labels = [n.get("name", {}).get("value", "") for n in combobox_options(expr)]
+                        nodes = combobox_options(expr)
+                        labels = [n.get("name", {}).get("value", "") for n in nodes]
                         if labels:
+                            details = school_options(nodes)
                             break
                 finally:
                     if query is not None and not existing_query:
@@ -386,7 +421,8 @@ def dispatch(request, helpers):
                 after = state(expr)
                 if not before or not after or before["value"] != after["value"]:
                     raise ValueError("Read-only choices inspection changed the draft value")
-                return {"choices": labels[:50], "type": "combobox", "truncated": len(labels)>50}
+                return {"choices": labels[:50], "type": "combobox", "truncated": len(labels)>50,
+                        **({"choice_details": details} if details else {})}
             return {"choices": [o["label"] for o in field.get("options", [])], "type": field["type"], "truncated": False}
         value, kind = request["value"], field["type"]
         if kind in {"radio", "multiselect"}:
@@ -506,12 +542,20 @@ def dispatch(request, helpers):
             if len(matches) != 1:
                 escape()
                 raise ValueError("Autocomplete choice is absent" if not matches else "Autocomplete choice is ambiguous")
+            from .ashby_education import structured_school_option
+            details = school_options(options)
+            selected_details = [o for o in details if o["label"] == value["choice"]]
+            native_school = structured_school_option(selected_details[0]) if len(selected_details) == 1 else None
             _settled_click(matches[0]["backendDOMNodeId"], cdp, wait, helpers["click_at_xy"])
             for _ in range(10):
                 wait(0.15)
                 after = state(expr)
-                if after and after["value"] == value["choice"] and after["expanded"] == "false" and not after["invalid"]:
-                    remember_residence(expr,[n.get("name",{}).get("value","") for n in options],after["value"])
+                expected_values = {value["choice"], native_school["name"]} if native_school else {value["choice"]}
+                if after and after["value"] in expected_values and after["expanded"] == "false" and not after["invalid"]:
+                    if native_school:
+                        remember_school(expr, details, after["value"], value["choice"])
+                    else:
+                        remember_residence(expr,[n.get("name",{}).get("value","") for n in options],after["value"])
                     return {"verified": True, "selected": value["choice"]}
             raise ValueError("Autocomplete did not retain the committed choice")
         if kind == "file":
