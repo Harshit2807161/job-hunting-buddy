@@ -156,3 +156,62 @@ def test_no_application_city_does_not_fall_back_to_mailing_location():
     assert known_answers.contact_location_basis(answers) is None
     field={'ref':'ashby:_systemfield_location:control:0','label':'Location','type':'combobox','required':True,'options':[]}
     assert key_for_field(field,answers) is None
+
+
+def test_custom_location_requires_exact_scoped_projection_and_retains_native_choice():
+    """A custom Location is not silently reclassified as contact residence."""
+    from playwright.sync_api import sync_playwright
+    from jhb.applications import worker
+    path = '11111111-aaaa-bbbb-cccc-222222222222'
+    html = '''<form class=ashby-application-form-container>
+<div data-field-path="CUSTOM"><label class=ashby-application-form-question-title>Location</label>
+<input class=ashby-application-form-input-autocomplete role=combobox aria-expanded=false
+ oninput="menu(this)" onkeydown="if(event.key==='Escape')closeMenu(this)">
+<div id=options role=listbox></div></div><button type=submit>Submit application</button></form>
+<script>window.commits=0;window.submissions=0;
+document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
+function closeMenu(e){e.setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}
+function menu(e){e.setAttribute('aria-controls','options');e.setAttribute('aria-expanded','true');
+document.querySelector('#options').innerHTML=e.value?'<div role="option" onclick="choose()">San Diego, California, United States</div><div role="option">San Diego, Texas, United States</div>':''}
+function choose(){window.commits++;const e=document.querySelector('input');e.value='San Diego, California, United States';closeMenu(e)}
+</script>'''.replace('CUSTOM', path)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(); page = browser.new_page()
+        page.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=html)); page.goto(URL)
+        session = page.context.new_cdp_session(page)
+        helpers = {'cdp': lambda method, **params: session.send(method, params), 'js': page.evaluate,
+                   'wait': lambda seconds: page.wait_for_timeout(seconds*1000), 'click_at_xy': lambda x, y: page.mouse.click(x, y),
+                   'list_tabs': lambda: [{'targetId': 'fixture', 'url': URL}], 'current_tab': lambda: {'targetId': 'fixture'},
+                   'switch_tab': lambda target: None}
+        def call(operation, **values):return dispatch({'operation': operation, 'scope': application_scope(URL), **values}, helpers)
+        try:
+            call('open', url=URL); field = call('observe')['fields'][0]
+            answers = {'preferences.application_city': booklet.answer('San Diego, CA', 'synthetic explicit application city'),
+                       'identity.state': booklet.answer('CA', 'synthetic state'),
+                       'identity.country': booklet.answer('United States', 'synthetic country')}
+            assert not known_answers.contact_location(field)
+            assert known_answers.enrich(field, {}, answers) is None
+            with pytest.raises(ValueError, match='outside its approved scope'):
+                call('describe', field=field, query='San Diego')
+            with pytest.raises(ValueError, match='approved query and exact choice'):
+                call('fill', field=field, value='San Diego, CA')
+            scope = {'ats': 'ashby', 'region': 'global', 'board': 'example'}
+            key = 'custom.scoped.native_contact'
+            record = {**booklet.answer({'query': 'San Diego', 'choice': 'San Diego, California, United States'},
+                                      {'method': 'synthetic_exact_observed_catalog_projection', 'basis': answers.copy()}),
+                      'question': field['label'], 'field_ref': field['ref'], 'scope': scope, 'job_hash': 'one-exact-job'}
+            book = {'custom_answers': {key: record}}
+            assert worker._scoped_custom_answers(book, {'dedupe_hash': 'another-job'}, scope) == {}
+            answers.update(worker._scoped_custom_answers(book, {'dedupe_hash': 'one-exact-job'}, scope))
+            assert key_for_field(field, answers) == key
+            assert call('fill', field=field, value=record['value'])['verified']
+            assert page.evaluate('window.commits') == 1
+            filled = [{'ref': field['ref'], 'question': field['label'], 'key': key,
+                       'value': record['value'], 'source': record['source']}]
+            packet = {'job': {'url': URL}, 'filled': filled,
+                      **review_inventory.build([field], filled, answers, key_for_field, complete=True)}
+            result = _checks({'target_id': 'fixture', 'documents': {}}, helpers, packet,
+                             {'application_url': URL, 'authorization_scope': 'one exact application explicitly approved in the local review portal'})
+            assert result['retained'][0]['state']['selected'] == 'San Diego, California, United States'
+            assert page.evaluate('window.submissions') == 0 and page.evaluate('window.__jhbGuard') is True
+        finally: browser.close()
