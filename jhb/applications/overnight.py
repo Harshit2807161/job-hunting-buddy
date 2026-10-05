@@ -189,6 +189,9 @@ def _manifest(job, packet, book):
 
 def _candidate(conn, row, auth, book):
     job = json.loads(row["job_json"])
+    from .historical import match
+    if match(conn, job):
+        return None
     if auth.get("scope") == PORTAL_SCOPE and auth.get("job_hash") != row["job_hash"]:
         return None
     if booklet.job_excluded(book, job):

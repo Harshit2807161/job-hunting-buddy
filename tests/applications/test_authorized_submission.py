@@ -107,6 +107,19 @@ def evidence(tmp_path, monkeypatch):
     return job, packet, packet_path, manifest, authorization, attempt_path
 
 
+def test_cached_prior_application_blocks_before_any_browser_submission(tmp_path, monkeypatch):
+    job, packet, packet_path, manifest, auth, attempt_path = evidence(tmp_path, monkeypatch)
+    from jhb.applications import historical
+    monkeypatch.setattr(historical, "cached_match", lambda current: {"disposition": "hold"})
+    cli = AuthorizedSubmissionCLI()
+    async def prohibited(*args, **kwargs):
+        pytest.fail("Duplicate application must not access the browser")
+    monkeypatch.setattr(cli, "invoke", prohibited)
+    result = asyncio.run(submit_reviewed(job, packet_path, manifest, authorization=auth, attempt=attempt_path, cli=cli))
+    assert result["state"] == "waiting_review" and result["click_started"] is False
+    assert json.loads(attempt_path.read_text()).get("runtime_click_started") is not True
+
+
 @contextmanager
 def synthetic_runtime(*, html=HTML, url=URL):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", BROWSERS)

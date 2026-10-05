@@ -205,6 +205,9 @@ async def capture_current(packet_path, *, client=None, acknowledged_blank_refs=(
     from .worker import write_packet
     path = private_file(packet_path)
     packet = json.loads(path.read_bytes())
+    from .historical import cached_match
+    if cached_match(packet["job"]):
+        raise ValueError("This role matches an existing spreadsheet application; reconcile it before reapplying")
     target = packet.get("capture", {}).get("target_id")
     if not target:
         raise ValueError("Saved draft has no exact browser target")

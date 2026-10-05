@@ -76,6 +76,9 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
     packet_path = private_file(attempt.get("packet_path", ""))
     packet_bytes = packet_path.read_bytes()
     packet = json.loads(packet_bytes)
+    from .historical import cached_match
+    if cached_match(packet.get("job", {})):
+        raise ValueError("Existing application history blocks a duplicate submission")
     if (hashlib.sha256(packet_bytes).hexdigest() != attempt.get("packet_sha256")
             or packet.get("state") != "waiting_review" or packet.get("submitted") is not False
             or packet.get("missing") or packet.get("verification") or packet.get("blocked_requests", 0)
