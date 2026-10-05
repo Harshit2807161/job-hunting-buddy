@@ -100,6 +100,11 @@ def key_for_field(field, answers):
             return "identity.phone_national"
     # The worker filters these records by employer scope. An exact approved
     # employer answer takes precedence over a reusable standing default.
+    from .known_answers import context_response_key, has_conditional_instruction, key_for_field as observed_known_key
+    if has_conditional_instruction(field):
+        # An exact known instruction takes precedence over historical general
+        # answers; unfamiliar notes require an explicit context-bound response.
+        return observed_known_key(field, answers) or context_response_key(field, answers)
     education_year = re.fullmatch(r"(start|end)-year--(\d+)", field["ref"])
     for key, item in answers.items():
         if key.startswith("custom.") and normalize(item.get("question", "")) == label:

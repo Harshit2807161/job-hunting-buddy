@@ -21,6 +21,7 @@ _LINKS = "github, scholar, publications, or personal site you'd like to share?"
 _DISCOVERY = "how did you hear about this job opportunity?"
 _RESTRICTION = ("are you currently subject to any agreement (such as a non-compete, non-solicitation, non-disclosure, "
                 "or similar restriction) that could limit your ability to perform this role?")
+_CALIFORNIA_NOTE = "note: if you are based in california, please mark n/a."
 
 
 def _label(field):
@@ -49,6 +50,8 @@ def _choices(field):
 def _signature(field):
     observation = {"ref": field.get("ref"), "label": _label(field), "type": field.get("type"),
                    "choices": _choices(field), "country_context": field.get("country_context")}
+    if field.get("description") or field.get("description_truncated"):
+        observation.update(description=field.get("description"), description_truncated=bool(field.get("description_truncated")))
     return hashlib.sha256(json.dumps(observation, sort_keys=True).encode()).hexdigest()
 
 
@@ -60,7 +63,7 @@ def key_for_field(field, answers):
         "i am authorized to work in the united states.": "eligibility.authorized_us",
         _RESTRICTION: "screening.non_compete",
     }
-    key = aliases.get(label)
+    key = aliases.get(label) if not has_conditional_instruction(field) else None
     if key and (item := _verified(answers, key)) and isinstance(item.get("value"), bool):
         return key
     if (label in {"are you open to travel?", "are you willing to travel up to 20% of the time?",
@@ -94,6 +97,66 @@ def key_for_field(field, answers):
     if (item and isinstance(item.get("source"), dict)
             and item["source"].get("observation_sha256") == signature):
         return key
+    return None
+
+
+def has_conditional_instruction(field):
+    """The restriction answer must account for its owned instruction first."""
+    return (_label(field) == _RESTRICTION
+            and bool(field.get("description") or field.get("description_truncated")))
+
+
+
+def context_response_key(field, answers):
+    """Only a newly explicit response may resolve an unfamiliar complete note.
+
+    Employer scope is filtered by the worker before this catalog is built.
+    Legacy generic answers lack a proof of the displayed owned instruction.
+    """
+    if not has_conditional_instruction(field) or field.get("description_truncated"):
+        return None
+    description = field.get("description")
+    if not isinstance(description, str) or not description:
+        return None
+    if normalize(description).replace("note :", "note:") == _CALIFORNIA_NOTE and _california_residence(answers) is True:
+        # A contradictory No cannot satisfy the explicit N/A instruction,
+        # including when its required option is missing or ambiguous.
+        return None
+    from .review_inventory import candidate_response
+    expected = {"owned_description_sha256": hashlib.sha256(description.encode()).hexdigest(),
+                "owned_description_truncated": False}
+    for key, record in answers.items():
+        if (not key.startswith("custom.") or not candidate_response(record)
+                or _label({"label": record.get("question", "")}) != _label(field)
+                or (record.get("field_ref") and record["field_ref"] != field.get("ref"))
+                or (record.get("country_context") and record["country_context"] != field.get("country_context"))):
+            continue
+        source = record["source"]
+        proofs = source.get("owned_description_proofs", [])
+        if not isinstance(proofs, list):
+            proofs = []
+        proofs = [source, *proofs]
+        if any(isinstance(proof, dict) and proof.get("owned_description_sha256") == expected["owned_description_sha256"]
+               and proof.get("owned_description_truncated") is False for proof in proofs):
+            return key
+    return None
+
+
+def _california_residence(answers):
+    state, country = _verified(answers, "identity.state"), _verified(answers, "identity.country")
+    if (not state or not country or not isinstance(state.get("value"), str)
+            or not isinstance(country.get("value"), str)):
+        return None
+    # Contact residence, never job-country annotation, nationality or inferred
+    # location. Recognize standard US state codes; unknown strings stay unknown.
+    if normalize(country["value"]) not in {"united states", "united states of america", "us", "usa", "u.s.", "u.s.a."}:
+        return None
+    value = normalize(state["value"])
+    if value in {"ca", "california"}:
+        return True
+    other_codes = set("al ak az ar co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc".split())
+    if value in other_codes:
+        return False
     return None
 
 
@@ -160,7 +223,23 @@ def enrich(field, job, answers, *, as_of=None):
     answers.pop("standing.observed." + _signature(field), None)
     label, choices = _label(field), _choices(field)
     value, evidence = None, None
-    if label == _GRADUATE and field.get("type") in {"radio", "select", "combobox"}:
+    if has_conditional_instruction(field) and field.get("type") in {"radio", "select", "combobox"}:
+        description = field.get("description")
+        note = normalize(description).replace("note :", "note:") if isinstance(description, str) else ""
+        residence = _california_residence(answers)
+        if note == _CALIFORNIA_NOTE and not field.get("description_truncated") and residence is not None:
+            state, country = (_verified(answers, key) for key in ("identity.state", "identity.country"))
+            records = {"identity.state": state, "identity.country": country}
+            if residence:
+                selected = [choice for choice in choices if normalize(choice) == "n/a"]
+                if len(selected) == 1:
+                    value, evidence = selected[0], {"records": records, "owned_instruction": description,
+                        "criterion": "Observed instruction requires N/A for verified California residence"}
+            elif (restriction := _verified(answers, "screening.non_compete")) and isinstance(restriction.get("value"), bool):
+                records["screening.non_compete"] = restriction
+                value, evidence = restriction["value"], {"records": records, "owned_instruction": description,
+                    "criterion": "Verified US state code outside California; reuse explicit restriction answer"}
+    elif label == _GRADUATE and field.get("type") in {"radio", "select", "combobox"}:
         result = _graduate(answers, today)
         if result:
             value, evidence = result

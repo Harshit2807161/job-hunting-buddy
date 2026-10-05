@@ -92,3 +92,15 @@ native Browser Use scrolling before capture, so sticky headers do not cover
 fields in the middle of the saved image. A live Ashby validation confirmed four
 retained answers unchanged before and after capture. This is screenshot and
 retention evidence, not submission evidence.
+
+Owned Ashby question instructions remain attached to their original question in
+private observations and review evidence. The exact restriction instruction to
+select N/A when based in California uses only verified US contact residence and
+one unique offered N/A choice; it preserves the original general restriction
+answer. An unfamiliar or incomplete note cannot silently reuse a general No.
+A newly explicit candidate answer to an unfamiliar complete note must carry a
+proof of the exact displayed instruction. Changed or newly present help text
+invalidates a previous fresh submission audit and requires renewed review.
+Synthetic tests cover owned versus nested/hidden notes, conditional choice
+retention, context-bound candidate answers and zero-click stale-context handoffs.
+These tests do not claim live application or submission validation.

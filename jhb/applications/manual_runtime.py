@@ -46,6 +46,9 @@ ASHBY_FIELDS = r"""(()=>{
   const owned=e=>e.closest('[data-field-path]')===group;
   const path=group.getAttribute('data-field-path'), title=[...group.querySelectorAll('.ashby-application-form-question-title,legend')].find(owned);
   const heading=(title?.innerText||'').trim();
+  const description=[...group.querySelectorAll('.ashby-application-form-question-description')].filter(e=>owned(e)&&visible(e))
+    .map(e=>(e.innerText||'').trim()).filter(Boolean).join('\n');
+  const context=description?{description:description.slice(0,4096),description_truncated:description.length>4096}:{};
   const controls=[...group.querySelectorAll('input,textarea,select')].filter(owned);
   const required=group.getAttribute('aria-required')==='true'||group.getAttribute('data-required')==='true'||
     controls.some(e=>e.required||e.getAttribute('aria-required')==='true')||
@@ -53,15 +56,15 @@ ASHBY_FIELDS = r"""(()=>{
   const yesno=[...group.querySelectorAll('button.ashby-application-form-input-yesno-option')].filter(e=>owned(e)&&visible(e));
   const radios=controls.filter(e=>e.type==='radio'&&choiceVisible(e)&&e.name!=='communicationConsent');
   const checks=controls.filter(e=>e.type==='checkbox'&&choiceVisible(e));
-  if(yesno.length)fields.push({ref:'ashby:'+path,label:heading,type:'radio',widget:'yesno',required,owner_index,
+  if(yesno.length)fields.push({ref:'ashby:'+path,label:heading,type:'radio',widget:'yesno',required,owner_index,...context,
    options:yesno.map(e=>({label:e.innerText.trim(),value:e.getAttribute('data-option')}))});
   else if(radios.length||checks.length){const options=radios.length?radios:checks;
-   fields.push({ref:'ashby:'+path,label:heading,type:radios.length?'radio':'multiselect',widget:radios.length?'radio':'checkboxes',required,owner_index,
+   fields.push({ref:'ashby:'+path,label:heading,type:radios.length?'radio':'multiselect',widget:radios.length?'radio':'checkboxes',required,owner_index,...context,
     options:options.map(e=>({label:label(e),value:e.value,id:e.id,checked:e.checked}))});}
   for(const [index,e] of controls.entries()){
    if(e.type==='radio'||e.type==='checkbox'||['hidden','password','submit','button','reset'].includes(e.type))continue;
    if(e.type!=='file'&&!visible(e))continue;
-   fields.push({ref:e.id||'ashby:'+path+':control:'+index,widget:'native',control_index:index,owner_index,
+   fields.push({ref:e.id||'ashby:'+path+':control:'+index,widget:'native',control_index:index,owner_index,...context,
     ...(e.type==='text'&&e.classList.contains('ashby-application-form-input-date')&&
         e.closest('.react-datepicker__input-container')?.closest('.react-datepicker-wrapper')?.closest('[data-field-path]')===group
         ?{calendar_format:'MM/DD/YYYY'}:{}),
@@ -70,7 +73,7 @@ ASHBY_FIELDS = r"""(()=>{
   }
   const consent=controls.filter(e=>e.type==='radio'&&e.name==='communicationConsent'&&choiceVisible(e));
   if(consent.length)fields.push({ref:'ashby:'+path+':communicationConsent',label:group.querySelector('[class*="consentBody"]')?.innerText?.trim()||'Consent to receive application text message updates',
-   type:'radio',widget:'communicationConsent',required:consent.some(e=>e.required),owner_index,options:consent.map(e=>({label:label(e),value:e.value,checked:e.checked}))});
+   type:'radio',widget:'communicationConsent',required:consent.some(e=>e.required),owner_index,...context,options:consent.map(e=>({label:label(e),value:e.value,checked:e.checked}))});
  }
  return [...new Map(fields.map(f=>[f.ref,f])).values()];
 })()""".replace("GROUPS", "("+ASHBY_GROUPS+")")

@@ -176,7 +176,9 @@ def _checks(request, helpers, packet, attempt):
                        (f.get("ref") == field.get("ref") or field.get("type") == "file" and f.get("type") == "file")
                        and normalize(f.get("question", "")) == normalize(field.get("label", ""))
                        and f.get("type") == field.get("type") and bool(f.get("required")) == bool(field.get("required"))
-                       and f.get("calendar_format") == field.get("calendar_format")]
+                       and f.get("calendar_format") == field.get("calendar_format")
+                       and (f.get("description") or "") == (field.get("description") or "")
+                       and bool(f.get("description_truncated")) == bool(field.get("description_truncated"))]
             if len(matches) != 1:
                 return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
                         "click_started": False}
