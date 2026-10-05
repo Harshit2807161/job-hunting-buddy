@@ -380,7 +380,11 @@ def recover_authenticated_linkedin_sources(conn, *, limit=3):
 
 
 async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
+    import uuid
+    from .worker import _FEEDBACK_ATTEMPT, _record_attempt_feedback
     async with semaphore:
+        attempt_token = uuid.uuid4().hex
+        context_token = _FEEDBACK_ATTEMPT.set(attempt_token)
         try:
             result, packet = await asyncio.wait_for(runner(item["job"], book, planner_name=planner_name), timeout=timeout)
             if not isinstance(result, dict) or result.get("state") not in queue.STATES - {"queued", "running", "retry", "submitted"}:
@@ -396,14 +400,18 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
                 result = {**result, "state": "failed", "retryable": True, "error_kind": "job_description_transport",
                           "reason": "Official job-description transport failed before browser preparation"}
                 packet = await write_packet(None, config.ROOT / "private" / "applications" / item["job_hash"], item["job"], result)
-            return result, packet
         except Exception as exc:
             from .worker import write_packet
             result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
                       "events": [], "filled": [], **_exception_recovery(exc)}
             directory = config.ROOT / "private" / "applications" / item["job_hash"]
             packet = await write_packet(None, directory, item["job"], result)
-            return result, packet
+        finally:
+            _FEEDBACK_ATTEMPT.reset(context_token)
+        # Persistence/capture can change readiness; record only its final
+        # outcome. A telemetry failure is isolated from application retries.
+        _record_attempt_feedback(item["job"], result, attempt_token, packet)
+        return result, packet
 
 
 async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, application_limit=3,

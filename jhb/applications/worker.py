@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import fcntl
 import html
 import json
+import logging
 import os
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from .. import config, notify
@@ -16,6 +19,23 @@ from . import booklet, queue
 from .browser import BrowserActions
 from .credentials import CredentialStore
 from .planner import CodexPlanner, completed_cs_degree_answer, deterministic_plan, key_for_field, validate_plan
+
+
+# A pipeline-owned attempt may reclassify a pre-browser transport handoff after
+# run_job returns. Defer its one immutable observation until that final packet.
+# ContextVar keeps concurrent tasks separate, including asyncio.wait_for tasks.
+_FEEDBACK_ATTEMPT = ContextVar("application_feedback_attempt", default=None)
+
+
+def _record_attempt_feedback(job, result, attempt_token, packet):
+    """Diagnostics must never change an application outcome or trigger a replay."""
+    try:
+        from .attempt_feedback import record_attempt
+        record_attempt(job, result, attempt_token=attempt_token, stage="preparation",
+                       packet_path=Path(packet).with_name("packet.json"))
+    except Exception as exc:
+        # Exception messages may contain private paths, answers or credentials.
+        logging.getLogger(__name__).warning("Application attempt feedback unavailable (%s)", type(exc).__name__)
 
 
 def failure_result(exc, actions=None, *, job=None):
@@ -592,6 +612,8 @@ def _recorded_discovery(job):
 
 async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
                   interactive=False, review_seconds=0, role=None, artifacts=None, book_path=None):
+    owner_token = _FEEDBACK_ATTEMPT.get()
+    attempt_token = owner_token or uuid.uuid4().hex
     choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
     explicit_role = choice.get("value") if choice.get("status") == "verified" and choice.get("value") in {"sde", "ml"} else None
     selected_role = role or explicit_role or role_for_job(job)
@@ -602,7 +624,10 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
     directory.chmod(0o700)
     async def persist(page, directory, job, result, *, cli_actions=None):
         result["selected_role"] = selected_role
-        return await write_packet(page, directory, job, result, cli_actions=cli_actions)
+        packet = await write_packet(page, directory, job, result, cli_actions=cli_actions)
+        if owner_token is None:
+            _record_attempt_feedback(job, result, attempt_token, packet)
+        return packet
     if booklet.job_excluded(book, job):
         result = {"state": "skipped", "reason": "Explicit user instruction excludes this exact job",
                   "events": [{"event": "explicit_job_exclusion"}], "filled": [], "missing": []}
