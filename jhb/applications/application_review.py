@@ -82,6 +82,8 @@ useful only when relevant. Candidate facts must never be invented to improve scr
 Approve only when all required retained fields/documents are supported. If evidence is
 insufficient, use handoff and identify the exact question or field needing review.
 Approval is for this supplied snapshot only. Never propose browser actions or submission.
+Always include blank_decisions in your JSON; use an empty array when there are no
+delegated blank decisions to make.
 EVIDENCE:
 """ + json.dumps(evidence, ensure_ascii=False)
     directory = config.ROOT / "private" / "application-reviews" / job_hash

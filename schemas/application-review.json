@@ -13,5 +13,5 @@
         "reason": {"type": "string", "minLength": 1}},
       "required": ["field_ref", "decision", "reason"]}}
   },
-  "required": ["verdict", "issues", "summary"]
+  "required": ["verdict", "issues", "summary", "blank_decisions"]
 }

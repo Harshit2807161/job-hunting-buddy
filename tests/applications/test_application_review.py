@@ -37,7 +37,7 @@ def fake_result(verdict):
         assert 'PRIVATE_SIBLING_ANSWER' not in kwargs['input']
         assert 'CURRENT_EMPLOYER' in kwargs['input']
         assert '2027-12-14' in kwargs['input'] and '"expected": true' in kwargs['input']
-        Path(command[command.index('--output-last-message')+1]).write_text(json.dumps(verdict))
+        Path(command[command.index('--output-last-message')+1]).write_text(json.dumps({'blank_decisions':[],**verdict}))
         return SimpleNamespace(returncode=0)
     return execute
 
@@ -52,6 +52,19 @@ def test_independent_verdict_is_bound_to_exact_snapshot_with_private_evidence(co
     assert review.snapshot_digest({**checks,'retained':[{'value':'changed'}]})!=r['snapshot_sha256']
     for p in (config.ROOT/'private/application-reviews'/job['dedupe_hash']).glob('*.json'):
         assert p.stat().st_mode & 0o777 == 0o600
+
+
+def test_review_schema_is_compatible_with_strict_structured_output(context):
+    schema=json.loads((config.ROOT/'schemas/application-review.json').read_text())
+    def check(node):
+        if isinstance(node,dict):
+            if node.get('type')=='object':
+                assert node.get('additionalProperties') is False
+                assert set(node.get('required',[]))==set(node.get('properties',{}))
+            for value in node.values():check(value)
+        elif isinstance(node,list):
+            for value in node:check(value)
+    check(schema)
 
 
 @pytest.mark.parametrize('verdict',[
