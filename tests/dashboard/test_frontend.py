@@ -438,6 +438,31 @@ def test_phase1_sources_never_render_as_submitted_without_application_state():
         assert not actions and not errors
 
 
+def test_history_hold_appears_as_previous_application_check_not_ready_or_missing_answer():
+    state = {}
+    with workspace(state=state) as (page, actions, errors):
+        state["overview"]["applications"][0].update(state="history_hold", inventory_ready=False)
+        state["overview"]["questions"] = []
+        state["overview"]["summary"].update(ready=0, questions=0)
+        state["openings"].update(items=[{"id": "2"*64, "company": "Historical Fixture", "title": "Software Engineer", "location": "Remote",
+            "source": "fixture", "url": None, "first_seen": 100, "date": "2026-10-05",
+            "classification_state": "history_hold", "board": "ashby", "application_id": KEY,
+            "application_state": "history_hold", "filter_reasons": []}], total=1)
+        app_row = page.locator("#applications tbody tr")
+        app_row.get_by_text("Check previous application", exact=True).wait_for(timeout=10000)
+        opening_row = page.locator("#openings tbody tr")
+        opening_row.get_by_role("link", name="Check previous application", exact=True).wait_for(timeout=10000)
+        assert "Check previous application" in opening_row.locator("td").nth(2).inner_text()
+        assert not page.get_by_text("history_hold", exact=True).count()
+        assert not app_row.get_by_text("Needs your answer", exact=True).count()
+        assert not page.locator(".question-card").count()
+        page.get_by_role("button", name="Ready", exact=True).click()
+        assert not page.locator("#applications tbody tr").count()
+        page.get_by_role("button", name="Needs attention", exact=True).click()
+        assert app_row.get_by_text("Check previous application", exact=True).is_visible()
+        assert not actions and not errors
+
+
 def test_autonomy_review_does_not_offer_misleading_per_job_approval_or_revoke():
     with workspace() as (page, actions, errors):
         page.get_by_role('switch', name='Full autonomy').click()

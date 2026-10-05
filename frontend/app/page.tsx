@@ -21,7 +21,7 @@ type Tab = "all" | "submitted" | "waiting_review" | "attention";
 const stateNames: Record<string, string> = { queued: "Queued", running: "Preparing", retry: "Retry scheduled", waiting_review: "Ready for review",
   waiting_input: "Needs your answer", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome to verify",
   submitted: "Submitted", skipped: "Filtered out", unsupported: "Adapter needed", failed: "Technical review",
-  approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded" };
+  approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded", history_hold: "Check previous application" };
 const approvalStages: Record<string, string> = { approved: "approval_queued", submitting: "submitting", needs_review: "needs_review", expired: "needs_review" };
 const displayState = (a: { state: string; display_state?: string; approval_state?: string | null }) => a.display_state ||
   (a.state === "waiting_review" ? (approvalStages[a.approval_state || ""] || a.state) : a.state);
@@ -318,7 +318,7 @@ export default function Dashboard() {
   const apps = useMemo(() => (data?.applications || []).filter(a => {
     const text = `${a.company} ${a.title} ${a.location}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (board === "all" || a.board === board) &&
-      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed", "needs_review"].includes(displayState(a)) || displayState(a) === "waiting_review" && !a.inventory_ready : displayState(a) === tab && (tab !== "waiting_review" || a.inventory_ready));
+      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed", "needs_review", "history_hold"].includes(displayState(a)) || displayState(a) === "waiting_review" && !a.inventory_ready : displayState(a) === tab && (tab !== "waiting_review" || a.inventory_ready));
   }), [data, query, board, tab]);
   const summary = data?.summary;
   const questionCount = data?.questions.length || 0;
