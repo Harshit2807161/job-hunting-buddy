@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -148,9 +149,20 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
                 old_context = record.get("contexts", {}).get(job_hash, {})
                 changed_description = (old_context.get("description", "") != description or
                                        (old_context.get("description_truncated") is True) != truncated)
-                reopen = not newer_answer and (changed_description or record["status"] == "resolved" or incompatible or (
+                public_changed = False
+                if stored and isinstance(stored.get("source"), dict) and "public_question_metadata_proofs" in stored["source"]:
+                    from .question_metadata import public_response_allowed
+                    # A failed catalog inspection is technical, not a candidate
+                    # correction. Native enrichment reports that failure before
+                    # this path; a nonempty observed catalog can prove a change.
+                    fresh_field = {"ref": ref, "label": text, "type": item.get("type", "text"),
+                        "required": required, "country_context": country, "description": description,
+                        "description_truncated": truncated, "choices": item.get("choices", [])}
+                    if item.get("choices"):
+                        public_changed = not public_response_allowed(fresh_field, stored)
+                reopen = not newer_answer and (public_changed or changed_description or record["status"] == "resolved" or incompatible or (
                     stored and stored.get("status") == "declined" and required))
-                if reopen and (changed_description or not stored or stored["status"] != "declined" or required):
+                if reopen and (public_changed or changed_description or not stored or stored["status"] != "declined" or required):
                     record["history"].append({"event": "reopened", "at": stamp,
                                               "reason": item.get("reason", "Approved answer did not fill this form")})
                     record["status"] = "pending"
@@ -347,6 +359,24 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
                          "country_context": record.get("country_context") or ""}
                 if proof not in proofs:
                     proofs.append(proof)
+        from .question_metadata import description_digest
+        public_proofs = []
+        for job_hash, context in record["contexts"].items():
+            if context.get("resolved") or (context_job_hashes is not None and job_hash not in context_job_hashes):
+                continue
+            metadata = context.get("public_question_metadata")
+            if not isinstance(metadata, dict) or metadata.get("source") != "official_public_question_metadata":
+                continue
+            proof = {"source": "official_public_question_metadata", "field_ref": context.get("ref"),
+                     "country_context": record.get("country_context") or "",
+                     "description_sha256": description_digest(metadata.get("description", "")),
+                     "choices_sha256": hashlib.sha256(json.dumps(context.get("choices", [])[:100], ensure_ascii=False).encode()).hexdigest(),
+                     "required": context.get("required") is True, "observed_type": context.get("type"),
+                     "metadata_sha256": metadata.get("sha256")}
+            if proof not in public_proofs:
+                public_proofs.append(proof)
+        if public_proofs:
+            source["public_question_metadata_proofs"] = public_proofs
         if proofs:
             source["owned_description_proofs"] = proofs
             if len(proofs) == 1:

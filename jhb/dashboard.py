@@ -156,6 +156,8 @@ class DashboardStore:
                     "description": _text(context.get("description"), 4096),
                     "description_truncated": context.get("description_truncated") is True or
                         isinstance(context.get("description"), str) and len(context["description"]) > 4096,
+                    "public_metadata_description": _text(context.get("public_question_metadata", {}).get("description"), 4096)
+                        if isinstance(context.get("public_question_metadata"), dict) and context["public_question_metadata"].get("source") == "official_public_question_metadata" else "",
                     "choices": [_text(option) for option in context.get("choices", []) if isinstance(option, str)][:100]})
             if not contexts:
                 continue

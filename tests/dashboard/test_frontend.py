@@ -290,3 +290,16 @@ def test_unavailable_saved_draft_reports_handoff_without_fresh_form_fallback():
         assert page.get_by_role('alert').get_by_text('Saved draft tab is unavailable. No new form was opened.').is_visible()
         assert actions == [(f'/api/v1/applications/{KEY}/focus', {'revision': 'a'*64})]
         assert len(page.context.pages) == 1 and not errors
+
+
+def test_public_descriptor_refresh_shows_context_and_requires_answer_version_refresh():
+    state={}
+    with workspace(state=state) as (page,actions,errors):
+        page.get_by_label('Answer: May we contact your current employer?').select_option('false')
+        state['question']['contexts'][0]['public_metadata_description']='Public guidance: do not select Yes without this condition.'
+        state['question']['updated_at']='public-metadata-revision'
+        page.get_by_text('Public application guidance',exact=True).wait_for()
+        assert page.get_by_text('Public guidance: do not select Yes without this condition.').is_visible()
+        assert page.get_by_text('This public descriptor has not established a live field observation or approval.').is_visible()
+        assert page.get_by_role('button',name='Save answer',exact=True).is_disabled()
+        assert not actions and not errors

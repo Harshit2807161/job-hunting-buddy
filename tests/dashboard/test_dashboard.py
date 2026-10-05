@@ -680,3 +680,24 @@ def test_focus_rechecks_packet_after_waiting_for_browser_lane(portal, monkeypatc
         pytest.fail('Stale target must never reach CLI')
     monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI.call', call)
     assert client.post(url+'/focus', json={'revision': revision}, headers=headers).status_code == 409
+
+
+def test_public_question_descriptor_is_visible_and_changes_answer_revision_without_granting_readiness(portal):
+    import io
+    from jhb.applications import question_metadata
+    root,conn,book,client,headers=portal
+    job,folder,packet=add_job(conn,root,state='waiting_input')
+    q=questions.collect(job, {'missing':[{'question':'Eligibility options','ref':'question_123',
+        'required':True,'type':'combobox'}]},book)[0]
+    def opener(request,**kwargs):
+        return io.BytesIO(json.dumps({'id':1,'questions':[{'label':'Eligibility options','required':True,
+            'description':'<p>Public condition &amp; scope</p>', 'fields':[{'name':'question_123',
+            'type':'multi_value_single_select','values':[{'label':'Option A','value':1},{'label':'Option B','value':2}]}]}]}).encode())
+    question_metadata.enrich(conn,book,opener=opener)
+    detail=client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    enriched=detail['questions'][0]
+    assert enriched['contexts'][0]['public_metadata_description']=='Public condition & scope'
+    assert enriched['contexts'][0]['choices']==['Option A','Option B']
+    assert detail['inventory_complete'] is False and detail['approval']['can_approve'] is False
+    response=client.post(f"/api/v1/questions/{q['id']}/answer",json={'value':'Option A','revision':q['updated_at']},headers=headers)
+    assert response.status_code==409 and booklet.load(book)['question_handoffs'][q['id']]['status']=='pending'

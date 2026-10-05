@@ -80,6 +80,14 @@ def completed_cs_degree_answer(education_records, *, as_of=None):
 def key_for_field(field, answers):
     label = normalize(field["label"])
     from .review_inventory import candidate_response, candidate_wording_requested
+    from .question_metadata import public_response_allowed
+    for key, item in answers.items():
+        if (key.startswith("custom.") and normalize(item.get("question", "")) == label
+                and (not item.get("field_ref") or item["field_ref"] == field.get("ref"))
+                and not public_response_allowed(field, item)):
+            # Public guidance cannot become a generic heading-only Yes/No.
+            # Require fresh owned evidence before this answer or a fallback.
+            return None
     if candidate_wording_requested(label + "\n" + str(field.get("description", ""))):
         from .known_answers import context_response_key, has_conditional_instruction
         if has_conditional_instruction(field):

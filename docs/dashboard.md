@@ -101,3 +101,21 @@ npm run build
 Synthetic API and headless UI tests are dashboard validation, not live Browser
 Use application validation. Tests need no API credentials, subscription login,
 mail delivery, real browser session or real application submissions.
+
+Pending Greenhouse questions can be enriched through a separate, bounded public
+metadata maintenance command:
+
+```sh
+.venv/bin/python -m jhb.applications.question_metadata --limit 10
+```
+
+It reads only the exact official public job endpoint with `questions=true` and
+matches each active pending context's own field reference, heading, type and
+requiredness. Public guidance is labeled separately from native observations;
+it does not establish form completeness, eligibility, a candidate answer or
+submission authority. Existing native help and choice catalogs stay intact.
+Changed descriptors/choices invalidate an open answer version. Answer records,
+queue states and approvals are unchanged by maintenance. Dashboard GETs never
+fetch this metadata. Responses entered after viewing public guidance retain
+separate public-source provenance; actual filling still needs fresh owned form
+checks. Unknown or mismatched metadata remains a handoff.

@@ -138,6 +138,11 @@ def context_response_key(field, answers):
                 or (record.get("country_context") and record["country_context"] != field.get("country_context"))):
             continue
         source = record["source"]
+        if "public_question_metadata_proofs" in source:
+            from .question_metadata import public_response_allowed
+            if public_response_allowed(field, record):
+                return key
+            continue  # No fallback from mismatched public to generic/owned proof.
         proofs = source.get("owned_description_proofs", [])
         if not isinstance(proofs, list):
             proofs = []
