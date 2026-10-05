@@ -1,11 +1,38 @@
 """Pure routing of unresolved controls; never invent answers or mark drafts complete."""
 from __future__ import annotations
 
+import re
+
 from . import booklet
 
 CANDIDATE = "candidate"
 KNOWN = "known_answer_fill"
 DOCUMENT = "document_generation"
+
+
+def _shared_education(book):
+    """Legacy contexts can route common facts without selecting a resume.
+
+    Only indexed education values present and verified in every saved role are
+    eligible. Role-specific documents, projects and skills remain unselected.
+    """
+    roles = book.get("roles", {})
+    if not isinstance(roles, dict) or not all(isinstance(roles.get(role), dict) for role in ("sde", "ml")):
+        return {}
+    try:
+        catalogs = [booklet.for_role(book, role) for role in ("sde", "ml")]
+    except (KeyError, TypeError, ValueError):
+        return {}  # Incomplete legacy profile metadata cannot establish facts.
+    shared = {}
+    for key, first in catalogs[0].items():
+        if not re.fullmatch(r"education\.\d+\.(?:school|degree|major|start_date|end_date|start_year|end_year)", key):
+            continue
+        records = [catalog.get(key, {}) for catalog in catalogs]
+        if all(record.get("status") == "verified" and record.get("source")
+               and record.get("value") == first.get("value") and record.get("value") not in (None, "")
+               for record in records):
+            shared[key] = first
+    return shared
 
 
 def route(book, record, context):
@@ -25,6 +52,15 @@ def route(book, record, context):
     role = context.get("selected_role")
     if role in {"sde", "ml"}:
         answers.update(booklet.for_role(book, role))
+    else:
+        for key, item in _shared_education(book).items():
+            answers.setdefault(key, item)
+    # These explicit standing policies are normally added by the worker. A
+    # legacy ledger must not turn their already-approved controls into questions.
+    policy = book.get("workflow_preferences", {})
+    if policy.get("office_locations"):
+        answers["standing.office_willingness"] = booklet.answer(
+            True, "Explicit user standing willingness to work at office/HQ locations")
     documents = book.get("job_document_answers", {}).get(context.get("job_hash"), {})
     if role in {"sde", "ml"} and documents.get("role") == role and "documents.cover_letter" in documents:
         answers["documents.cover_letter"] = documents["documents.cover_letter"]
@@ -55,6 +91,21 @@ def route(book, record, context):
                 and sorted(metadata.get("choices", [])) == ["No", "Yes"]
                 and authorized.get("status") == "verified" and authorized.get("source")
                 and isinstance(authorized.get("value"), bool)):
+            return KNOWN
+        # This is routing only: public help may identify existing agent work,
+        # while filling still requires the fresh visible owned description.
+        from .known_answers import GOVERNMENT_CONFLICT_DESCRIPTION
+        government = answers.get("screening.us_government_or_military_5y", {})
+        if (metadata.get("source") == "official_public_question_metadata"
+                and metadata.get("field_ref") == field["ref"]
+                and booklet.normalize(metadata.get("label", "")) == booklet.normalize(label) == "conflict of interest"
+                and field["type"] in TYPES.get(metadata.get("type"), set())
+                and metadata.get("required") is field["required"]
+                and booklet.normalize(metadata.get("description", "")) == GOVERNMENT_CONFLICT_DESCRIPTION
+                and not field["description_truncated"]
+                and sorted(metadata.get("choices", [])) == ["No", "Yes"]
+                and government.get("status") == "verified" and government.get("source")
+                and government.get("value") is False):
             return KNOWN
     return field_route(field, answers)
 

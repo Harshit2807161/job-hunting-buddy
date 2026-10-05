@@ -22,6 +22,9 @@ _DISCOVERY = "how did you hear about this job opportunity?"
 _RESTRICTION = ("are you currently subject to any agreement (such as a non-compete, non-solicitation, non-disclosure, "
                 "or similar restriction) that could limit your ability to perform this role?")
 _CALIFORNIA_NOTE = "note: if you are based in california, please mark n/a."
+GOVERNMENT_CONFLICT_DESCRIPTION = ("do you currently, or have you in the last 5 years, worked for the us government "
+    "(e.g., congressional staffer, member of the military, state, or federal agencies) and had oversight or similar "
+    "responsibility over anduril’s business or other interests?")
 
 
 def _label(field):
@@ -261,6 +264,15 @@ def enrich(field, job, answers, *, as_of=None):
             value, evidence = authorized["value"], {"records": {"eligibility.authorized_us": authorized},
                 "owned_question": field["description"],
                 "criterion": "Exact owned US authorization question; no citizenship, export-control, or sponsorship inference"}
+    elif (label == "conflict of interest" and field.get("type") in {"radio", "select", "combobox"}
+          and normalize(field.get("description") or "") == GOVERNMENT_CONFLICT_DESCRIPTION
+          and field.get("description_truncated") is False):
+        government = _verified(answers, "screening.us_government_or_military_5y")
+        if (government and government.get("value") is False
+                and sorted(normalize(choice) for choice in choices) == ["no", "yes"]):
+            value, evidence = False, {"records": {"screening.us_government_or_military_5y": government},
+                "owned_question": field["description"],
+                "criterion": "Verified No to any US government or military work within five years makes this narrower conjunction false; no employment, prior-application, or general conflict inference"}
     elif label == _GRADUATE and field.get("type") in {"radio", "select", "combobox"}:
         result = _graduate(answers, today)
         if result:
