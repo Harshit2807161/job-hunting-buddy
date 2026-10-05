@@ -53,7 +53,11 @@ def workspace(fragment="", state=None, configure=None, browser_now=None):
                    {"ref": "why", "question": "Why this company? Please, no AI text.", "type": "textarea", "required": False,
                     "status": "blank", "category": "substantive_written", "answer": None, "candidate_wording_required": True}],
         "approval": {"can_approve": True, "revision": "exact-draft-revision", "blank_questions": [{"ref": "why", "question": "Why this company? Please, no AI text.", "required": False, "type": "textarea"}]}}
+    policy = {"mode": "review", "requested_mode": "review", "revision": "synthetic-policy-revision", "enabled_until": None,
+              "available_submission_boards": ["ashby", "greenhouse"], "authorized_boards": [], "gate_reasons": [], "max_duration_hours": 8}
+    openings = {"items": [], "total": 0, "next_cursor": None}
     if state is not None:
+        state.update(policy=policy, openings=openings)
         state.update(overview=overview, detail=detail, question=question, screenshot_requests=[])
     if configure is not None:
         configure(question, detail)
@@ -62,6 +66,11 @@ def workspace(fragment="", state=None, configure=None, browser_now=None):
         if route.request.method == "POST":
             actions.append((path, route.request.post_data_json))
             assert route.request.headers["x-jhb-csrf"] == "synthetic-csrf"
+            if path == "/api/v1/workflow-policy":
+                policy.update(mode=route.request.post_data_json["mode"], requested_mode=route.request.post_data_json["mode"],
+                              revision="changed-policy-revision", enabled_until="2031-01-01T12:00:00Z")
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(policy))
+                return
             if path.endswith("/answer"):
                 overview["questions"] = []; overview["summary"]["questions"] = 0
             elif path.endswith("/approve"):
@@ -82,6 +91,8 @@ def workspace(fragment="", state=None, configure=None, browser_now=None):
             route.fulfill(status=200, content_type="image/png", body=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jOYQAAAAASUVORK5CYII="))
             return
         elif path == "/api/v1/session": value = {"csrf_token": "synthetic-csrf"}
+        elif path == "/api/v1/workflow-policy": value = policy
+        elif path == "/api/v1/openings": value = openings
         elif path == "/api/v1/overview": value = overview
         elif path == f"/api/v1/applications/{KEY}": value = detail
         else: raise AssertionError("Unexpected dashboard API call")
@@ -381,3 +392,47 @@ def test_unsupported_submission_board_preserves_explicit_revoke_action():
         page.get_by_role('button', name='Revoke approval', exact=True).click()
         page.get_by_text('Approval revoked. This draft cannot be submitted.', exact=True).wait_for()
         assert actions == [(f'/api/v1/applications/{KEY}/revoke', {})] and not errors
+
+
+def test_workflow_switch_only_mutates_after_explicit_click_and_revokes():
+    with workspace() as (page, actions, errors):
+        toggle = page.get_by_role("switch", name="Full autonomy")
+        toggle.wait_for()
+        assert not toggle.is_checked() and not actions
+        toggle.click()
+        page.get_by_text("Independent review, then submission", exact=True).wait_for()
+        assert toggle.is_checked()
+        assert actions == [("/api/v1/workflow-policy", {"mode": "autonomous", "revision": "synthetic-policy-revision"})]
+        toggle.click()
+        page.get_by_text("You approve each application", exact=True).wait_for()
+        assert not toggle.is_checked()
+        assert actions[-1] == ("/api/v1/workflow-policy", {"mode": "review", "revision": "changed-policy-revision"})
+        assert not errors
+
+
+def test_phase1_sources_never_render_as_submitted_without_application_state():
+    state = {}
+    with workspace(state=state) as (page, actions, errors):
+        state["openings"].update(items=[{"id": "2"*64, "company": "Discovered Fixture", "title": "ML Engineer", "location": "Remote",
+            "source": "fixture", "url": "https://careers.example.test/jobs/1", "first_seen": 100, "date": "2026-10-05",
+            "classification_state": "resolved", "board": "ashby", "application_id": None, "application_state": None, "filter_reasons": []}], total=1)
+        page.get_by_role("link", name="Discovered Fixture").wait_for(timeout=10000)
+        row = page.locator("#openings tbody tr")
+        assert "Board identified" in row.locator("td").nth(2).inner_text()
+        assert row.get_by_text("Not started", exact=True).is_visible()
+        assert not row.get_by_text("Submitted", exact=True).count()
+        assert not actions and not errors
+
+
+def test_autonomy_review_does_not_offer_misleading_per_job_approval_or_revoke():
+    with workspace() as (page, actions, errors):
+        page.get_by_role('switch', name='Full autonomy').click()
+        page.get_by_role('button', name='Review Synthetic Employer application').click()
+        page.get_by_text('Full autonomy is enabled', exact=True).wait_for()
+        page.get_by_text('Why this company? Please, no AI text.', exact=True).wait_for()
+        assert not page.get_by_role('button', name='Approve and submit this application', exact=True).count()
+        assert not page.get_by_role('button', name='Revoke approval', exact=True).count()
+        assert not page.get_by_role('checkbox', name='Leave blank: Why this company? Please, no AI text.', exact=True).count()
+        assert page.get_by_text('Why this company? Please, no AI text.', exact=True).is_visible()
+        assert len(actions) == 1 and actions[0][0] == '/api/v1/workflow-policy'
+        assert not errors

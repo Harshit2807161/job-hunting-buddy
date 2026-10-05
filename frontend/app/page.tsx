@@ -1,5 +1,7 @@
 "use client";
 
+import { Openings, WorkflowControl, type WorkflowPolicy } from "./workflow-controls";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Application = { id: string; company: string; title: string; location: string; url: string | null; board: string;
@@ -45,16 +47,16 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 type AnswerResult = { resume_pending?: boolean; saved_at?: number; status: string; affected_jobs: string[]; resumed_jobs: string[]; automation_paused: boolean;
   applications: { job_hash: string; state: string; remaining_required_questions: number }[] };
 
-function AnswerFeedback({ result, applications = [], paused }: { result: AnswerResult; applications?: Application[]; paused?: boolean }) {
+function AnswerFeedback({ result, applications = [], paused, autonomous = false }: { result: AnswerResult; applications?: Application[]; paused?: boolean; autonomous?: boolean }) {
   return <div className="notice success" role="status"><b>Answer saved</b>
     {result.resume_pending && <p>Queue status could not be confirmed. Your answer is saved; refresh to check recovery before taking another action.</p>}
-    <p>{(paused ?? result.automation_paused) ? "Filling is paused. Queued answers will be used when automation resumes." : "The agent will use your saved answer when filling resumes."} Submission still requires your approval.</p>
+    <p>{(paused ?? result.automation_paused) ? "Filling is paused. Queued answers will be used when automation resumes." : "The agent will use your saved answer when filling resumes."} {autonomous ? "A separate reviewer checks the completed application before submission." : "Submission still requires your approval."}</p>
     {result.applications?.map(item => { const current = applications.find(a => a.id === item.job_hash); const state = current && current.updated_at >= (result.saved_at ?? Infinity) ? current.state : item.state;
       return <p key={item.job_hash}>{current ? `${current.company}: ` : "Application: "}{state === "waiting_input" ? `Waiting for ${item.remaining_required_questions} more required answer${item.remaining_required_questions === 1 ? "" : "s"}.` : state === "queued" ? "Queued for filling." : stateNames[state] || state}</p>; })}
   </div>;
 }
 
-function QuestionForm({ question, onSaved }: { question: Question; onSaved: (result: AnswerResult) => void }) {
+function QuestionForm({ question, onSaved, autonomous = false }: { question: Question; onSaved: (result: AnswerResult) => void; autonomous?: boolean }) {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -96,7 +98,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
     {error && <p className="form-error" role="alert">{error}</p>}
     <div className="question-actions"><button className="primary small" disabled={busy || stale || !validAnswer} onClick={() => save()}>{busy ? "Saving…" : "Save answer"}<Icon name="arrow" size={14}/></button>
       {!question.required && <button className="text-button" disabled={busy || stale} onClick={() => save(true)}>Leave unanswered</button>}
-    </div><p className="privacy-caption">Saved for this employer. Filling can resume after required answers are complete; submission always needs your approval.</p>
+    </div><p className="privacy-caption">Saved for this employer. Filling can resume after required answers are complete; {autonomous ? "an independent reviewer checks the completed draft." : "submission always needs your approval."}</p>
   </article>;
 }
 
@@ -113,7 +115,7 @@ type ReviewDetail = { location?: string; related_submissions?: { job_hash: strin
   approval: { can_approve: boolean; revision?: string; reason?: string; blank_questions: { ref: string; question: string; required: boolean; type: string }[];
     approval?: { state: string } } };
 
-function ReviewModal({ application: app, close, onChanged }: { application: Application; close: () => void; onChanged: () => void }) {
+function ReviewModal({ application: app, close, onChanged, autonomous = false }: { application: Application; close: () => void; onChanged: () => void; autonomous?: boolean }) {
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
   const [error, setError] = useState("");
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
@@ -144,7 +146,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
   }, [app.id, detailRefresh]);
   const blanks = detail?.approval.blank_questions || [];
   const optionalBlanks = blanks.filter(q => !q.required);
-  const canApprove = detail?.submission_supported === true && detail?.state === "waiting_review" && detail.inventory_complete &&
+  const canApprove = !autonomous && detail?.submission_supported === true && detail?.state === "waiting_review" && detail.inventory_complete &&
     !blanks.some(q => q.required) && !detail.questions?.some(q => q.required) &&
     !!detail?.approval.can_approve && !!detail.approval.revision &&
     optionalBlanks.every(q => acknowledged.includes(q.ref));
@@ -184,21 +186,22 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {error && <div className="notice warning" role="alert">{error}</div>}
       {focusError && <div className="notice warning" role="alert">{focusError}</div>}
       {!!detail?.related_submissions?.length && <div className="notice warning"><b>A similar role was already submitted</b><p>These are different posting IDs. They may be separate openings or a repost of the same role; this is not a confirmed duplicate. Review the previous application before approving.</p><ul>{detail.related_submissions.map(previous => <li key={previous.job_hash}><b>{previous.company} · {previous.title}</b><p>{previous.location || "Location not recorded"} · Recorded submission {previous.confirmed_date || "date unavailable"}</p><a href={`/#review/${previous.job_hash}`} target="_blank" rel="noreferrer">View confirmed application</a> · <a href={previous.url} target="_blank" rel="noreferrer">Previous posting</a></li>)}</ul></div>}
+      {autonomous && <div className="notice"><b>Full autonomy is enabled</b><p>A separate reviewer must verify the complete draft, answers, documents and screenshot before submission. Required unknown facts still need your input.</p></div>}
       {detail?.incident && <div className="notice incident"><b>Submission quality incident</b><p>{detail.incident.summary}</p><ul>{detail.incident.blank_questions.map(q => <li key={q.ref}>{q.question}</li>)}</ul><p>The submission receipt remains recorded. This flag concerns unanswered questions.</p></div>}
       {detail && !detail.inventory_complete && <div className="notice warning">Full form inventory is unverified. Listed answers do not establish that every application question was reviewed. Approval is disabled.</div>}
       {detail?.automation_paused && <div className="notice warning">Automation is paused. Saving an answer or approval does not restart the agent.</div>}
       <div className="document-strip"><Icon name="briefcase" size={17}/><div><b>{detail?.resume_role ? `${detail.resume_role.toUpperCase()} document variant` : "Document variant not recorded"}</b><p>{detail?.documents.map(d => `${d.kind.replaceAll("_", " ")}: ${d.filename}`).join(" · ") || "No document manifest available"}</p></div></div>
-      {answerFeedback && <AnswerFeedback result={answerFeedback} paused={detail?.automation_paused}/>}
+      {answerFeedback && <AnswerFeedback result={answerFeedback} paused={detail?.automation_paused} autonomous={autonomous}/>}
       {!!detail?.agent_tasks?.length && <div className="notice"><b>Agent work remaining</b><p>The worker needs to finish and verify these fields before approval.</p><ul>{detail.agent_tasks.map(task => <li key={task.ref}>{task.question}: {task.task_kind === "document_generation" ? "prepare the application document" : task.task_kind === "narrative_generation" ? "draft and check a response" : "fill the saved booklet answer"}</li>)}</ul></div>}
-      {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
+      {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} autonomous={autonomous} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
       <h3 className="review-section-title">Every application question <span>{detail?.fields.length ?? "—"}</span></h3>
       {!detail && !error && <div className="table-empty">Loading the saved field inventory…</div>}
       <div className="review-field-list">{detail?.fields.map((field, i) => <div key={`${field.ref}-${i}`} className={field.answer === null ? "review-field blank" : "review-field"}><div className="review-field-title"><b>{field.question}</b><span>{field.required === null ? "Requirement unknown" : field.required ? "Required" : "Optional"}</span></div>{field.description && <div className="question-description"><p>{field.description}</p>{field.description_truncated && <p>Help text is clipped. Check the full instruction in the existing draft.</p>}</div>}{field.proposed && <div className="candidate-wording">Proposed wording · Check this grounded draft before approving.</div>}<p>{displayAnswer(field.answer)}</p>{field.candidate_wording_required && <div className="candidate-wording">The employer requests your own wording. The agent must not write this answer.</div>}</div>)}</div>
       {detail?.role_fit_notes?.length ? <div className="notice warning"><b>Role-fit considerations</b><ul>{detail.role_fit_notes.map((note, i) => <li key={i}>{note}</li>)}</ul><p>Review these potential gaps before approving. Factual application answers must remain accurate.</p></div> : null}
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
       {detail?.approval.approval && <div className="notice success">Your approval status: {detail.approval.approval.state.replaceAll("_", " ")}. A pending approval is specific to this saved draft.</div>}
-      {optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>Check each item only if you deliberately want to submit without an answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
-      {detail?.state === "waiting_review" && (detail.submission_supported === true ?
+      {!autonomous && optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>Check each item only if you deliberately want to submit without an answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
+      {detail?.state === "waiting_review" && (detail.submission_supported === true ? autonomous ? <div className="notice"><p>The independent reviewer decides when this draft is ready. Turn off Full autonomy to use per-application approval.</p></div> :
         <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div> :
         <div className="notice warning"><b>{detail.submission_supported === false ? "Prepared for review. Automatic submission is not available for this board yet." : "Submission capability is unavailable. Refresh this review before approving."}</b><p>{detail.approval.reason || "You can inspect the saved answers and existing draft. No submission approval is available."}</p>{detail.approval.approval && <button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button>}</div>)}
       {saved && <div className="notice success" role="status">{saved}</div>}
@@ -222,6 +225,8 @@ export default function Dashboard() {
   const [allQuestions, setAllQuestions] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowPolicy | null>(null);
+  const autonomous = workflow?.mode === "autonomous";
   useEffect(() => { setDay(today()); }, []);
   const reload = useCallback(() => setRefresh(v => v + 1), []);
   const openReview = useCallback((application: Application) => {
@@ -272,7 +277,7 @@ export default function Dashboard() {
 
   return <div className="workspace">
     <aside className="sidebar"><div className="brand"><span className="brand-mark"><Icon name="spark" size={24}/></span><span>job hunting<br/><b>buddy</b></span></div>
-      <div className="sidebar-label">WORKSPACE</div><nav>{[["overview", "grid", "Overview"], ["applications", "briefcase", "Applications"], ["questions", "message", "Your input"], ["activity", "chart", "Activity"]].map(([id, icon, label]) => <button key={id} className={view === id ? "nav-item active" : "nav-item"} onClick={() => { setView(id); document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><Icon name={icon}/>{label}{id === "questions" && questionCount > 0 ? <span className="nav-count">{questionCount}</span> : null}</button>)}</nav>
+      <div className="sidebar-label">WORKSPACE</div><nav>{[["overview", "grid", "Overview"], ["applications", "briefcase", "Applications"], ["openings", "search", "New openings"], ["questions", "message", "Your input"], ["activity", "chart", "Activity"]].map(([id, icon, label]) => <button key={id} className={view === id ? "nav-item active" : "nav-item"} onClick={() => { setView(id); document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><Icon name={icon}/>{label}{id === "questions" && questionCount > 0 ? <span className="nav-count">{questionCount}</span> : null}</button>)}</nav>
       <div className="sidebar-bottom"><div className="local-card"><Icon name="shield"/><div><b>Private by design</b><span>This workspace stays on your Mac.</span></div></div><div className="sidebar-footer"><span className="avatar">Y</span><div><b>Your workspace</b><span>Local · Pacific time</span></div><span className="tiny-dot"/></div></div>
     </aside>
     <main><header className="topbar"><span className="breadcrumb">Workspace <Icon name="arrow" size={12}/> <b>{view.charAt(0).toUpperCase()+view.slice(1)}</b></span><div className="topbar-right"><span className={error ? "connection offline" : "connection"}><i/>{error ? "Reconnecting" : "Live · updates every 5s"}</span><span className="top-avatar">Y</span></div></header>
@@ -280,8 +285,9 @@ export default function Dashboard() {
       {error && <div className="notice warning" role="alert">{error}. Showing the last successful snapshot{data ? ` from ${timeLabel(data.generated_at)}` : ""}.</div>}
       {data && !data.storage_available && <div className="notice warning">Pipeline storage is unavailable. Counts cannot be verified.</div>}
       {data && !data.booklet_available && <div className="notice warning">The answer booklet is unavailable; pending-question status cannot be verified.</div>}
-      {data?.automation_paused && <div className="notice warning">Application automation is paused. Every application now requires your approval in its detailed review before submission.</div>}
+      {data?.automation_paused && <div className="notice warning">Application automation is paused. Changing workflow mode does not restart the preparation worker.</div>}
       {data?.applications.some(a => a.has_incident) && <div className="notice incident">A confirmed application has a submission quality incident. Open its review to inspect unanswered questions; receipt counts are preserved.</div>}
+      <WorkflowControl onChange={setWorkflow}/>
       <section className="metrics" aria-label="Application metrics">{[
         { label: "Confirmed applications", value: summary?.confirmed_today, note: `${summary?.confirmed_total ?? "—"} total · receipt verified`, icon: "check", color: "mint" },
         { label: "Drafts prepared", value: summary?.prepared_today, note: `On ${dateLabel(day, true)} · before submission`, icon: "briefcase", color: "lavender" },
@@ -300,16 +306,16 @@ export default function Dashboard() {
         {summary?.uncertain ? <div className="agent-warning"><Icon name="shield" size={16}/>{summary.uncertain} outcome{summary.uncertain > 1 ? "s" : ""} need verification. No automatic replay.</div> : <div className="agent-safety"><Icon name="shield" size={15}/>Unknown answers pause their application.</div>}
       </section></div>
       <section id="questions" className="questions-section"><div className="section-heading"><div><h2>Your input{questionCount > 0 && <span className="count-badge">{questionCount}</span>}</h2><p>Answer once. The right applications pick up where they left off.</p></div></div>
-        {answerFeedback && <AnswerFeedback result={answerFeedback} applications={data?.applications} paused={data?.automation_paused}/>}
-        {questionCount ? <><div className="questions-grid">{data?.questions.slice(0, allQuestions || view === "questions" ? undefined : 4).map(q => <QuestionForm key={q.id} question={q} onSaved={result => { setAnswerFeedback(result); reload(); }}/>)}</div>{questionCount > 4 && view !== "questions" && <button className="text-button" onClick={() => setAllQuestions(v => !v)}>{allQuestions ? "Show fewer questions" : `Show all ${questionCount} pending questions`}</button>}</> : <div className="clear-state"><span><Icon name="check" size={18}/></span><div><b>{data?.booklet_available ? "You’re all caught up" : "Waiting for the answer booklet"}</b><p>{data?.booklet_available ? "No new candidate questions right now. Each completed draft still requires your review and approval." : "Question status will appear when private storage is available."}</p></div></div>}
+        {answerFeedback && <AnswerFeedback result={answerFeedback} applications={data?.applications} paused={data?.automation_paused} autonomous={autonomous}/>}
+        {questionCount ? <><div className="questions-grid">{data?.questions.slice(0, allQuestions || view === "questions" ? undefined : 4).map(q => <QuestionForm key={q.id} question={q} autonomous={autonomous} onSaved={result => { setAnswerFeedback(result); reload(); }}/>)}</div>{questionCount > 4 && view !== "questions" && <button className="text-button" onClick={() => setAllQuestions(v => !v)}>{allQuestions ? "Show fewer questions" : `Show all ${questionCount} pending questions`}</button>}</> : <div className="clear-state"><span><Icon name="check" size={18}/></span><div><b>{data?.booklet_available ? "You’re all caught up" : "Waiting for the answer booklet"}</b><p>{data?.booklet_available ? (autonomous ? "No new candidate questions right now. Complete drafts go to an independent reviewer." : "No new candidate questions right now. Each completed draft still requires your review and approval.") : "Question status will appear when private storage is available."}</p></div></div>}
       </section>
       <section id="applications" className="panel applications-panel"><div className="panel-heading"><div><h2>Applications</h2><p>A clear view of every stage.</p></div><span className="muted-tag">{data?.applications.length ?? "—"} tracked</span></div>
         <div className="table-toolbar"><div className="tabs">{[["all", "All"], ["submitted", "Submitted"], ["waiting_review", "Ready"], ["attention", "Needs attention"]].map(([id, label]) => <button key={id} className={tab === id ? "selected" : ""} onClick={() => setTab(id as Tab)}>{label}</button>)}</div><div className="table-filters"><label className="search"><Icon name="search" size={15}/><input aria-label="Search applications" placeholder="Search applications…" value={query} onChange={e => setQuery(e.target.value)}/></label><select value={board} onChange={e => setBoard(e.target.value)} aria-label="Filter job board"><option value="all">All boards</option>{[...new Set(data?.applications.map(a => a.board))].sort().map(b => <option key={b}>{b}</option>)}</select></div></div>
         <div className="table-scroll"><table><thead><tr><th>COMPANY & ROLE</th><th>BOARD</th><th>STATUS</th><th>LAST ACTIVITY</th><th>REVIEW</th></tr></thead><tbody>{apps.slice(0, 100).map(a => <tr key={a.id}><td><div className="company-cell"><div className="company-logo" style={{ background: `hsl(${parseInt(a.id.slice(0, 4), 16)%360} 35% 94%)` }}>{initials(a.company)}</div><div><a href={a.url || undefined} target="_blank" rel="noreferrer">{a.company}<Icon name="link" size={11}/></a><p>{a.title}</p><span>{a.location || "Location not recorded"}</span></div></div></td><td><span className="board-label">{a.board}</span></td><td><span className={`status ${a.state}`}><i/>{applicationLabel(a)}</span>{a.confirmed_at && <span className="receipt-note"><Icon name="check" size={11}/>{a.sheet_synced ? "Receipt + sheet synced" : "Receipt verified"}</span>}</td><td><span className="activity-date">{dateLabel(a.date, true)}</span><span className="activity-time">{timeLabel(a.updated_at)} PT</span></td><td><button className="review-button" onClick={() => openReview(a)} aria-label={`Review ${a.company} application`}><Icon name="image" size={16}/>View</button></td></tr>)}</tbody></table>{!apps.length && <div className="table-empty">{data ? "No applications match these filters." : "Connecting to your local workspace…"}</div>}</div>
         <div className="table-footer">Showing {Math.min(apps.length, 100)} of {apps.length} matching applications{data?.applications_truncated ? " · API list limited to 5,000" : ""}<span>Live data · no simulated progress</span></div>
-      </section><footer className="page-footer"><span><Icon name="shield" size={13}/>Local workspace. Candidate data stays private.</span><span>{data ? `Last updated ${timeLabel(data.generated_at)} PT` : "Waiting for local API"}</span></footer>
+      </section><Openings/><footer className="page-footer"><span><Icon name="shield" size={13}/>Local workspace. Candidate data stays private.</span><span>{data ? `Last updated ${timeLabel(data.generated_at)} PT` : "Waiting for local API"}</span></footer>
       </div>
     </main>
-    {preview && <ReviewModal key={preview.id} application={preview} close={closeReview} onChanged={reload}/>}
+    {preview && <ReviewModal key={preview.id} application={preview} close={closeReview} onChanged={reload} autonomous={autonomous}/>}
   </div>;
 }

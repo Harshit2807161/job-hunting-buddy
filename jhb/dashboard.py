@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
+from typing import Literal
 
 from . import config
 from .applications import boards, booklet, questions
@@ -450,6 +451,55 @@ class DashboardStore:
         # No free-text error messages, paths, environment, or logs are exposed.
         return safe
 
+    def openings(self, *, limit=25, before_time=None, before_id=None):
+        """Bounded Phase 1 ledger page, distinct from actual application progress."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Opening page size must be between 1 and 100")
+        if ((before_time is None) != (before_id is None) or
+                before_time is not None and (type(before_time) is not int or before_time < 0
+                    or not isinstance(before_id, str) or not HASH.fullmatch(before_id))):
+            raise ValueError("Invalid opening page cursor")
+        with self.connection() as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "jobs" not in tables:
+                return {"items": [], "total": 0, "next_cursor": None}
+            where, params = "", []
+            if before_time is not None:
+                where = " WHERE first_seen < ? OR (first_seen = ? AND dedupe_hash > ?)"
+                params = [before_time, before_time, before_id]
+            rows = conn.execute("SELECT dedupe_hash,company,title,url,locations,source,first_seen FROM jobs" +
+                where + " ORDER BY first_seen DESC,dedupe_hash LIMIT ?", [*params, limit+1]).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            items = []
+            for row in rows[:limit]:
+                source = conn.execute("SELECT state,board,application_url,updated_at,job_json FROM application_sources WHERE source_job_hash=?",
+                    (row["dedupe_hash"],)).fetchone() if "application_sources" in tables else None
+                destination = source["application_url"] if source and source["state"] == "resolved" else None
+                # An observed destination can be shown, but only an exact job
+                # identity can be joined to a real Phase 2 application.
+                app_hash = boards.application_hash(destination or row["url"])
+                application = conn.execute("SELECT state,updated_at FROM applications WHERE job_hash=?", (app_hash,)).fetchone() if app_hash and "applications" in tables else None
+                try:
+                    locations = json.loads(row["locations"] or "[]")
+                except (ValueError, TypeError):
+                    locations = []
+                eligibility = _json(source["job_json"]).get("eligibility", {}) if source else {}
+                findings = eligibility.get("findings", []) if isinstance(eligibility, dict) else []
+                items.append({"id": row["dedupe_hash"], "company": _text(row["company"]), "title": _text(row["title"]),
+                    "location": _text(", ".join(v for v in locations if isinstance(v, str)), 500) if isinstance(locations, list) else "",
+                    "source": _text(row["source"]), "url": row["url"] if boards._parts(row["url"]) else None,
+                    "first_seen": row["first_seen"], "date": _day(row["first_seen"]),
+                    "classification_state": source["state"] if source else "discovered",
+                    "filter_reasons": [{"category": _text(f.get("category"), 100), "evidence": _text(f.get("evidence"), 1000)}
+                                       for f in findings[:10] if isinstance(f, dict)] if isinstance(findings, list) else [],
+                    "board": _text(source["board"]) if source else "unknown",
+                    "application_url": boards.canonical_url(destination) if destination else None,
+                    "application_id": app_hash if application else None,
+                    "application_state": application["state"] if application else None})
+            last = rows[limit-1] if len(rows) > limit else None
+            return {"items": items, "total": total, "next_cursor":
+                    {"before_time": last["first_seen"], "before_id": last["dedupe_hash"]} if last else None}
+
     def overview(self, selected=None):
         now = datetime.now(timezone.utc)
         if selected is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", selected):
@@ -573,6 +623,12 @@ class DashboardStore:
             "applications": applications[:5000], "applications_truncated": len(applications)>5000,
             "questions": pending, "activity": events[:15], "pipeline": self.heartbeat(),
             "submission_pipeline": self.heartbeat(submission=True)}
+
+
+class WorkflowInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["review", "autonomous"]
+    revision: str
 
 
 class AnswerInput(BaseModel):
@@ -705,6 +761,31 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             return store.overview(day)
         except ValueError:
             raise HTTPException(400, "Date must use YYYY-MM-DD") from None
+
+    @app.get("/api/v1/workflow-policy")
+    def workflow_policy():
+        from .applications import workflow_policy as policy
+        try:
+            return policy.snapshot(root)
+        except (ValueError, OSError):
+            raise HTTPException(503, "Workflow policy is unavailable; automatic submission is disabled") from None
+
+    @app.post("/api/v1/workflow-policy")
+    def update_workflow_policy(payload: WorkflowInput):
+        from .applications import workflow_policy as policy
+        try:
+            return policy.set_mode(root, payload.mode, revision=payload.revision)
+        except (ValueError, OSError):
+            raise HTTPException(409, "Workflow policy changed or is unavailable; refresh before changing it") from None
+
+    @app.get("/api/v1/openings")
+    def openings(limit: int = 25, before_time: int | None = None, before_id: str | None = None):
+        try:
+            return store.openings(limit=limit, before_time=before_time, before_id=before_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid opening page size or cursor") from None
+        except (OSError, sqlite3.Error):
+            raise HTTPException(503, "Phase 1 storage is unavailable") from None
 
     @app.get("/api/v1/applications/{job_hash}/screenshot")
     def screenshot(job_hash: str, revision: str | None = None):

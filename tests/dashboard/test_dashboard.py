@@ -849,3 +849,97 @@ def test_unsupported_terminal_board_keeps_review_fields_and_image_but_rejects_ap
                            json={'revision': 'untrusted-stale-revision', 'acknowledged_blank_refs': ['why']})
     assert response.status_code == 409
     assert conn.execute('SELECT COUNT(*) FROM application_approvals').fetchone()[0] == 0
+
+
+def test_workflow_control_is_finite_csrf_protected_and_revocable(portal, monkeypatch):
+    from jhb.applications import workflow_policy, overnight
+    root, conn, book, client, headers = portal
+    monkeypatch.setenv('JHB_REQUIRE_PORTAL_APPROVAL', '1')
+    monkeypatch.setenv('JHB_OVERNIGHT_SUBMISSIONS_ENABLED', '1')
+    initial = client.get('/api/v1/workflow-policy').json()
+    assert initial['mode'] == 'review'
+    payload = {'mode': 'autonomous', 'revision': initial['revision']}
+    assert client.post('/api/v1/workflow-policy', json=payload).status_code == 403
+    assert not (root/'private'/overnight.AUTH_NAME).exists()
+    response = client.post('/api/v1/workflow-policy', json=payload, headers=headers)
+    assert response.status_code == 200
+    enabled = response.json()
+    assert enabled['mode'] == 'autonomous'
+    auth = json.loads((root/'private'/overnight.AUTH_NAME).read_text())
+    assert auth['source'] == 'local_review_portal' and auth['action'] == 'enable_autonomy'
+    assert auth['require_complete_inventory'] and auth['require_independent_review']
+    assert auth['boards'] == ['ashby', 'greenhouse']
+    assert overnight.valid_authority(auth)
+    expiry = datetime.fromisoformat(auth['expires_at']).timestamp()
+    assert workflow_policy.snapshot(root, now=expiry)['mode'] == 'review'
+    assert client.post('/api/v1/workflow-policy', json=payload, headers=headers).status_code == 409
+    auth_before = (root/'private'/overnight.AUTH_NAME).read_bytes()
+    assert client.post('/api/v1/workflow-policy', json={**payload, 'hours': 100}, headers=headers).status_code == 422
+    assert (root/'private'/overnight.AUTH_NAME).read_bytes() == auth_before
+    response = client.post('/api/v1/workflow-policy', json={'mode': 'review', 'revision': enabled['revision']}, headers=headers)
+    assert response.status_code == 200 and response.json()['mode'] == 'review'
+    revoked = json.loads((root/'private'/overnight.AUTH_NAME).read_text())
+    assert revoked['enabled'] is False and revoked['status'] == 'revoked'
+    assert conn.execute('SELECT COUNT(*) FROM confirmed_submissions').fetchone()[0] == 0
+    assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone()
+    assert client.post('/api/v1/workflow-policy', json={'mode': 'autonomous', 'revision': enabled['revision']}, headers=headers).status_code == 409
+
+
+def test_workflow_mode_reports_disabled_runtime_and_refuses_symlink(portal, monkeypatch):
+    root, conn, book, client, headers = portal
+    monkeypatch.delenv('JHB_OVERNIGHT_SUBMISSIONS_ENABLED', raising=False)
+    before = client.get('/api/v1/workflow-policy').json()
+    result = client.post('/api/v1/workflow-policy', json={'mode': 'autonomous', 'revision': before['revision']}, headers=headers).json()
+    assert result['mode'] == 'review' and result['requested_mode'] == 'autonomous' and result['gate_reasons']
+    path = root/'private'/'overnight-submission-authorization.json'
+    original = path.read_bytes()
+    destination = root/'untouched.json'; destination.write_bytes(original)
+    path.unlink(); path.symlink_to(destination)
+    assert client.get('/api/v1/workflow-policy').status_code == 503
+    assert client.post('/api/v1/workflow-policy', json={'mode': 'review', 'revision': result['revision']}, headers=headers).status_code == 409
+    assert destination.read_bytes() == original
+
+
+def test_phase1_openings_distinguish_source_resolution_from_applications_and_paginate(portal):
+    from jhb import store as ledger
+    from jhb.applications import source_queue
+    root, conn, book, client, headers = portal
+    conn.executescript(ledger.SCHEMA); source_queue.initialize(conn)
+    job, _, _ = add_job(conn, root, state='waiting_review')
+    keys = [str(i)*64 for i in range(1, 5)]
+    for i, key in enumerate(keys):
+        conn.execute('INSERT INTO jobs(dedupe_hash,source,company,title,url,locations,first_seen) VALUES(?,?,?,?,?,?,?)',
+                     (key, 'fixture', 'Synthetic Discovery', f'Role {i}', 'https://careers.example.test/jobs/'+str(i), '["Remote"]', 100 if i < 3 else 90))
+    conn.execute('INSERT INTO application_sources(source_job_hash,job_json,state,board,application_url,updated_at) VALUES(?,?,?,?,?,?)',
+                 (keys[0], '{}', 'resolved', 'greenhouse', job['url'], 110))
+    conn.execute('INSERT INTO application_sources(source_job_hash,job_json,state,board,application_url,updated_at) VALUES(?,?,?,?,?,?)',
+                 (keys[1], json.dumps({'eligibility': {'findings': [{'category': 'citizenship', 'evidence': 'US citizenship required'}]}, 'private': 'do-not-leak'}),
+                  'filtered', None, None, 110))
+    conn.execute('INSERT INTO application_sources(source_job_hash,job_json,state,board,application_url,updated_at) VALUES(?,?,?,?,?,?)',
+                 (keys[2], '{}', 'resolved', 'greenhouse', 'https://job-boards.greenhouse.io/example/jobs/888', 110))
+    conn.commit()
+    first = client.get('/api/v1/openings?limit=2').json()
+    assert first['total'] == 4 and [row['id'] for row in first['items']] == keys[:2]
+    assert first['items'][0]['application_state'] == 'waiting_review'
+    assert first['items'][0]['classification_state'] == 'resolved'
+    assert first['items'][1]['application_state'] is None
+    assert first['items'][1]['filter_reasons'] == [{'category': 'citizenship', 'evidence': 'US citizenship required'}]
+    assert 'do-not-leak' not in json.dumps(first)
+    second = client.get('/api/v1/openings', params={'limit': 2, **first['next_cursor']}).json()
+    assert [row['id'] for row in second['items']] == keys[2:] and second['next_cursor'] is None
+    assert second['items'][0]['classification_state'] == 'resolved' and second['items'][0]['application_state'] is None
+    assert second['items'][1]['classification_state'] == 'discovered'
+    assert client.get('/api/v1/overview').json()['summary']['confirmed_total'] == 0
+    for query in ['limit=0', 'limit=101', 'before_time=100', 'before_id=bad', 'before_time=100&before_id=bad']:
+        assert client.get('/api/v1/openings?'+query).status_code == 400
+
+
+def test_phase1_openings_refuse_unsafe_source_link_and_absent_table_is_empty(portal):
+    from jhb import store as ledger
+    root, conn, book, client, headers = portal
+    assert client.get('/api/v1/openings').json() == {'items': [], 'total': 0, 'next_cursor': None}
+    conn.executescript(ledger.SCHEMA)
+    conn.execute('INSERT INTO jobs(dedupe_hash,source,company,title,url,first_seen) VALUES(?,?,?,?,?,?)',
+                 ('a'*64, 'fixture', 'Synthetic', 'Role', 'javascript:alert(1)', 100))
+    conn.commit()
+    assert client.get('/api/v1/openings').json()['items'][0]['url'] is None
