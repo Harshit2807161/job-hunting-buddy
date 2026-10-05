@@ -25,7 +25,34 @@ CREATE TABLE IF NOT EXISTS application_sources (
 CREATE INDEX IF NOT EXISTS idx_application_sources_ready
  ON application_sources(state, available_at, updated_at);
 """
-STATES = {"queued", "running", "retry", "resolved", "waiting_login", "waiting_captcha", "unknown", "failed"}
+STATES = {"queued", "running", "retry", "resolved", "waiting_login", "waiting_captcha", "unknown", "failed", "filtered"}
+
+
+def _eligibility(row):
+    from ..eligibility import preliminary, POLICY_ID
+    findings = preliminary(row)
+    if findings:
+        return {"policy": POLICY_ID, "state": "skipped", "findings": findings,
+                "reason": "Mandatory employment eligibility conflicts with candidate policy"}
+    return None
+
+
+def filter_ineligible(conn, *, limit=1000):
+    """Retire old source backlog before any browser; preserve its audit history."""
+    initialize(conn)
+    now, changed = int(time.time()), 0
+    rows = conn.execute("SELECT source_job_hash,job_json FROM application_sources WHERE state<>'filtered' "
+                        "AND (state<>'running' OR lease_until IS NULL OR lease_until<=?) "
+                        "ORDER BY updated_at LIMIT ?", (now, limit)).fetchall()
+    for item in rows:
+        row = json.loads(item["job_json"])
+        if result := _eligibility(row):
+            row["eligibility"] = result
+            changed += conn.execute("UPDATE application_sources SET state='filtered',job_json=?,lease_until=NULL,"
+                                    "available_at=0,updated_at=? WHERE source_job_hash=?",
+                                    (json.dumps(row), now, item["source_job_hash"])).rowcount
+    conn.commit()
+    return changed
 
 
 def initialize(conn):
@@ -43,11 +70,14 @@ def enqueue(conn, jobs) -> int:
         row = dict(job) if isinstance(job, dict) or hasattr(job, "keys") else {
             "dedupe_hash": job.dedupe_hash, "source": job.source,
             "company": job.company, "title": job.title, "url": job.url,
-            "role_classes": ",".join(job.role_classes),
+            "role_classes": ",".join(job.role_classes), "raw": getattr(job, "raw", {}),
         }
+        result = _eligibility(row)
+        if result:
+            row["eligibility"] = result
         inserted += conn.execute(
-            "INSERT OR IGNORE INTO application_sources(source_job_hash,job_json,updated_at) VALUES(?,?,?)",
-            (row["dedupe_hash"], json.dumps(row), int(time.time())),
+            "INSERT OR IGNORE INTO application_sources(source_job_hash,job_json,state,updated_at) VALUES(?,?,?,?)",
+            (row["dedupe_hash"], json.dumps(row), "filtered" if result else "queued", int(time.time())),
         ).rowcount
     conn.commit()
     return inserted
@@ -55,6 +85,7 @@ def enqueue(conn, jobs) -> int:
 
 def claim(conn, *, lease_seconds=300, max_attempts=3):
     initialize(conn)
+    filter_ineligible(conn)
     now = int(time.time())
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -93,7 +124,7 @@ def finish(conn, source_job_hash, state, *, board=None, application_url=None, ev
 def resume(conn, source_job_hash):
     """Explicitly retry a verification/unknown/error handoff, preserving identity."""
     conn.execute("UPDATE application_sources SET state='queued',lease_until=NULL,attempts=0,available_at=0,notified_at=NULL,updated_at=? "
-                 "WHERE source_job_hash=? AND state NOT IN ('running','resolved')", (int(time.time()), source_job_hash))
+                 "WHERE source_job_hash=? AND state NOT IN ('running','resolved','filtered')", (int(time.time()), source_job_hash))
     conn.commit()
 
 

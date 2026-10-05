@@ -70,6 +70,31 @@ def test_source_leases_recover_and_retries_stop(setup):
     assert source_queue.claim(db)["attempts"] == 1
 
 
+def test_disqualified_source_is_retained_as_filtered_before_any_browser(setup):
+    db, _ = setup
+    denied = {'dedupe_hash':'blocked-source','title':'AI/ML Engineer 1 Top Secret/SCI w/Poly',
+              'company':'Synthetic','url':'https://www.linkedin.com/jobs/view/123'}
+    source_queue.enqueue(db,[denied])
+    assert source_queue.claim(db) is None
+    row=db.execute('SELECT * FROM application_sources').fetchone()
+    assert row['state']=='filtered' and row['attempts']==0
+    assert json.loads(row['job_json'])['eligibility']['findings'][0]['category']=='security_clearance'
+    source_queue.resume(db,denied['dedupe_hash'])
+    assert source_queue.claim(db) is None
+
+
+def test_old_source_backlog_and_direct_resolver_call_cannot_bypass_filter(setup):
+    db, _ = setup
+    source_queue.enqueue(db,[job('legacy','https://www.linkedin.com/jobs/view/123')])
+    row=db.execute('SELECT * FROM application_sources').fetchone()
+    value=json.loads(row['job_json']);value['description']='Employment visa sponsorship is not available.'
+    db.execute('UPDATE application_sources SET job_json=?',(json.dumps(value),));db.commit()
+    assert source_queue.claim(db) is None
+    async def forbidden(*args,**kwargs): pytest.fail('Disqualified job reached source browser')
+    result=asyncio.run(pipeline._resolve_one({'job':value},forbidden,asyncio.Semaphore(1),1,forbidden))
+    assert result['state']=='filtered' and result['findings'][0]['category']=='visa_sponsorship'
+
+
 def test_pipeline_resolves_indirect_greenhouse_only_and_deduplicates(setup):
     db, path = setup
     source_queue.enqueue(db, [job("one", "https://example.test/company/job"),

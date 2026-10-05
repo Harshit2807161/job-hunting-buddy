@@ -51,6 +51,30 @@ def test_nonrequirements_are_not_excluded(text):
     assert eligibility.restrictions(text) == []
 
 
+@pytest.mark.parametrize('text', [
+    'We cannot provide visa sponsorship for this position.',
+    'Employment visa sponsorship is not available.',
+    'Candidates must be able to work without sponsorship now or in the future.',
+    'Applicants must not require immigration sponsorship.',
+    'We do not sponsor employment visas.',
+])
+def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_need(text):
+    assert {item['category'] for item in eligibility.restrictions(text)} == {'visa_sponsorship'}
+
+
+@pytest.mark.parametrize('text', [
+    'Visa sponsorship is available for qualified candidates.',
+    'Will you require visa sponsorship now or in the future?',
+    'Are you eligible to work without visa sponsorship?',
+    'No prior employment visa sponsorship experience required.',
+    'We provide conference sponsorship to employees.',
+    'No citizenship is required. Visa sponsorship is available.',
+    'Experience with clearance systems and immigration document workflows preferred.',
+])
+def test_mentions_and_questions_are_not_a_sponsorship_denial(text):
+    assert eligibility.restrictions(text) == []
+
+
 def test_negated_citizenship_does_not_hide_separate_clearance_requirement():
     findings = eligibility.restrictions("No citizenship required and ability to obtain TS/SCI is required.")
     assert {item["category"] for item in findings} == {"security_clearance"}

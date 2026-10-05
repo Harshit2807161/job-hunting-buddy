@@ -19,6 +19,14 @@ POLICY_ID = "exclude-citizenship-clearance-v1"
 _CITIZEN = re.compile(r"\bcitizen(?:ship|s)?\b|\bnationality\b", re.I)
 _CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:active|current|secret|confidential|government|federal|dod)\s+clearance|clearance|top\s*secret|ts\s*/\s*sci|ts[- ]sci|sci\s+clearance)\b", re.I)
 _POLYGRAPH = re.compile(r"\bpolygraph\b", re.I)
+_SPONSORSHIP_DENIAL = re.compile(
+    r"\b(?:no|without)\s+(?:(?:employment|immigration|work[- ]visa|visa|h[- ]?1b)\s+)?sponsorship\b|"
+    r"\b(?:cannot|can not|can't|unable to|will not|won't|do not|does not|not able to)\s+"
+    r"(?:offer\s+|provide\s+|support\s+)?(?:visa\s+|immigration\s+|employment\s+)?sponsor(?:ship)?\b|"
+    r"\b(?:visa|immigration|employment)\s+sponsorship\s+(?:is\s+|will be\s+)?(?:not available|unavailable|not offered|not provided)\b|"
+    r"\b(?:must|should)\s+not\s+(?:now\s+or\s+in\s+the\s+future\s+)?require\s+"
+    r"(?:(?:visa|immigration|employment)\s+)?sponsorship\b", re.I)
+_SPONSORSHIP_CONTEXT = re.compile(r"\b(?:visa|immigration|employment|work authorization|h[- ]?1b|applicants?|candidates?)\b", re.I)
 _MANDATORY = re.compile(r"\b(?:must|shall|require[ds]?|requirement|mandatory|necessary|need(?:s|ed)?|only|restricted\s+to|condition\s+(?:of|for)\s+employment|eligible|eligibility|ability|able|willing|willingness|obtain|maintain|possess|hold|holding)\b", re.I)
 _NEGATED_NOUN = r"(?:(?:US|United\s+States|British|Canadian|UK)\s+)?(?:active\s+|security\s+)?(?:clearance|citizenship|nationality|polygraph)"
 _NEGATED = re.compile(r"\b(?:not\s+required|not\s+necessary|not\s+needed|need\s+not|(?:do|does)\s+not\s+(?:need|require)|no\s+" + _NEGATED_NOUN + r"(?:\s+or\s+" + _NEGATED_NOUN + r")*(?:\s+(?:is|are))?\s+required|no\s+" + _NEGATED_NOUN + r"\s+requirement|without\s+(?:a\s+)?(?:security\s+)?clearance|optional|preferred|not\s+a\s+requirement)\b", re.I)
@@ -95,6 +103,11 @@ def restrictions(text, *, title=False):
         clause = re.sub(r"\s+", " ", clause).strip(" :,-")
         if not clause:
             continue
+        if (_SPONSORSHIP_DENIAL.search(clause) and _SPONSORSHIP_CONTEXT.search(clause)
+                and not re.search(r"\b(?:not required|need not|do not need|does not need)\b", clause, re.I)
+                and not clause.endswith("?")
+                and not re.search(r"\b(?:race|event|conference|charity|athletic)\s+sponsorship\b", clause, re.I)):
+            hits.append({"category": "visa_sponsorship", "evidence": clause[:600]})
         for kind, pattern in [("citizenship", _CITIZEN), ("security_clearance", _CLEARANCE), ("polygraph", _POLYGRAPH)]:
             match = pattern.search(clause)
             if not match:
@@ -191,7 +204,7 @@ def verified_description(job):
 def assess_job(job):
     findings = preliminary(job)
     if findings:
-        return {"state": "skipped", "policy": POLICY_ID, "reason": "Job requires citizenship, security clearance, or polygraph excluded by standing user policy", "findings": findings}
+        return {"state": "skipped", "policy": POLICY_ID, "reason": "Job has a mandatory citizenship, clearance, polygraph or sponsorship restriction", "findings": findings}
     try:
         description = verified_description(job) or fetch_description(job)
     except Exception as exc:
@@ -200,5 +213,5 @@ def assess_job(job):
                 "verification": {"kind": "job_description", "source_url": description_url(job), "error_type": type(exc).__name__}, "findings": []}
     findings = restrictions(description["text"])
     return {"state": "skipped" if findings else "eligible", "policy": POLICY_ID,
-            "reason": "Job requires citizenship, security clearance, or polygraph excluded by standing user policy" if findings else "No excluded requirement found in verified official job description",
+            "reason": "Job has a mandatory citizenship, clearance, polygraph or sponsorship restriction" if findings else "No excluded requirement found in verified official job description",
             "findings": findings, "description": description}

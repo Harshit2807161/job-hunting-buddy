@@ -237,6 +237,12 @@ def _requeue_answered_handoff(conn, job, result, book_path):
 
 
 async def _resolve_one(item, resolver, semaphore, timeout, authenticated_resolver=None):
+    from ..eligibility import preliminary, POLICY_ID
+    findings = preliminary(item["job"])
+    if findings:
+        return {"state": "filtered", "board_type": boards.board_type(item["job"].get("url")),
+                "reason": "Mandatory eligibility requirement excluded before source browser access",
+                "policy": POLICY_ID, "findings": findings, "evidence": []}
     async with semaphore:
         try:
             states = {"greenhouse", "not_greenhouse", "blocked", "ambiguous", "error"}
@@ -445,7 +451,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
             summary["browser_capacity_deferred"] = summary.get("browser_capacity_deferred", 0) + 1
             continue
         application_url = outcome.get("application_url")
-        if state in {"greenhouse", "not_greenhouse"}:
+        if state == "filtered":
+            terminal = "filtered"
+        elif state in {"greenhouse", "not_greenhouse"}:
             summary["applications_queued"] += _route_source(conn, item, outcome, path)
             terminal = "resolved"
         elif state == "blocked":
