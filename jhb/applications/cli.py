@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 
 from .. import config, store
 from . import booklet, queue
@@ -50,6 +51,9 @@ def main(argv=None):
     source.add_argument("url")
     source.add_argument("--timeout", type=int, default=90)
     sub.add_parser("source-status")
+    backfill = sub.add_parser("backfill-supported", help="Preview previously notified supported ATS jobs")
+    backfill.add_argument("--limit", type=int, default=30)
+    backfill.add_argument("--enqueue", action="store_true", help="Explicitly queue this bounded candidate batch for source checks")
     source_resume = sub.add_parser("source-resume")
     source_resume.add_argument("source_job_hash")
     sub.add_parser("questions")
@@ -134,6 +138,16 @@ def main(argv=None):
             from .service import record_gate
             print(json.dumps(record_gate("prepare", reason or "local_browser_disconnected")))
             return 0
+    if args.command == "backfill-supported":
+        from . import backfill
+        # Preview must not initialize schemas, migrate data or fetch remote history.
+        mode = "rw" if args.enqueue else "ro"
+        with sqlite3.connect(config.DB_PATH.resolve().as_uri()+f"?mode={mode}", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            book = booklet.load(args.booklet)
+            result = backfill.enqueue(conn, book, limit=args.limit) if args.enqueue else backfill.select(conn, book, limit=args.limit)[0]
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result["state"] in {"preview", "enqueued"} else 1
     conn = store.connect()
     queue.initialize(conn)
     try:
