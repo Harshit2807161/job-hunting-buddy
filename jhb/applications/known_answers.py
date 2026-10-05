@@ -264,7 +264,7 @@ def enrich(field, job, answers, *, as_of=None):
             if len(selected) == 1:
                 value = {"query": state["value"], "choice": selected[0]}
                 evidence = {"records": {"identity.state": state, **({"identity.country": country} if country else {})},
-                            "criterion": "Verified contact residence matched to observed native display or query catalog; fill still requires real catalog commit",
+                            "criterion": "Verified contact residence matched to an actually observed native query catalog; fill requires real catalog commit",
                             "observed_choices": choices,
                             "projection": {"control_type": "combobox", "native_catalog_verification_required": True}}
     elif label == _LINKS and field.get("type") in {"text", "textarea"}:

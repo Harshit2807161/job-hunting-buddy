@@ -262,14 +262,21 @@ def dispatch(request, helpers):
                         raise ValueError("Residence catalog query is outside its approved scope")
                     if not before:
                         raise ValueError("Observed manual control is unavailable")
-                    if before["value"]:
-                        # Preserve the existing value. It is a search candidate,
-                        # not proof of selection; fill will still query and
-                        # require a real native catalog click/readback.
-                        return {"choices": [before["value"]], "type": "combobox", "truncated": False,
-                                "current_value_candidate": True}
+                existing_query = query is not None and bool(before["value"])
                 try:
-                    type_text(expr, query) if query is not None else click(expr)
+                    if query is not None and not existing_query:
+                        type_text(expr, query)
+                    else:
+                        # Expand the current query without clearing/retyping a
+                        # potentially committed selection. Native ArrowDown
+                        # opens the owned catalog; it never presses Enter.
+                        click(expr)
+                        if existing_query:
+                            cdp("DOM.focus", backendNodeId=backend(expr))
+                            if not js("document.activeElement===("+expr+")"):
+                                raise ValueError("Observed manual input did not receive focus")
+                            cdp("Input.dispatchKeyEvent", type="keyDown", key="ArrowDown", code="ArrowDown", windowsVirtualKeyCode=40)
+                            cdp("Input.dispatchKeyEvent", type="keyUp", key="ArrowDown", code="ArrowDown", windowsVirtualKeyCode=40)
                     labels = []
                     for _ in range(20 if query is not None else 8):
                         wait(0.25 if query is not None else 0.15)
@@ -277,10 +284,10 @@ def dispatch(request, helpers):
                         if labels:
                             break
                 finally:
-                    if query is not None:
+                    if query is not None and not existing_query:
                         type_text(expr, before["value"])
                     escape()
-                    if query is not None:
+                    if query is not None and not existing_query:
                         cdp("Input.dispatchKeyEvent", type="keyDown", key="Tab", code="Tab", windowsVirtualKeyCode=9)
                         cdp("Input.dispatchKeyEvent", type="keyUp", key="Tab", code="Tab", windowsVirtualKeyCode=9)
                 after = state(expr)

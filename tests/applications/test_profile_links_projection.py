@@ -87,14 +87,14 @@ def test_state_combobox_projection_keeps_known_fact_and_requires_unique_catalog_
 
 
 @pytest.mark.parametrize('available', [True, False])
-@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('existing', ['', 'California', 'California, United States'])
 def test_actual_state_autocomplete_never_accepts_typed_only_value(available, existing):
     from playwright.sync_api import sync_playwright
     html = '''<form class=ashby-application-form-container><div data-field-path=state>
 <label class=ashby-application-form-question-title for=state>State/Country of Residence</label>
-<input role=combobox aria-expanded=false oninput="menu(this)"><div id=options role=listbox></div>
+<input role=combobox aria-expanded=false oninput="window.inputEvents++;menu(this)" onkeydown="if(event.key==='ArrowDown')menu(this)"><div id=options role=listbox></div>
 </div><button type=submit>Submit application</button></form><script>
-window.commits=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
+window.inputEvents=0;window.commits=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
 function menu(e){e.setAttribute('aria-controls','options');e.setAttribute('aria-expanded','true');
 if(AVAILABLE)document.querySelector('#options').innerHTML='<div role="option" onclick="choose()">California, United States</div><div role="option">California City, California, United States</div><div role="option">California, Pennsylvania, United States</div>'}
 function choose(){window.commits++;document.querySelector('input[role=combobox]').value='California, United States';document.querySelector('input[role=combobox]').setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}
@@ -110,9 +110,11 @@ function choose(){window.commits++;document.querySelector('input[role=combobox]'
         def call(operation, **values):return dispatch({'operation': operation, 'scope': application_scope(URL), **values}, helpers)
         try:
             call('open', url=URL);field = call('observe')['fields'][0]
-            if existing: page.locator('input[role=combobox]').fill('California, United States')
+            if existing: page.locator('input[role=combobox]').fill(existing)
+            page.evaluate('window.inputEvents=0')
             catalog = call('describe', field=field, query='California')
-            assert page.locator('input[role=combobox]').input_value() == ('California, United States' if existing else '')
+            assert page.locator('input[role=combobox]').input_value() == existing
+            if existing: assert page.evaluate('window.inputEvents') == 0  # No clearing or retyping committed values.
             assert page.evaluate('window.commits') == 0
             field['options'] = [{'label': v, 'value': v} for v in catalog['choices']]
             answers = {'identity.state': booklet.answer('California', 'synthetic verified contact state'),
@@ -129,7 +131,7 @@ function choose(){window.commits++;document.querySelector('input[role=combobox]'
                                  {'application_url': URL, 'authorization_scope': 'one exact application explicitly approved in the local review portal'})
                 assert result['retained'][0]['state']['selected'] == 'California, United States'
             else:
-                assert (key is not None) is existing
+                assert key is None
                 with pytest.raises(ValueError, match='Autocomplete choice is absent'):
                     call('fill', field=field, value={'query': 'California', 'choice': 'California, United States'})
                 assert page.evaluate('window.commits') == 0  # Typed California alone is not a selected answer.
