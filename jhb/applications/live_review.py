@@ -140,6 +140,12 @@ def project(packet, observation):
                 source.update(sha256=native["sha256"], document_origin="candidate_current_upload")
             else:
                 matches = [r for r in packet.get("filled", []) if r.get("key") == key]
+                # Greenhouse replaces its native file input with an uploaded:
+                # reference. Keep all earlier snapshot evidence, but bind the
+                # live receipt to its own current control when that row exists.
+                current_matches = [r for r in matches if r.get("ref") == ref]
+                if current_matches:
+                    matches = current_matches
                 previous = matches[0] if len(matches) == 1 else {}
                 path = Path(previous.get("value", ""))
                 receipt = state.get("receipt")
