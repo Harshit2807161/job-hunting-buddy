@@ -13,10 +13,12 @@ from .booklet import write_private
 INTERVAL = 15
 STAGES = {"initializing", "source_resolution", "preparation", "submission", "notifications", "tracking", "complete"}
 PROCESSED = {"sources_checked", "applications_queued", "sources_replayed", "applications_prepared",
-             "question_handoffs", "auto_requeued", "technical_recovered", "technical_retries", "browser_capacity_deferred"}
+             "question_handoffs", "auto_requeued", "technical_recovered", "technical_retries", "browser_capacity_deferred",
+             "sources_history_blocked", "applications_history_blocked"}
 REASONS = {"repair_quarantine", "manager_active", "draft_capacity", "candidate_answers_required",
            "submission_authority_inactive", "no_ready_jobs", "cycle_failed", "cycle_interrupted", "automation_paused",
-           "local_browser_disconnected", "local_browser_unavailable", "preparation_disabled", "portal_required", "browser_capacity"}
+           "local_browser_disconnected", "local_browser_unavailable", "preparation_disabled", "portal_required", "browser_capacity",
+           "application_history_unavailable"}
 
 
 def _timestamp(now=None):
@@ -34,7 +36,7 @@ def aggregates(conn):
             rows = conn.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state").fetchall()
             allowed = {"queued", "running", "retry", "waiting_review", "submission_uncertain", "waiting_input",
                        "waiting_login", "waiting_captcha", "unsupported", "failed", "submitted", "skipped",
-                       "resolved", "unknown", "pending", "synced", "uncertain", "syncing"}
+                       "resolved", "unknown", "pending", "synced", "uncertain", "syncing", "history_hold"}
             result[key] = {state: count for state, count in rows if state in allowed}
         except sqlite3.OperationalError:
             result[key] = {}
@@ -92,6 +94,8 @@ async def monitor_cycle(conn, book_path, operation, **kwargs):
     try:
         result = await operation(conn, book_path, heartbeat=heartbeat, **kwargs)
         reasons = []
+        if result.get("history_unavailable"):
+            reasons.append("application_history_unavailable")
         if result.get("capacity_blocked"):
             reasons.append("draft_capacity")
         if result.get("browser_capacity_deferred"):
@@ -103,7 +107,7 @@ async def monitor_cycle(conn, book_path, operation, **kwargs):
         if (not result.get("browser_capacity_deferred") and not result.get("sources_checked")
                 and not result.get("applications_prepared") and not result.get("authorized_submissions", {}).get("attempted")):
             reasons.append("no_ready_jobs")
-        heartbeat.update(stage="complete", summary=result, status="completed", reasons=reasons)
+        heartbeat.update(stage="complete", summary=result, status="blocked" if result.get("history_unavailable") else "completed", reasons=reasons)
         return result
     except BaseException as exc:
         heartbeat.update(status="failed", reasons=["cycle_interrupted" if isinstance(exc, asyncio.CancelledError) else "cycle_failed"])

@@ -6,11 +6,13 @@ they never become an exact ATS identity or acquire an invented submission date.
 """
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -169,7 +171,25 @@ def import_sheet(conn, *, config_path=None, executor=None, now=None, refresh_sec
         return {"state": "pending", "imported": 0, "reason": type(exc).__name__}
 
 
-def match(conn, job):
+def _snapshot(path, *, root=None):
+    """Read evidence under the selected root without modifying its permissions."""
+    root = Path(root) if root is not None else config.ROOT
+    path = Path(path)
+    if not path.is_absolute():
+        path = root / path
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError("Unsafe history evidence")
+    path = path.resolve(strict=True)
+    if not path.is_relative_to((root / "private").resolve()) or path.stat().st_size > 1024*1024:
+        raise ValueError("History evidence must remain private")
+    raw = path.read_bytes()
+    snapshot = json.loads(raw)
+    if not isinstance(snapshot, dict):
+        raise ValueError("History snapshot must be an object")
+    return snapshot, hashlib.sha256(raw).hexdigest()
+
+
+def match(conn, job, *, root=None):
     """Return a pre-browser exclusion/hold; never claim a confirmed submission."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='sheet_application_history'").fetchone():
         return None
@@ -203,7 +223,7 @@ def match(conn, job):
             if not (exact or linked or legacy):
                 continue
             candidate = True
-            _, snapshot, actual = tracking._private_json(path)
+            snapshot, actual = _snapshot(path, root=root)
             original = snapshot.get("rows", {}).get(str(number), [])
             original = original[:8]+[""]*max(0, 8-len(original))
             if actual != digest or original != row or snapshot.get("source") != "configured_application_spreadsheet":
@@ -226,3 +246,47 @@ def match(conn, job):
             return decision
         held = held or decision
     return held
+
+
+def cached_ready(conn, *, config_path=None):
+    """Prove a prior complete read exists when a refresh temporarily fails."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='sheet_history_imports'").fetchone():
+        return False
+    try:
+        settings = tracking._load_config(config_path)
+        if settings is None:
+            return False
+        sink = hashlib.sha256(_json([settings["spreadsheet_id"], settings["sheet_name"]]).encode()).hexdigest()
+    except (OSError, ValueError, TypeError):
+        return False
+    for path, digest in conn.execute("SELECT snapshot_path,snapshot_sha256 FROM sheet_history_imports WHERE sink_key=?", (sink,)):
+        try:
+            snapshot, current = _snapshot(path)
+            if current == digest and snapshot.get("source") == "configured_application_spreadsheet":
+                return True
+        except (OSError, ValueError, TypeError):
+            pass
+    return False
+
+
+def cached_match(job, *, root=None):
+    """Read-only guard for direct preparation and submission entry points."""
+    root = Path(root) if root is not None else config.ROOT
+    path = root / "data" / "jobs.sqlite3"
+    if not path.exists():
+        return None
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError("History database must not be a symlink")
+    with sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True, timeout=5) as conn:
+        return match(conn, job, root=root)
+
+
+async def refresh_sheet(conn, **kwargs):
+    """Keep the pipeline heartbeat responsive during bounded Composio GETs."""
+    database = next((row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    if not database:
+        return import_sheet(conn, **kwargs)  # Injected in-memory fixture executors.
+    def refresh():
+        with sqlite3.connect(Path(database).resolve().as_uri()+"?mode=rw", uri=True, timeout=10) as other:
+            return import_sheet(other, **kwargs)
+    return await asyncio.to_thread(refresh)

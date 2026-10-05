@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS application_sources (
 CREATE INDEX IF NOT EXISTS idx_application_sources_ready
  ON application_sources(state, available_at, updated_at);
 """
-STATES = {"queued", "running", "retry", "resolved", "waiting_login", "waiting_captcha", "unknown", "failed", "filtered"}
+STATES = {"queued", "running", "retry", "resolved", "waiting_login", "waiting_captcha", "unknown", "failed", "filtered", "history_hold"}
 
 
 def _eligibility(row):
@@ -55,6 +55,27 @@ def filter_ineligible(conn, *, limit=1000):
     return changed
 
 
+def filter_history(conn, *, limit=1000):
+    """Persist seen/uncertain historical matches before a source browser claim."""
+    from .historical import match
+    now, changed = int(time.time()), 0
+    rows = conn.execute("SELECT source_job_hash,job_json FROM application_sources "
+                        "WHERE state NOT IN ('filtered','history_hold') "
+                        "AND (state<>'running' OR lease_until IS NULL OR lease_until<=?) "
+                        "ORDER BY updated_at LIMIT ?", (now, limit)).fetchall()
+    for item in rows:
+        job = json.loads(item["job_json"])
+        prior = match(conn, job)
+        if prior:
+            job["historical_application"] = prior
+            changed += conn.execute("UPDATE application_sources SET state=?,job_json=?,lease_until=NULL,"
+                                    "available_at=0,updated_at=? WHERE source_job_hash=?",
+                                    ("filtered" if prior["disposition"] == "exclude" else "history_hold",
+                                     json.dumps(job), now, item["source_job_hash"])).rowcount
+    conn.commit()
+    return changed
+
+
 def initialize(conn):
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(application_sources)")}
@@ -64,6 +85,7 @@ def initialize(conn):
 
 
 def enqueue(conn, jobs) -> int:
+    from .historical import match
     initialize(conn)
     inserted = 0
     for job in jobs:
@@ -75,28 +97,48 @@ def enqueue(conn, jobs) -> int:
         result = _eligibility(row)
         if result:
             row["eligibility"] = result
+        prior = match(conn, row)
+        if prior:
+            row["historical_application"] = prior
+        state = "filtered" if result or prior and prior["disposition"] == "exclude" else "history_hold" if prior else "queued"
         inserted += conn.execute(
             "INSERT OR IGNORE INTO application_sources(source_job_hash,job_json,state,updated_at) VALUES(?,?,?,?)",
-            (row["dedupe_hash"], json.dumps(row), "filtered" if result else "queued", int(time.time())),
+            (row["dedupe_hash"], json.dumps(row), state, int(time.time())),
         ).rowcount
     conn.commit()
     return inserted
 
 
 def claim(conn, *, lease_seconds=300, max_attempts=3):
+    from .historical import match
     initialize(conn)
     filter_ineligible(conn)
+    filter_history(conn)
     now = int(time.time())
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE application_sources SET state='failed',lease_until=NULL,updated_at=? "
                      "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ?", (now, now, max_attempts))
-        row = conn.execute(
-            "SELECT * FROM application_sources WHERE attempts < ? AND "
-            "((state IN ('queued','retry') AND available_at <= ?) OR "
-            "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) ORDER BY updated_at,source_job_hash LIMIT 1",
-            (max_attempts, now, now),
-        ).fetchone()
+        for _ in range(100):
+            row = conn.execute(
+                "SELECT * FROM application_sources WHERE attempts < ? AND "
+                "((state IN ('queued','retry') AND available_at <= ?) OR "
+                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) ORDER BY updated_at,source_job_hash LIMIT 1",
+                (max_attempts, now, now),
+            ).fetchone()
+            if row is None:
+                break
+            job = json.loads(row["job_json"])
+            prior = match(conn, job)
+            if not prior:
+                break
+            job["historical_application"] = prior
+            conn.execute("UPDATE application_sources SET state=?,job_json=?,lease_until=NULL,available_at=0,updated_at=? "
+                         "WHERE source_job_hash=?", ("filtered" if prior["disposition"] == "exclude" else "history_hold",
+                                                    json.dumps(job), now, row["source_job_hash"]))
+        else:
+            conn.commit()
+            return None
         if row is None:
             conn.commit()
             return None
@@ -129,7 +171,7 @@ def finish(conn, source_job_hash, state, *, board=None, application_url=None, ev
 def resume(conn, source_job_hash):
     """Explicitly retry a verification/unknown/error handoff, preserving identity."""
     conn.execute("UPDATE application_sources SET state='queued',lease_until=NULL,attempts=0,available_at=0,notified_at=NULL,updated_at=? "
-                 "WHERE source_job_hash=? AND state NOT IN ('running','resolved','filtered')", (int(time.time()), source_job_hash))
+                 "WHERE source_job_hash=? AND state NOT IN ('running','resolved','filtered','history_hold')", (int(time.time()), source_job_hash))
     conn.commit()
 
 

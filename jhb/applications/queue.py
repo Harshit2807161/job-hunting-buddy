@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 """
 STATES = {"queued", "running", "retry", "waiting_review", "submission_uncertain", "waiting_input", "waiting_login",
-          "waiting_captcha", "unsupported", "failed", "submitted", "skipped", "discarded"}
+          "waiting_captcha", "unsupported", "failed", "submitted", "skipped", "discarded", "history_hold"}
 
 
 def _discarded(conn, job_hash):
@@ -47,6 +47,32 @@ def initialize(conn):
         if name not in columns:
             conn.execute(f"ALTER TABLE applications ADD COLUMN {name} {declaration}")
     conn.commit()
+
+
+def _history(conn, job_hash, job, *, now=None):
+    from .historical import match
+    prior = match(conn, job)
+    if prior:
+        job = {**job, "historical_application": prior}
+        conn.execute("UPDATE applications SET state=?,job_json=?,lease_until=NULL,available_at=0,"
+                     "error_kind='historical_application',updated_at=? WHERE job_hash=? "
+                     "AND state NOT IN ('submitted','submission_uncertain','discarded')",
+                     ("skipped" if prior["disposition"] == "exclude" else "history_hold", json.dumps(job),
+                      int(time.time()) if now is None else now, job_hash))
+    return prior
+
+
+def filter_history(conn, *, limit=1000):
+    """Retire old drafts/backlog without changing receipts, packets or live tabs."""
+    now, changed = int(time.time()), 0
+    rows = conn.execute("SELECT job_hash,job_json FROM applications WHERE state NOT IN "
+                        "('submitted','submission_uncertain','discarded','skipped','history_hold') "
+                        "AND (state<>'running' OR lease_until IS NULL OR lease_until<=?) "
+                        "ORDER BY updated_at LIMIT ?", (now, limit)).fetchall()
+    for row in rows:
+        changed += bool(_history(conn, row["job_hash"], json.loads(row["job_json"]), now=now))
+    conn.commit()
+    return changed
 
 
 def enqueue(conn, jobs) -> int:
@@ -77,8 +103,13 @@ def enqueue(conn, jobs) -> int:
         findings = preliminary(row)
         if findings:
             row["eligibility"] = {"policy": POLICY_ID, "findings": findings, "state": "skipped"}
+        from .historical import match
+        prior = match(conn, row)
+        if prior:
+            row["historical_application"] = prior
+        state = "skipped" if findings or prior and prior["disposition"] == "exclude" else "history_hold" if prior else "queued"
         count += conn.execute("INSERT OR IGNORE INTO applications(job_hash,job_json,state,updated_at) VALUES(?,?,?,?)",
-                              (row["dedupe_hash"], json.dumps(row), "skipped" if findings else "queued", int(time.time()))).rowcount
+                              (row["dedupe_hash"], json.dumps(row), state, int(time.time()))).rowcount
     conn.commit()
     return count
 
@@ -106,6 +137,8 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3):
             confirmation = confirmed_application(conn, job.get("url"))
             if confirmation and confirmation["job"]["dedupe_hash"] == row["job_hash"]:
                 _restore_confirmation(conn, confirmation)
+                continue
+            if _history(conn, row["job_hash"], job, now=now):
                 continue
             from ..eligibility import preliminary, POLICY_ID
             findings = preliminary(job)
@@ -140,7 +173,7 @@ def finish(conn, job_hash, state, packet=None):
     # interactive submission was confirmed. Preserve that terminal record.
     conn.execute("UPDATE applications SET state=?,lease_until=NULL,available_at=0,error_kind=NULL,"
                  "updated_at=?,packet=?,notified_at=NULL "
-                 "WHERE job_hash=? AND state<>'discarded' AND (state NOT IN ('submitted','waiting_review','submission_uncertain','skipped') OR state=? "
+                 "WHERE job_hash=? AND state<>'discarded' AND (state NOT IN ('submitted','waiting_review','submission_uncertain','skipped','history_hold') OR state=? "
                  "OR ?='submitted' OR (state='waiting_review' AND ?='skipped'))",
                  (state, int(time.time()), str(packet) if packet else None, job_hash, state, state, state))
     conn.commit()
@@ -151,7 +184,7 @@ def resume(conn, job_hash):
         conn.commit()
         return
     conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,updated_at=? "
-                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submission_uncertain','submitted','skipped','discarded')", (int(time.time()), job_hash))
+                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submission_uncertain','submitted','skipped','discarded','history_hold')", (int(time.time()), job_hash))
     conn.commit()
 
 

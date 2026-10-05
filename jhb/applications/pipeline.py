@@ -459,8 +459,18 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     source_queue.initialize(conn)
     from .application_discard import reconcile_pending
     await asyncio.to_thread(reconcile_pending)
+    from . import historical
+    history_import = await historical.refresh_sheet(conn)
+    if history_import["state"] in {"pending", "busy"} and not historical.cached_ready(conn):
+        # Never open browsers on the first run without loading the configured
+        # application history. A previous complete cache survives connector outages.
+        return {"sources_checked": 0, "applications_prepared": 0,
+                "history_import": history_import, "history_unavailable": True,
+                "reason": "Application history must be read before browser preparation"}
     from .tracking import restore_confirmed_applications
     historical_confirmations = restore_confirmed_applications(conn)
+    sources_history_blocked = source_queue.filter_history(conn)
+    applications_history_blocked = queue.filter_history(conn)
     local_rechecks = recover_authenticated_linkedin_sources(conn, limit=source_limit)
     replayed = replay_resolved_sources(conn)
     recovered = recover_technical_failures(conn)
@@ -476,6 +486,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                "applications_prepared": 0, "states": {}, "question_handoffs": 0, "auto_requeued": answered_rechecks,
                "technical_recovered": recovered, "technical_retries": 0}
     summary["historical_confirmations_reconciled"] = historical_confirmations
+    summary["history_import"] = history_import
+    summary["sources_history_blocked"] = sources_history_blocked
+    summary["applications_history_blocked"] = applications_history_blocked
     summary["description_handoffs_requeued"] = description_rechecks
     sources = []
     if heartbeat:

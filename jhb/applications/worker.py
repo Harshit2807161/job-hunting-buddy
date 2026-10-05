@@ -689,6 +689,15 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
                   "events": [{"event": "explicit_job_exclusion"}], "filled": [], "missing": []}
         return result, await persist(None, directory, job, result)
     if not demo_origin:
+        from .historical import cached_match
+        prior = cached_match(job)
+        if prior:
+            result = {"state": "skipped" if prior["disposition"] == "exclude" else "history_hold",
+                      "reason": prior["reason"], "historical_application": prior,
+                      "events": [{"event": "historical_application_guard"}], "filled": [], "missing": []}
+            existing = directory / "review.html"
+            # Existing manual answers and screenshots remain audit evidence.
+            return result, existing if existing.exists() else await persist(None, directory, job, result)
         from ..eligibility import assess_job
         eligibility = await asyncio.to_thread(assess_job, job)
         booklet.write_private(directory / "eligibility.json", eligibility)

@@ -177,7 +177,10 @@ def test_pipeline_final_stage_drains_confirmed_proof_only(setup, monkeypatch):
     prepared = []
 
     async def runner(candidate, book, **kwargs):
-        assert not sheets.calls  # Tracking follows all application preparation.
+        # Historical duplicate reads precede preparation; appends still follow
+        # confirmed submission evidence at the pipeline's final tracking stage.
+        assert sheets.appends == 0
+        assert all(slug in {"GOOGLESHEETS_GET_SPREADSHEET_INFO", "GOOGLESHEETS_BATCH_GET"} for slug, _ in sheets.calls)
         prepared.append(candidate["url"])
         return {"state": "waiting_review", "events": [], "filled": []}, config.ROOT / "private" / "review.html"
 
