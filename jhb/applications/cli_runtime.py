@@ -98,7 +98,7 @@ def _settled_click(backend, cdp, wait, click_at_xy):
 FIELD_DATA = r"""(()=>{
  const ownedDescription=e=>{
    const owner=e.closest('.field-wrapper');
-   const parts=[];const explicit=e.getAttribute('description');if(explicit)parts.push(explicit);
+   const parts=[];
    if(owner){
      const ids=new Set([e.id+'-description',...(e.getAttribute('aria-describedby')||'').split(' ').filter(Boolean)]);
      for(const id of ids){
@@ -110,7 +110,8 @@ FIELD_DATA = r"""(()=>{
        const text=n.innerText.trim();if(text&&!parts.includes(text))parts.push(text);
      }
    }
-   const text=parts.join('\n');return {description:text.slice(0,4096),description_truncated:text.length>4096};
+   const text=parts.join('\n');return {description:text.slice(0,4096),description_truncated:text.length>4096,
+     legacy_checkbox_description:e.type==='checkbox'?(e.getAttribute('description')||''):''};
  };
  return [...document.querySelectorAll('input,textarea,select')]
  .filter(e=>e.id && !e.disabled && (e.type==='file' ||
@@ -432,8 +433,10 @@ def dispatch(request, helpers):
                 continue
             kind = "combobox" if item["role"] == "combobox" else ("select" if item["tag"] == "SELECT" else item["type"])
             label = item["label"] or item["id"]
-            if kind == "checkbox" and normalize(label) in {"accept", "agree", "yes", "no"} and item.get("description"):
-                label = item["description"] + " (" + label + ")"
+            if kind == "checkbox" and normalize(label) in {"accept", "agree", "yes", "no"} and item.get("legacy_checkbox_description"):
+                # Preserve the prior explicit-attribute behavior only. Newly
+                # collected visible help is separate data, never a new label.
+                label = item["legacy_checkbox_description"] + " (" + label + ")"
             fields.append({"ref": item["id"], "label": label,
                            "type": kind, "required": item["required"], "options": item["options"],
                            "description": item["description"], "description_truncated": item["description_truncated"],

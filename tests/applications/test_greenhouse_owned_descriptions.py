@@ -141,3 +141,33 @@ def test_authorization_heading_binds_only_exact_complete_owned_us_question(chang
         assert key_for_field(field,answers)==key and answers[key]['value'] is True
         assert answers[key]['source']['owned_question']==AUTH
     else:assert key is None and key_for_field(field,answers) is None
+
+
+def test_attribute_only_authorization_text_is_not_visible_owned_question_proof(browser_form):
+    page,helpers=browser_form
+    page.locator('#question_101-description').evaluate('e=>e.remove()')
+    page.locator('#question_101').evaluate('(e,text)=>e.setAttribute("description",text)',AUTH)
+    control=next(f for f in observe(helpers)['fields'] if f['ref']=='question_101')
+    assert control['label']=='U.S. WORK AUTHORIZATION*' and control['description']==''
+    answers={'eligibility.authorized_us':booklet.answer(True,'synthetic explicitly verified US authorization')}
+    assert known_answers.enrich(control,{},answers) is None
+    assert key_for_field(control,answers) is None
+    assert page.evaluate('window.submissions')==0
+
+
+@pytest.mark.parametrize('attribute',[False,True])
+def test_visible_checkbox_help_preserves_raw_label_and_legacy_attribute_behavior(browser_form,attribute):
+    page,helpers=browser_form
+    text='I agree to resolve employment disputes through binding arbitration and waive a jury trial.'
+    page.evaluate('''(text)=>{
+        const wrapper=document.createElement('div');wrapper.className='field-wrapper';
+        wrapper.innerHTML='<label for="consent">Accept</label><input id="consent" type="checkbox" required><div id="consent-description" class="question-description"></div>';
+        wrapper.querySelector('.question-description').textContent=text;
+        document.querySelector('form').prepend(wrapper);
+    }''',text)
+    if attribute:page.locator('#consent').evaluate('(e,text)=>e.setAttribute("description",text)',text)
+    control=next(f for f in observe(helpers)['fields'] if f['ref']=='consent')
+    assert control['label']==(text+' (Accept)' if attribute else 'Accept')
+    assert control['description']==text and control['description_truncated'] is False
+    assert key_for_field(control,{}) is None
+    assert page.locator('#consent').is_checked() is False and page.evaluate('window.submissions')==0
