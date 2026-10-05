@@ -42,6 +42,32 @@ def test_supported_board_dispatch_preserves_exact_description_and_deduplicates_w
     assert pipeline.run_cycle(db, path, resolver=resolver, runner=runner)["applications_prepared"] == 0
 
 
+@pytest.mark.parametrize('replay', [False, True])
+@pytest.mark.parametrize('restriction', ['This role does not offer visa sponsorship.',
+                                      'Required:\nTS/SCI with Polygraph', 'US citizenship required.'])
+def test_observed_official_restrictions_filter_wrapped_jobs_before_dispatch(setup, replay, restriction):
+    db, path = setup
+    source_queue.enqueue(db, [job('wrapped', 'https://www.linkedin.com/jobs/view/1234567890')])
+    verified = {**description(), 'text': restriction, 'sha256': hashlib.sha256(restriction.encode()).hexdigest()}
+    outcome = {'state': 'not_greenhouse', 'board_type': 'ashby', 'application_url': ASHBY,
+               'verified_job_description': verified}
+    if replay:
+        item = source_queue.claim(db)
+        evidence = pipeline._source_artifact(item, outcome)
+        source_queue.finish(db, item['source_job_hash'], 'resolved', board='ashby', application_url=ASHBY, evidence_path=evidence)
+    async def resolver(*args, **kwargs): return outcome
+    async def forbidden(*args, **kwargs): pytest.fail('Excluded official job reached application filler')
+    summary = pipeline.run_cycle(db, path, resolver=resolver, runner=forbidden)
+    assert summary['applications_prepared'] == summary['applications_queued'] == 0
+    assert db.execute('SELECT COUNT(*) FROM applications').fetchone()[0] == 0
+    source = db.execute('SELECT * FROM application_sources').fetchone()
+    assert source['state'] == 'filtered'
+    evidence = json.loads(source['job_json'])['eligibility']['findings']
+    assert evidence and evidence[0]['evidence'] in restriction
+    source_queue.resume(db, source['source_job_hash'])
+    assert source_queue.claim(db) is None
+
+
 @pytest.mark.parametrize("state", ["submitted", "waiting_review", "submission_uncertain", "skipped"])
 def test_replaying_old_supported_classification_never_resets_protected_application(setup, state):
     db, path = setup

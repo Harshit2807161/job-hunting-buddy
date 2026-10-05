@@ -269,6 +269,28 @@ async def _resolve_one(item, resolver, semaphore, timeout, authenticated_resolve
             return {"state": "error", "board_type": "unknown", "reason": f"Source check failed: {type(exc).__name__}", "evidence": []}
 
 
+def _screen_source(item, outcome):
+    """Screen the exact observed ATS description before dispatching its filler."""
+    from ..eligibility import preliminary, POLICY_ID
+    from .job_context import valid_description
+    url = outcome.get("application_url")
+    identity = boards.job_identity(url)
+    observed_board = outcome.get("board_type") or outcome.get("ats")
+    if (outcome.get("closed") or outcome.get("state") not in {"greenhouse", "not_greenhouse"}
+            or not identity or observed_board and observed_board not in {identity[0], "unknown"}):
+        return outcome
+    job = {**item["job"], "url": url}
+    description = outcome.get("verified_job_description")
+    if valid_description(description, url):
+        job["verified_job_description"] = description
+    findings = preliminary(job)
+    if findings:
+        eligibility = {"state": "skipped", "policy": POLICY_ID, "findings": findings,
+                       "reason": "Official job requirements conflict with candidate employment policy"}
+        return {**outcome, "state": "filtered", "eligibility": eligibility, **{k: eligibility[k] for k in ("policy", "findings", "reason")}}
+    return outcome
+
+
 def _route_source(conn, item, outcome, path):
     url = outcome.get("application_url")
     identity = boards.job_identity(url)
@@ -314,7 +336,15 @@ def replay_resolved_sources(conn, *, limit=100):
             outcome = json.loads(path.read_text())
             if outcome.get("application_url") != row["application_url"] or outcome.get("board_type", outcome.get("ats")) != row["board"]:
                 continue
-            inserted += _route_source(conn, {**dict(row), "job": json.loads(row["job_json"])}, outcome, path)
+            item = {**dict(row), "job": json.loads(row["job_json"])}
+            outcome = _screen_source(item, outcome)
+            if outcome.get("state") == "filtered":
+                path = _source_artifact(item, outcome)
+                source_queue.finish(conn, item["source_job_hash"], "filtered", board=row["board"],
+                                    application_url=row["application_url"], evidence_path=path,
+                                    eligibility=outcome["eligibility"])
+                continue
+            inserted += _route_source(conn, item, outcome, path)
         except (OSError, TypeError, ValueError):
             continue
     return inserted
@@ -444,6 +474,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     outcomes = await asyncio.gather(*[_resolve_one(item, resolver, source_semaphore, source_timeout, authenticated_resolver)
                                       for item in sources])
     for item, outcome in zip(sources, outcomes):
+        outcome = _screen_source(item, outcome)
         state = outcome.get("state", "error")
         board = outcome.get("board_type") or outcome.get("ats") or ("greenhouse" if state == "greenhouse" else "unknown")
         path = _source_artifact(item, outcome)
@@ -466,6 +497,8 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
             terminal = "retry" if item["attempts"] < 3 else "failed"
         source_queue.finish(conn, item["source_job_hash"], terminal, board=board,
                             application_url=application_url, evidence_path=path,
+                            eligibility=outcome.get("eligibility") or ({"state": "skipped", "policy": outcome.get("policy"),
+                                "findings": outcome.get("findings", []), "reason": outcome.get("reason")} if terminal == "filtered" else None),
                             retry_seconds=60 * 2 ** (item["attempts"] - 1))
         summary["sources_checked"] += 1
         summary["boards"][board] = summary["boards"].get(board, 0) + 1

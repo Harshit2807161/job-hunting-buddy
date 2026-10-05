@@ -110,10 +110,15 @@ def claim(conn, *, lease_seconds=300, max_attempts=3):
 
 
 def finish(conn, source_job_hash, state, *, board=None, application_url=None, evidence_path=None,
-           retry_seconds=60):
+           retry_seconds=60, eligibility=None):
     if state not in STATES - {"queued", "running"}:
         raise ValueError("Invalid source classification state")
     now = int(time.time())
+    if eligibility is not None and state == "filtered":
+        row = conn.execute("SELECT job_json FROM application_sources WHERE source_job_hash=?", (source_job_hash,)).fetchone()
+        if row:
+            job = {**json.loads(row["job_json"]), "eligibility": eligibility}
+            conn.execute("UPDATE application_sources SET job_json=? WHERE source_job_hash=?", (json.dumps(job), source_job_hash))
     conn.execute("UPDATE application_sources SET state=?,board=?,application_url=?,evidence_path=?,lease_until=NULL,"
                  "available_at=?,updated_at=?,notified_at=NULL WHERE source_job_hash=?",
                  (state, board, application_url, str(evidence_path) if evidence_path else None,

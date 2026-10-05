@@ -57,6 +57,17 @@ def test_nonrequirements_are_not_excluded(text):
     'Candidates must be able to work without sponsorship now or in the future.',
     'Applicants must not require immigration sponsorship.',
     'We do not sponsor employment visas.',
+    'This position is not eligible for H-1B visa sponsorship.',
+    'We do not currently sponsor visas.',
+    'Sponsorship is not available for this role.',
+    'We cannot provide sponsorship at this time or in the future.',
+    'Visa sponsorship cannot be provided for this role.',
+    'Visa Sponsorship:\nNot available',
+    'This role does not offer sponsorship.',
+    'We will not be able to provide visa sponsorship.',
+    'We cannot consider candidates who require sponsorship.',
+    'OPT is supported, but we cannot sponsor H-1B visas in the future.',
+    'Security clearance not required and visa sponsorship is not available.',
 ])
 def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_need(text):
     assert {item['category'] for item in eligibility.restrictions(text)} == {'visa_sponsorship'}
@@ -70,6 +81,15 @@ def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_nee
     'We provide conference sponsorship to employees.',
     'No citizenship is required. Visa sponsorship is available.',
     'Experience with clearance systems and immigration document workflows preferred.',
+    'There are no visa sponsorship restrictions for qualified candidates.',
+    'Candidates without visa sponsorship are also welcome; sponsorship is available if needed.',
+    'This role requires no visa sponsorship experience.',
+    'We accept candidates with or without visa sponsorship.',
+    'Visa sponsorship is not required to apply.',
+    'No F-1 visa experience required.',
+    'F-1 OPT and STEM OPT candidates are welcome.',
+    'Sponsorship:\nAvailable',
+    'Security clearance:\nNone',
 ])
 def test_mentions_and_questions_are_not_a_sponsorship_denial(text):
     assert eligibility.restrictions(text) == []
@@ -78,6 +98,20 @@ def test_mentions_and_questions_are_not_a_sponsorship_denial(text):
 def test_negated_citizenship_does_not_hide_separate_clearance_requirement():
     findings = eligibility.restrictions("No citizenship required and ability to obtain TS/SCI is required.")
     assert {item["category"] for item in findings} == {"security_clearance"}
+
+
+@pytest.mark.parametrize('text', [
+    'We are unable to consider candidates on F-1 OPT or STEM OPT.',
+    'F-1 and OPT candidates are not eligible for this position.',
+    'No OPT or CPT candidates.',
+])
+def test_explicit_student_visa_exclusions_are_not_generic_visa_mentions(text):
+    assert {item['category'] for item in eligibility.restrictions(text)} == {'student_visa_restriction'}
+
+
+def test_unrelated_optional_degree_does_not_mask_mandatory_clearance():
+    findings = eligibility.restrictions('Must possess an active security clearance, a bachelor’s degree is preferred.')
+    assert {item['category'] for item in findings} == {'security_clearance'}
 
 
 @pytest.mark.parametrize("heading", ["Required:", "Minimum requirements:", "Basic Qualifications", "Qualifications"])
@@ -160,6 +194,23 @@ def test_unavailable_description_handoffs_before_browser_without_candidate_quest
     assert "sensitive" not in packet.read_text()
 
 
+def test_official_title_is_screened_even_when_feed_title_and_description_body_are_generic(tmp_path, monkeypatch):
+    item = job()
+    item['verified_job_description']['title'] = 'AI/ML Engineer 1 Top Secret/SCI w/Poly'
+    monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI', lambda: pytest.fail('Official-title exclusion opened browser'))
+    result, _ = asyncio.run(worker.run_job(item, {}, artifacts=tmp_path))
+    assert result['state'] == 'skipped'
+    assert result['eligibility']['description'] == item['verified_job_description']
+
+
+def test_fetched_official_title_is_screened_before_preparation(monkeypatch):
+    item = job()
+    description = item.pop('verified_job_description')
+    description['title'] = 'Software Engineer TS/SCI required'
+    monkeypatch.setattr(eligibility, 'fetch_description', lambda _: description)
+    assert eligibility.assess_job(item)['state'] == 'skipped'
+
+
 def test_old_wrong_source_and_tampered_snapshots_cannot_bypass_fetch(monkeypatch):
     calls = []
     def fetch(item):
@@ -184,6 +235,35 @@ def test_queue_durably_skips_clearance_title_and_cannot_resume():
     queue.resume(conn, row["job_hash"])
     assert queue.claim(conn) is None
     assert queue.enqueue(conn, [item]) == 0
+    conn.close()
+
+
+def test_claim_filters_legacy_queued_restriction_without_spending_attempt_or_losing_packet():
+    conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
+    queue.enqueue(conn, [job()])
+    row = conn.execute('SELECT * FROM applications').fetchone()
+    value = json.loads(row['job_json'])
+    value['raw'] = {'sponsorship': 'Does Not Offer Sponsorship'}
+    conn.execute("UPDATE applications SET job_json=?,packet='private/existing-review.html'", (json.dumps(value),))
+    conn.commit()
+    assert queue.claim(conn) is None
+    row = conn.execute('SELECT * FROM applications').fetchone()
+    assert row['state'] == 'skipped' and row['attempts'] == 0
+    assert row['packet'] == 'private/existing-review.html'
+    assert json.loads(row['job_json'])['eligibility']['findings'][0]['category'] == 'visa_sponsorship'
+    queue.resume(conn, row['job_hash'])
+    assert queue.claim(conn) is None
+    conn.close()
+
+
+def test_preparation_queue_retains_structured_source_sponsorship_metadata():
+    from jhb.store import Job
+    conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
+    item = Job('synthetic', '1', 'Synthetic', 'Software Engineer', job()['url'],
+               raw={'sponsorship': 'Does Not Offer Sponsorship'})
+    assert queue.enqueue(conn, [item]) == 1
+    assert queue.claim(conn) is None
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'skipped'
     conn.close()
 
 

@@ -22,10 +22,28 @@ wrappers and tracking links; submitted and uncertain attempts stay protected.
 
 The standing eligibility filter excludes jobs requiring a particular citizenship,
 security clearance, TS/SCI, or a polygraph, including the ability to obtain or
-maintain those requirements. Phase 1 checks available titles and descriptions;
+maintain those requirements. It also excludes explicit employer refusals of
+present or future visa sponsorship and explicit F-1/OPT/CPT exclusions. Generic
+work authorization, sponsorship questions and offers of sponsorship are not
+denials. These are the candidate's standing employment restrictions, not a
+blanket ban on descriptions containing the words "visa" or "citizenship".
+
+Phase 1 checks available titles, structured sponsorship metadata and descriptions;
 the preparation worker verifies the exact job's official Greenhouse description
 before accessing the candidate browser. Other reviewed boards require an exact
 official description with identity, timestamp, and content-hash provenance.
+The verified official title is screened too, even when the feed title is generic.
+MCP extraction preserves headings and bullets so a required clearance bullet
+cannot disappear into a neighboring preferred-qualification section. Label/value
+pairs such as "Visa Sponsorship: Not available" remain meaningful.
+
+Newly resolved links and replayed classifications are screened before they can
+dispatch a Phase 2 worker. Disqualified sources become `filtered`; preparation
+queue claims also recheck legacy pending jobs without consuming browser attempts.
+Filtered/skipped jobs cannot be reactivated by routine queue resumption. The
+dashboard opening records expose the matched requirement and category, including
+restrictions discovered only in the official description. Unknown or unavailable
+descriptions remain explicit handoffs and do not count as eligibility approval.
 Matched requirements and their source
 are saved privately, and the application becomes `skipped`. Answering an older
 question or resuming the queue cannot reactivate that state. This filter does not

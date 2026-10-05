@@ -105,6 +105,18 @@ def test_new_user_exclusion_blocks_old_ready_draft_before_any_submit_attempt(set
     assert db.execute("SELECT COUNT(*) FROM authorized_submission_attempts").fetchone()[0] == 0
 
 
+def test_official_title_exclusion_blocks_legacy_ready_packet_before_terminal_dispatch(setup):
+    db, bookpath, _, _ = setup
+    job = candidate(setup)
+    path = config.ROOT / 'private' / 'applications' / job['dedupe_hash'] / 'eligibility.json'
+    evidence = json.loads(path.read_text())
+    evidence['description']['title'] = 'AI/ML Engineer 1 Top Secret/SCI w/Poly'
+    booklet.write_private(path, evidence)
+    async def forbidden(*args, **kwargs): pytest.fail('Excluded official title reached terminal dispatcher')
+    result = asyncio.run(overnight.drain(db, bookpath, submitter=forbidden))
+    assert result['attempted'] == 0
+
+
 @pytest.mark.parametrize("change,allowed", [(None, True), ("resume_evidence", False), ("deterministic", False), ("role", False)])
 def test_modern_submit_requires_current_independent_role_fit_evidence(setup, monkeypatch, change, allowed):
     from jhb.applications import role_fit

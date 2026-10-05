@@ -220,7 +220,8 @@ def _candidate(conn, row, auth, book):
     _, eligibility, _ = _read_private(packet_path.parent / "eligibility.json")
     description = verified_description({**job, "verified_job_description": eligibility.get("description", {})})
     if (eligibility.get("state") != "eligible" or eligibility.get("policy") != POLICY_ID
-            or not description or restrictions(description["text"])):
+            or not description or restrictions(description.get("title", ""), title=True)
+            or restrictions(description["text"])):
         return None
     if os.environ.get("JHB_ROLE_FIT_REVIEW") == "1":
         from .role_fit import evidence_hash, POLICY as FIT_POLICY

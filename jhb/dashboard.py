@@ -478,12 +478,18 @@ class DashboardStore:
                 # An observed destination can be shown, but only an exact job
                 # identity can be joined to a real Phase 2 application.
                 app_hash = boards.application_hash(destination or row["url"])
-                application = conn.execute("SELECT state,updated_at FROM applications WHERE job_hash=?", (app_hash,)).fetchone() if app_hash and "applications" in tables else None
+                application = conn.execute("SELECT * FROM applications WHERE job_hash=?", (app_hash,)).fetchone() if app_hash and "applications" in tables else None
                 try:
                     locations = json.loads(row["locations"] or "[]")
                 except (ValueError, TypeError):
                     locations = []
                 eligibility = _json(source["job_json"]).get("eligibility", {}) if source else {}
+                if not eligibility and application and application["state"] == "skipped":
+                    job = _json(application["job_json"])
+                    eligibility = job.get("eligibility", {})
+                    if not eligibility:
+                        _, packet = self.packet(application, job)
+                        eligibility = packet.get("eligibility", {})
                 findings = eligibility.get("findings", []) if isinstance(eligibility, dict) else []
                 items.append({"id": row["dedupe_hash"], "company": _text(row["company"]), "title": _text(row["title"]),
                     "location": _text(", ".join(v for v in locations if isinstance(v, str)), 500) if isinstance(locations, list) else "",

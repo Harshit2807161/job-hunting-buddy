@@ -943,3 +943,18 @@ def test_phase1_openings_refuse_unsafe_source_link_and_absent_table_is_empty(por
                  ('a'*64, 'fixture', 'Synthetic', 'Role', 'javascript:alert(1)', 100))
     conn.commit()
     assert client.get('/api/v1/openings').json()['items'][0]['url'] is None
+
+
+def test_openings_show_full_description_exclusion_recorded_by_preparation_worker(portal):
+    from jhb import store as ledger
+    root, conn, book, client, headers = portal
+    conn.executescript(ledger.SCHEMA)
+    job, folder, data = add_job(conn, root, state='skipped')
+    findings = [{'category': 'visa_sponsorship', 'evidence': 'Sponsorship is not available for this role'}]
+    data['eligibility'] = {'state': 'skipped', 'findings': findings}
+    booklet.write_private(folder / 'packet.json', data)
+    conn.execute('INSERT INTO jobs(dedupe_hash,source,company,title,url,first_seen) VALUES(?,?,?,?,?,?)',
+                 (job['dedupe_hash'], 'fixture', job['company'], job['title'], job['url'], 100))
+    conn.commit()
+    item = client.get('/api/v1/openings').json()['items'][0]
+    assert item['application_state'] == 'skipped' and item['filter_reasons'] == findings

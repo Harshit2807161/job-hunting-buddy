@@ -45,7 +45,8 @@ def enqueue(conn, jobs) -> int:
     for job in jobs:
         row = job if isinstance(job, dict) else {
             "dedupe_hash": job.dedupe_hash, "source": job.source, "company": job.company,
-            "title": job.title, "url": job.url, "role_classes": ",".join(job.role_classes)}
+            "title": job.title, "url": job.url, "role_classes": ",".join(job.role_classes),
+            "raw": getattr(job, "raw", {})}
         url = row.get("url", "")
         identity = boards.job_identity(url)
         routed_board = boards.route_board(url, row.get("board_type"))
@@ -86,10 +87,19 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3):
             if row is None:
                 break
             from .tracking import confirmed_application, _restore_confirmation
-            confirmation = confirmed_application(conn, json.loads(row["job_json"]).get("url"))
-            if not confirmation or confirmation["job"]["dedupe_hash"] != row["job_hash"]:
-                break
-            _restore_confirmation(conn, confirmation)
+            job = json.loads(row["job_json"])
+            confirmation = confirmed_application(conn, job.get("url"))
+            if confirmation and confirmation["job"]["dedupe_hash"] == row["job_hash"]:
+                _restore_confirmation(conn, confirmation)
+                continue
+            from ..eligibility import preliminary, POLICY_ID
+            findings = preliminary(job)
+            if findings:
+                job["eligibility"] = {"policy": POLICY_ID, "state": "skipped", "findings": findings}
+                conn.execute("UPDATE applications SET state='skipped',job_json=?,lease_until=NULL,available_at=0,"
+                             "updated_at=? WHERE job_hash=?", (json.dumps(job), now, row["job_hash"]))
+                continue
+            break
         else:
             conn.commit()
             return None
