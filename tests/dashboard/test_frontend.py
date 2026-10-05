@@ -320,3 +320,17 @@ def test_review_agent_work_is_separate_from_candidate_questions_and_blocks_appro
         assert page.get_by_role('button', name='Approve and submit this application').is_disabled()
         assert page.get_by_label('Answer: Gender').count() == 0
         assert not actions and not errors
+
+
+def test_related_submission_warning_shows_distinct_locations_without_auto_action():
+    def related(question, detail):
+        detail['location'] = 'New York, NY'
+        detail['related_submissions'] = [{'job_hash': '2'*64, 'url': 'https://jobs.ashbyhq.com/synthetic/11111111-1111-1111-1111-111111111111',
+            'company': 'Synthetic Employer', 'title': 'Software Engineer', 'location': 'San Francisco, CA', 'confirmed_date': '2026-10-03'}]
+    with workspace(f'#review/{KEY}', configure=related) as (page, actions, errors):
+        page.get_by_text('A similar role was already submitted', exact=True).wait_for()
+        assert page.get_by_text('New York, NY', exact=True).is_visible()
+        assert page.get_by_text('San Francisco, CA · Recorded submission 2026-10-03', exact=True).is_visible()
+        assert page.get_by_role('link', name='View confirmed application').get_attribute('href') == '/#review/'+'2'*64
+        assert page.get_by_text('These are different posting IDs.', exact=False).is_visible()
+        assert not actions and not errors

@@ -737,3 +737,40 @@ def test_answer_to_genuine_unknown_queues_despite_other_known_agent_work(portal)
     assert response.json()["applications"][0]["remaining_required_questions"] == 0
     assert response.json()["automation_paused"] is False
     assert conn.execute("SELECT state FROM applications WHERE job_hash=?", (job["dedupe_hash"],)).fetchone()[0] == "queued"
+
+
+def test_same_title_distinct_posting_warns_with_prior_location_and_receipt_review(portal):
+    root, conn, book, client, headers = portal
+    old, _, _ = add_job(conn, root, n=1, state="submitted")
+    new, _, _ = add_job(conn, root, n=2, state="waiting_review")
+    old.update(location="San Francisco, CA", company="  SYNTHETIC Employer  ")
+    new.update(location="New York, NY")
+    conn.execute("UPDATE applications SET job_json=? WHERE job_hash=?", (json.dumps(new), new["dedupe_hash"]))
+    conn.execute("INSERT INTO confirmed_submissions VALUES(?,?,?,?,?,?,?)", (
+        "proof-old", "greenhouse", old["url"], json.dumps(old), "2026-10-04T01:00:00+00:00", "{}", 1))
+    conn.commit()
+    states = list(conn.execute("SELECT job_hash,state FROM applications ORDER BY job_hash"))
+    detail = client.get(f"/api/v1/applications/{new['dedupe_hash']}").json()
+    assert detail["location"] == "New York, NY"
+    assert len(detail["related_submissions"]) == 1
+    prior = detail["related_submissions"][0]
+    assert prior["job_hash"] == old["dedupe_hash"] and prior["url"] == old["url"]
+    assert prior["location"] == "San Francisco, CA" and prior["confirmed_date"] == "2026-10-03"
+    assert prior["relation"] == "same_title_prior_submission"
+    assert states == list(conn.execute("SELECT job_hash,state FROM applications ORDER BY job_hash"))
+    # Same exact posting is already protected by the identity guards, rather
+    # than being mislabeled as a separate related posting.
+    assert client.get(f"/api/v1/applications/{old['dedupe_hash']}").json()["related_submissions"] == []
+
+
+def test_distinct_role_or_employer_is_not_a_related_submission(portal):
+    root, conn, book, client, headers = portal
+    target, _, _ = add_job(conn, root)
+    for n, company, title in [(2, "Another Employer", target["title"]),
+                               (3, target["company"], "Senior Software Engineer"),
+                               (4, target["company"], "Software Engineer (2028)")]:
+        previous = {"url": f"https://job-boards.greenhouse.io/example/jobs/{n}", "company": company, "title": title}
+        conn.execute("INSERT INTO confirmed_submissions VALUES(?,?,?,?,?,?,?)", (
+            f"proof{n}", "greenhouse", previous["url"], json.dumps(previous), "2026-10-04T01:00:00+00:00", "{}", 1))
+    conn.commit()
+    assert client.get(f"/api/v1/applications/{target['dedupe_hash']}").json()["related_submissions"] == []

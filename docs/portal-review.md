@@ -127,3 +127,9 @@ candidate answers, and returns `agent_tasks`. It does not modify application
 states, receipts, approvals or browser fields. Preparation scheduling remains a
 separate guarded step. Candidate lists and emails also route contexts dynamically,
 so stale cards cannot overwrite known facts while reconciliation is pending.
+
+The review also warns when a different posting at the same company has the same
+full title as a recorded confirmed application. It shows both locations and links
+the earlier portal record. Different posting IDs do not establish different
+internal requisitions, and matching titles do not prove duplication. This warning
+is informational: it never changes receipt history, job state or approval rules.

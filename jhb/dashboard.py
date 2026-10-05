@@ -43,6 +43,40 @@ def _json(text, fallback=None):
         return {} if fallback is None else fallback
 
 
+def _location(job):
+    value = job.get("location")
+    if isinstance(value, str) and value.strip():
+        return _text(value, 500)
+    locations = job.get("locations", [])
+    return _text(", ".join(item for item in locations if isinstance(item, str)), 500) if isinstance(locations, list) else ""
+
+
+def _related_submissions(conn, job):
+    """Informational same-company/title warning, never proof of duplicate jobs."""
+    identity = boards.job_identity(job.get("url"))
+    company, title = booklet.normalize(str(job.get("company") or "")), booklet.normalize(str(job.get("title") or ""))
+    if not identity or not company or not title or not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='confirmed_submissions'").fetchone():
+        return []
+    matches = []
+    for row in conn.execute("SELECT application_url,job_json,confirmed_at FROM confirmed_submissions ORDER BY confirmed_at DESC"):
+        previous, prior_identity = _json(row["job_json"]), boards.job_identity(row["application_url"])
+        if (not prior_identity or prior_identity == identity
+                or booklet.normalize(str(previous.get("company") or "")) != company
+                or booklet.normalize(str(previous.get("title") or "")) != title):
+            continue
+        canonical = boards.canonical_url(row["application_url"])
+        if previous.get("url") and boards.job_identity(previous["url"]) != prior_identity:
+            continue
+        matches.append({"job_hash": boards.application_hash(canonical), "url": canonical,
+                        "company": _text(previous.get("company")), "title": _text(previous.get("title")),
+                        "location": _location(previous), "confirmed_at": row["confirmed_at"],
+                        "confirmed_date": _day(row["confirmed_at"]), "relation": "same_title_prior_submission"})
+        if len(matches) == 10:
+            break
+    return matches
+
+
 def _stamp(value):
     try:
         if isinstance(value, (int, float)):
@@ -183,6 +217,8 @@ class DashboardStore:
         job = _json(row["job_json"])
         if boards.application_hash(job.get("url")) != job_hash:
             raise ValueError("Application identity mismatch")
+        with self.connection() as conn:
+            related = _related_submissions(conn, job)
         path, packet, displayed_packet_sha = self.packet(row, job, with_digest=True)
         manifest = packet.get("review_inventory", {})
         inventory = manifest.get("fields", packet.get("review_questions", [])) if isinstance(manifest, dict) else []
@@ -325,7 +361,8 @@ class DashboardStore:
                                   "captured_at": packet.get("capture", {}).get("captured_at") or packet.get("created_at")}
             except (ValueError, OSError, TypeError, AttributeError):
                 pass
-        return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
+        return {"job_hash": job_hash, "state": row["state"], "location": _location(job),
+            "related_submissions": related, "fields": output, "role_fit_notes": fit_notes[:20],
             "screenshot": screenshot, "packet_revision": displayed_packet_sha,
             "draft_focus_available": screenshot["available"] and self._focusable(row, packet),
             "questions": pending_questions, "agent_tasks": agent_tasks,
