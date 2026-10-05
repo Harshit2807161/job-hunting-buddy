@@ -253,3 +253,30 @@ def test_explicit_matching_public_response_can_resolve_unfamiliar_conditional_no
     assert planner.key_for_field(field,{key:record})==key
     field['description']='Changed unfamiliar note.'
     assert planner.key_for_field(field,{key:record}) is None
+
+
+def test_public_native_context_mismatch_reopens_even_when_catalog_cannot_be_probed(tmp_path):
+    conn,book,jobs,q=seed(tmp_path,1)
+    initial=booklet.load(book)
+    initial['question_handoffs'][q['id']]['contexts'][jobs[0]['dedupe_hash']]['description']='Existing native instruction.'
+    booklet.write_private(book,initial)
+    metadata.enrich(conn,book,opener=opener_for({100:api(100,'question_700','Different public instruction.')}))
+    questions.answer(q['id'],'Yes',book)
+    result={'missing':[{'question':q['question'],'ref':'question_700','required':True,'type':'combobox',
+        'choices':[],'country_context':'United States','description':'Existing native instruction.'}]}
+    pending=questions.collect(jobs[0],result,book)
+    assert len(pending)==1 and pending[0]['status']=='pending'
+    assert next(iter(booklet.load(book)['custom_answers'].values()))['status']=='needs_input'
+
+
+def test_context_matching_missing_catalog_does_not_ask_candidate_again(tmp_path):
+    conn,book,jobs,q=seed(tmp_path,1)
+    initial=booklet.load(book)
+    initial['question_handoffs'][q['id']]['contexts'][jobs[0]['dedupe_hash']]['description']='Exact native instruction.'
+    booklet.write_private(book,initial)
+    metadata.enrich(conn,book,opener=opener_for({100:api(100,'question_700','Exact native instruction.')}))
+    questions.answer(q['id'],'Yes',book)
+    result={'missing':[{'question':q['question'],'ref':'question_700','required':True,'type':'combobox',
+        'choices':[],'country_context':'United States','description':'Exact native instruction.'}]}
+    assert questions.collect(jobs[0],result,book)==[]
+    assert booklet.load(book)['question_handoffs'][q['id']]['status']=='answered'

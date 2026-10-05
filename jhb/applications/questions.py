@@ -151,15 +151,16 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
                                        (old_context.get("description_truncated") is True) != truncated)
                 public_changed = False
                 if stored and isinstance(stored.get("source"), dict) and "public_question_metadata_proofs" in stored["source"]:
-                    from .question_metadata import public_response_allowed
+                    from .question_metadata import public_response_allowed, public_response_context_matches
                     # A failed catalog inspection is technical, not a candidate
                     # correction. Native enrichment reports that failure before
                     # this path; a nonempty observed catalog can prove a change.
                     fresh_field = {"ref": ref, "label": text, "type": item.get("type", "text"),
                         "required": required, "country_context": country, "description": description,
                         "description_truncated": truncated, "choices": item.get("choices", [])}
+                    public_changed = not public_response_context_matches(fresh_field, stored)
                     if item.get("choices"):
-                        public_changed = not public_response_allowed(fresh_field, stored)
+                        public_changed |= not public_response_allowed(fresh_field, stored)
                 reopen = not newer_answer and (public_changed or changed_description or record["status"] == "resolved" or incompatible or (
                     stored and stored.get("status") == "declined" and required))
                 if reopen and (public_changed or changed_description or not stored or stored["status"] != "declined" or required):
