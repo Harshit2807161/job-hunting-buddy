@@ -10,6 +10,12 @@ from tests.applications.test_authorized_submission import evidence, synthetic_ru
 TRANSPORT_ERROR = "Browser Use CLI failed; run browser-use --doctor"
 
 
+def terminal_pointer(helpers, params):
+    """Fault the terminal pointer, independently of owned dropdown inspection."""
+    return helpers["js"]("(([x,y])=>Boolean(document.elementFromPoint(x,y)?.closest('#application button[type=submit]')))(" +
+                         json.dumps([params.get("x", 0), params.get("y", 0)]) + ")")
+
+
 @pytest.mark.parametrize("failure", ["priming_release", "priming_move", "press", "release_before", "release_after"])
 def test_pointer_timeout_boundary_keeps_prepress_retryable_and_postpress_uncertain(tmp_path, monkeypatch, failure):
     job, packet, packet_path, manifest, authority, attempt = evidence(tmp_path, monkeypatch)
@@ -20,7 +26,7 @@ def test_pointer_timeout_boundary_keeps_prepress_retryable_and_postpress_uncerta
         events = []
         def cdp(method, **params):
             budget = params.pop("_response_timeout", None)
-            if armed["value"] and method == "Input.dispatchMouseEvent":
+            if armed["value"] and method == "Input.dispatchMouseEvent" and terminal_pointer(helpers, params):
                 clicked = bool(json.loads(attempt.read_text()).get("runtime_click_started"))
                 guard = helpers["js"]("window.__jhbGuard===true")
                 kind = params["type"]
@@ -74,8 +80,9 @@ def test_pointer_hover_changes_are_rechecked_before_consuming_terminal_attempt(t
         presses = []
         def cdp(method, **params):
             params.pop("_response_timeout", None)
+            is_terminal = method == "Input.dispatchMouseEvent" and terminal_pointer(helpers, params)
             result = original_cdp(method, **params)
-            if armed["value"] and method == "Input.dispatchMouseEvent":
+            if armed["value"] and is_terminal:
                 if params["type"] == "mousePressed":
                     presses.append(True)
                 if params["type"] == "mouseMoved" and not armed["mutated"]:
@@ -111,11 +118,12 @@ def test_geometry_settles_again_after_guarded_hover_and_all_terminal_inputs_use_
         events = []
         def cdp(method, **params):
             budget = params.pop("_response_timeout", None)
+            is_terminal = method == "Input.dispatchMouseEvent" and terminal_pointer(helpers, params)
             result = original_cdp(method, **params)
             if armed["value"]:
                 if method == "DOM.getBoxModel":
                     events.append({"kind": "geometry"})
-                elif method == "Input.dispatchMouseEvent":
+                elif is_terminal:
                     events.append({"kind": params["type"], "y": params["y"], "budget": budget,
                                    "guard": helpers["js"]("window.__jhbGuard===true")})
                     if params["type"] == "mouseMoved" and not armed["moved"]:
@@ -178,7 +186,7 @@ def test_exact_owned_tab_wakes_once_only_for_guarded_prepress_native_timeout(tmp
                 state["changed"] = True
         def cdp(method, **params):
             params.pop("_response_timeout", None)
-            if state["armed"] and method == "Input.dispatchMouseEvent":
+            if state["armed"] and method == "Input.dispatchMouseEvent" and terminal_pointer(helpers, params):
                 if params["type"] == "mouseMoved":
                     state["moves"] += 1
                     if case != "press_timeout" and (not state["awake"] or case == "still_paused"):

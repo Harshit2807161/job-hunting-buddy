@@ -34,7 +34,7 @@ HTML = '''<!doctype html><html lang="en"><title>Synthetic approved application</
 <label id="country-label">Country</label><div class="select__value-container"><div class="select__single-value"><div class="iti__flag iti__us"></div><span>+1</span></div>
 <input id="country" role="combobox" aria-labelledby="country-label" aria-required="true"></div></div></div>
 <label id="gender-label">Gender</label><div class="select__value-container"><span class="select__multi-value__label">Male</span>
-<input id="gender" role="combobox" aria-labelledby="gender-label" aria-required="true"></div>
+<input id="gender" role="combobox" aria-labelledby="gender-label" aria-required="true" aria-controls="gender-options" aria-expanded="false" onfocus="openGender()" onkeydown="if(event.key==='ArrowDown')openGender()"><div id="gender-options" role="listbox" hidden></div></div>
 <label for="privacy">I agree to the privacy policy</label><input id="privacy" type="checkbox" required checked>
 <label id="school0">School</label><div class="select__value-container"><span class="select__single-value">Synthetic University</span><input id="school--0" role="combobox" aria-labelledby="school0" aria-required="true"></div>
 <label id="school1">School</label><div class="select__value-container"><span class="select__single-value">Synthetic College</span><input id="school--1" role="combobox" aria-labelledby="school1" aria-required="true"></div>
@@ -46,6 +46,14 @@ HTML = '''<!doctype html><html lang="en"><title>Synthetic approved application</
 <button type="submit">Submit application</button></form>
 <script>
 window.submissions=0;window.trusted=false;window.mode='success';
+window.genderCatalog=['Male','Female','Decline to self identify'];window.genderSelections=0;
+function openGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+list.replaceChildren();for(const label of window.genderCatalog){const option=document.createElement('div');option.role='option';option.textContent=label;
+option.onclick=()=>{window.genderSelections++;control.parentElement.querySelector('.select__multi-value__label').textContent=label;closeGender()};list.appendChild(option)}
+list.hidden=false;control.setAttribute('aria-expanded','true')}
+function closeGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+if(list)list.hidden=true;if(control)control.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeGender()});
 function uploaded(input){const file=input.files[0],group=input.parentElement;input.remove();
 const wrapper=document.createElement('div');wrapper.className='file-upload__filename';
 const name=document.createElement('p');name.textContent=file.name;wrapper.appendChild(name);
@@ -185,6 +193,7 @@ def test_authorized_fresh_cli_double_checks_then_native_submits_and_persists_rec
         assert checks["documents"]["documents.resume"]["sha256"] == hashlib.sha256(type(attempt_path)(manifest["documents"]["documents.resume"]["value"]).read_bytes()).hexdigest()
         assert inspect("window.submissions") == 1
         assert inspect("window.trusted") is True
+        assert inspect("window.genderSelections") == 0  # Catalog inspection never chooses a disclosure.
         assert inspect("window.__jhbGuard") is True
         assert other_guard() is True
         assert json.loads(attempt_path.read_text())["runtime_click_started"] is True
@@ -192,6 +201,23 @@ def test_authorized_fresh_cli_double_checks_then_native_submits_and_persists_rec
         repeated = asyncio.run(submit_reviewed(job, packet_path, manifest, authorization=auth, attempt=attempt_path, cli=cli))
         assert repeated["state"] == "uncertain"
         assert inspect("window.submissions") == 1
+
+
+@pytest.mark.parametrize("catalog", [[], ["Female", "Decline to self identify"]])
+def test_missing_or_incompatible_owned_demographic_catalog_blocks_before_upload_and_click(tmp_path, monkeypatch, catalog):
+    job, packet, packet_path, manifest, auth, attempt_path = evidence(tmp_path, monkeypatch)
+    with synthetic_runtime() as (call, invoke, inspect, helpers, target, other_guard, lane):
+        inspect("window.genderCatalog=" + json.dumps(catalog))
+        cli = AuthorizedSubmissionCLI(); monkeypatch.setattr(cli, "invoke", invoke)
+        result = asyncio.run(submit_reviewed(job, packet_path, manifest, authorization=auth, attempt=attempt_path, cli=cli))
+        assert result["state"] == "waiting_review"
+        assert inspect("window.submissions") == 0
+        assert inspect("window.genderSelections") == 0
+        assert inspect("document.querySelector('#gender').parentElement.querySelector('.select__multi-value__label').textContent") == "Male"
+        assert inspect("document.querySelector('#resume').files.length") == 0
+        assert inspect("window.__jhbGuard") is True
+        assert not json.loads(attempt_path.read_text()).get("runtime_click_started")
+        assert not (attempt_path.parent / "receipt.json").exists()
 
 
 @pytest.mark.parametrize("change", ["new_required", "changed_answer", "education_missing", "document_bytes", "multiple_drafts"])
@@ -336,6 +362,14 @@ ASHBY_HTML = '''<!doctype html><html><title>Synthetic Ashby application</title>
 </div><button type="button" id="submit">Submit application</button></div>
 <button type="button">Submit application</button>
 <script>window.submissions=0;window.trusted=false;window.mode='success';
+window.genderCatalog=['Male','Female','Decline to self identify'];window.genderSelections=0;
+function openGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+list.replaceChildren();for(const label of window.genderCatalog){const option=document.createElement('div');option.role='option';option.textContent=label;
+option.onclick=()=>{window.genderSelections++;control.parentElement.querySelector('.select__multi-value__label').textContent=label;closeGender()};list.appendChild(option)}
+list.hidden=false;control.setAttribute('aria-expanded','true')}
+function closeGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+if(list)list.hidden=true;if(control)control.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeGender()});
 document.getElementById('submit').onclick=e=>{window.submissions++;window.trusted=e.isTrusted;
 if(window.mode==='success'){document.getElementById('application').remove();document.body.append('Thank you for applying. We have received your application.')}
 if(window.mode==='verify'){document.getElementById('application').remove();document.body.append('Verification code: check your inbox')}
@@ -570,6 +604,14 @@ NATIVE_HTML = '''<!doctype html><html><title>Synthetic native application</title
 <button type="submit">Submit application</button></form>
 <form id="newsletter"><input aria-label="Newsletter"><button>Submit application</button></form>
 <script>window.submissions=0;window.trusted=false;window.mode='success';
+window.genderCatalog=['Male','Female','Decline to self identify'];window.genderSelections=0;
+function openGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+list.replaceChildren();for(const label of window.genderCatalog){const option=document.createElement('div');option.role='option';option.textContent=label;
+option.onclick=()=>{window.genderSelections++;control.parentElement.querySelector('.select__multi-value__label').textContent=label;closeGender()};list.appendChild(option)}
+list.hidden=false;control.setAttribute('aria-expanded','true')}
+function closeGender(){const control=document.getElementById('gender'),list=document.getElementById('gender-options');
+if(list)list.hidden=true;if(control)control.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeGender()});
 document.getElementById('application').onsubmit=e=>{e.preventDefault();window.submissions++;window.trusted=e.isTrusted;
 if(window.mode==='success'){e.target.remove();document.body.append('Your application has been submitted successfully.')}
 if(window.mode==='verify'){e.target.remove();document.body.append('Verification code: check your inbox')}
