@@ -68,6 +68,35 @@ def test_worker_drafting_tasks_are_visible_without_fabricating_candidate_questio
     assert 'never-expose' not in json.dumps(detail)
 
 
+
+@pytest.mark.parametrize('secret_in',['question','ref'])
+def test_worker_tasks_do_not_bypass_secret_field_presentation_filter(portal,secret_in):
+    root,conn,book,client,headers=portal
+    job,folder,packet=add_job(conn,root,state='failed')
+    question='Enter your API key' if secret_in=='question' else 'Known contact field'
+    ref='ordinary-field' if secret_in=='question' else 'verification_token'
+    packet['review_inventory']={'complete':False,'fields':[{'ref':ref,'question':question,
+        'type':'text','required':True,'status':'blank'}]}
+    packet['agent_tasks']=[{'ref':ref,'question':question,'task_kind':'known_answer_fill','required':True}]
+    booklet.write_private(folder/'packet.json',packet)
+    detail=client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert detail['agent_tasks']==[] and detail['approval']['can_approve'] is False
+    assert ref not in [task['ref'] for task in detail['agent_tasks']]
+
+
+@pytest.mark.parametrize('fields',[None,{},'invalid fields'])
+def test_malformed_task_inventory_does_not_crash_or_create_approval(portal,fields):
+    root,conn,book,client,headers=portal
+    job,folder,packet=add_job(conn,root,state='failed')
+    packet['review_inventory']={'complete':False,'fields':fields}
+    packet['agent_tasks']=[{'ref':'why','question':'Why this employer?','task_kind':'narrative_generation'}]
+    booklet.write_private(folder/'packet.json',packet)
+    response=client.get(f"/api/v1/applications/{job['dedupe_hash']}")
+    assert response.status_code==200
+    detail=response.json()
+    assert detail['agent_tasks']==[] and detail['inventory_complete'] is False
+    assert detail['approval']['can_approve'] is False
+
 def test_daily_counts_use_confirmed_receipts_and_pacific_calendar_boundaries(portal):
     root, conn, book, client, headers = portal
     job, folder, packet = add_job(conn, root, state="submitted", packet_state="waiting_review")

@@ -336,8 +336,12 @@ class DashboardStore:
         if row["state"] not in {"submitted", "skipped", "submission_uncertain"}:
             packet_tasks = packet.get("agent_tasks", [])
             native_fields = manifest.get("fields", []) if isinstance(manifest, dict) else []
+            if not isinstance(native_fields, list):
+                native_fields = []
             for task in packet_tasks if isinstance(packet_tasks, list) else []:
-                if (not isinstance(task, dict) or task.get("task_kind") not in
+                if (not isinstance(task, dict)
+                        or questions._SECRET.search(" ".join(str(task.get(key) or "") for key in ("question", "ref")))
+                        or task.get("task_kind") not in
                         {"document_generation", "narrative_generation", "known_answer_fill"}
                         or not any(field.get("ref") == task.get("ref") and field.get("question") == task.get("question")
                                    for field in native_fields if isinstance(field, dict))):
@@ -351,6 +355,8 @@ class DashboardStore:
         for record in current_book.get("question_handoffs", {}).values():
             context = record.get("contexts", {}).get(job_hash)
             if record.get("status") in {"pending", "answered"} and context and not context.get("resolved"):
+                if questions._SECRET.search(" ".join(str(value or "") for value in (record.get("question"), context.get("ref")))):
+                    continue
                 if record.get("status") == "answered" and context.get("routing") not in {"known_answer_fill", "document_generation"}:
                     continue
                 kind = route(current_book, record, context)
