@@ -1,7 +1,7 @@
 # Candidate approval before submission
 
 Review mode prepares applications autonomously and stops for a portal review.
-Only the candidate's explicit **Approve and submit** click creates a
+Only the candidate's explicit **Submit current browser form** click creates a
 per-application portal approval. Saving an answer only resumes filling. A separately
 enabled, finite Full autonomy window can delegate final review to an independent
 agent without manufacturing portal approvals; see [overnight-submissions.md](overnight-submissions.md).
@@ -24,6 +24,24 @@ screenshot. The API rejects stale views and duplicate approvals. The worker
 rechecks the revision and live fields, invokes a separate read-only reviewer,
 and performs two fresh retained-value audits. New questions, changed answers,
 changed documents, revocation or expiry stop the terminal action.
+
+`JHB_APPROVE_CURRENT_LIVE_FORM=1` adopts the candidate's current browser values
+when they click approval. The CLI reads the exact saved tab without filling,
+normalizing answers, navigating or replacing documents. Candidate edits become
+the new job-scoped packet; the prior packet and screenshot remain archived.
+Native file bytes (or a retained mutation-sensitive upload receipt) must identify
+the current PDF. A filename alone does not establish which resume is attached.
+Failed capture leaves the prior evidence intact and never refills the form.
+
+Optional blanks still need individual acknowledgment. Previously blank fields
+that the candidate filled in Chrome no longer require a stale blank acknowledgment.
+An independent read-only reviewer and two retained-value audits compare against
+the newly captured current form, never restore an older generated draft, and
+bind the final receipt to its documents. The approval endpoint immediately
+dispatches that exact job when the submission lane is free; otherwise its
+durable approval queues behind the current submission. Ready, queued, submitting,
+needs-review and confirmed-submitted states remain distinct in the dashboard.
+Old consumed approvals are never silently replayed after this feature is enabled.
 
 `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects legacy broad overnight authority even if
 its old environment flag is accidentally enabled. The separate

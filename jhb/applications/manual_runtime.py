@@ -90,6 +90,9 @@ def dispatch(request, helpers):
         helpers["switch_tab"](request["target_id"])
     operation = request["operation"]
     if operation == "review_current":
+        if (not matches_scope(request.get("expected_url", ""), scope)
+                or not matches_scope(js("location.href"), scope)):
+            raise ValueError("Current-form review differs from its approved manual scope")
         from .live_review import observe
         return observe(request, helpers)
     if operation == "open":
