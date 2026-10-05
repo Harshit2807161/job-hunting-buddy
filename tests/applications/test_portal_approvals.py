@@ -110,3 +110,41 @@ def test_expired_approval_does_not_attempt_submission(draft):
     auth["expires_at"] = datetime.fromtimestamp(time.time()-1, timezone.utc).isoformat()
     booklet.write_private(__import__('pathlib').Path(auth["authorization_path"]), auth)
     assert asyncio.run(approvals.drain(conn, bookpath))["attempted"] == 0
+
+
+@pytest.mark.parametrize("failure,code", [
+    ("role_fit", "role_fit_not_eligible"), ("unsupported_fit", "role_fit_not_verified"),
+    ("eligibility", "eligibility_not_verified"), ("application_state", "application_not_waiting_review"),
+])
+def test_zero_attempt_approval_retains_a_safe_actionable_reason(draft, monkeypatch, failure, code):
+    from jhb import eligibility
+    from jhb.applications import role_fit
+    conn, key, path, bookpath, _ = draft
+    job = json.loads(path.read_text())["job"]
+    text = "Build commercial Python software."
+    description = {"text": text, "source_url": job["url"], "status": "verified", "retrieved_at": time.time(),
+                   "job_identity": list(boards.job_identity(job["url"])), "sha256": hashlib.sha256(text.encode()).hexdigest()}
+    booklet.write_private(path.parent / "eligibility.json", {"state": "eligible", "policy": eligibility.POLICY_ID,
+        "description": description})
+    fit = {"state": "skipped", "source": role_fit.POLICY, "selected_role": "sde", "mode": "independent_codex"}
+    if failure == "unsupported_fit":
+        fit.update(state="eligible", mode="interactive_candidate_selected_job")
+    booklet.write_private(path.parent / "role-fit.json", fit)
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    if failure == "eligibility":
+        booklet.write_private(path.parent / "eligibility.json", {"state": "skipped", "policy": eligibility.POLICY_ID,
+            "description": description})
+    approve(draft)
+    if failure == "application_state":
+        conn.execute("UPDATE applications SET state='skipped'");conn.commit()
+    before = path.read_bytes()
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Rejected preflight reached terminal submission")
+    result = asyncio.run(approvals.drain(conn, bookpath, submitter=forbidden))
+    assert result["attempted"] == 0 and result["submitted"] == 0 and result["handoffs"] == 1
+    assert result["blocked"][0]["reason_code"] == code and result["blocked"][0]["reason"]
+    approval = conn.execute("SELECT state,result_json FROM application_approvals").fetchone()
+    assert approval["state"] == "needs_review"
+    assert json.loads(approval["result_json"])["reason_code"] == code
+    assert path.read_bytes() == before
+    assert conn.execute("SELECT count(*) FROM authorized_submission_attempts").fetchone()[0] == 0

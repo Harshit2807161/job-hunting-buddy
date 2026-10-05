@@ -440,6 +440,9 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
         from .worker import run_job, write_packet
         from .source_refresh import refresh
         async def runner(job, book, **kwargs):
+            from .retained_preparation import retained_review
+            if retained_review(job, book, book_path):
+                return await run_job(job, book, book_path=book_path, **kwargs)
             refreshed = await refresh(job, resolver=resolver, timeout=source_timeout)
             directory = config.ROOT / "private" / "applications" / job["dedupe_hash"]
             booklet.write_private(directory / "source-refresh.json", refreshed)
@@ -575,7 +578,8 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                     summary["technical_retries"] += 1
                 if _requeue_answered_handoff(conn, item["job"], result, book_path):
                     summary["auto_requeued"] += 1
-                summary["applications_prepared"] += 1
+                if not result.get("preparation_preserved"):
+                    summary["applications_prepared"] += 1
                 state = conn.execute("SELECT state FROM applications WHERE job_hash=?", (item["job_hash"],)).fetchone()[0]
                 summary["states"][state] = summary["states"].get(state, 0) + 1
                 if state == "waiting_input":

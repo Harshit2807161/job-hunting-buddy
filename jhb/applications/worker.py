@@ -673,12 +673,17 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
     selected_role = role or explicit_role or role_for_job(job)
     job = {**job, "selected_role": selected_role}
     if not re.fullmatch(r"[a-f0-9]{64}", job["dedupe_hash"]): raise ValueError("Invalid job identity")
+    from .retained_preparation import retained_review
+    retained = retained_review(job, book, book_path) if not demo_origin else None
     directory = (artifacts or config.ROOT / "private" / "applications") / job["dedupe_hash"]
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
+    if not retained:
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o700)
     async def persist(page, directory, job, result, *, cli_actions=None):
         from .application_discard import check
         check(config.ROOT, job["dedupe_hash"])
+        if retained:
+            return retained["review_path"]  # Objective exclusions retain the original audit evidence.
         result["selected_role"] = selected_role
         packet = await write_packet(page, directory, job, result, cli_actions=cli_actions)
         if owner_token is None:
@@ -695,12 +700,13 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
             result = {"state": "skipped" if prior["disposition"] == "exclude" else "history_hold",
                       "reason": prior["reason"], "historical_application": prior,
                       "events": [{"event": "historical_application_guard"}], "filled": [], "missing": []}
-            existing = directory / "review.html"
+            existing = retained["review_path"] if retained else directory / "review.html"
             # Existing manual answers and screenshots remain audit evidence.
-            return result, existing if existing.exists() else await persist(None, directory, job, result)
+            return result, existing if existing and existing.exists() else await persist(None, directory, job, result)
         from ..eligibility import assess_job
         eligibility = await asyncio.to_thread(assess_job, job)
-        booklet.write_private(directory / "eligibility.json", eligibility)
+        if not retained:
+            booklet.write_private(directory / "eligibility.json", eligibility)
         if eligibility["state"] != "eligible":
             result = {"state": eligibility["state"], "reason": eligibility["reason"],
                       "eligibility": eligibility, "events": [{"event": "eligibility_handoff", "policy": eligibility["policy"]}],
@@ -708,6 +714,11 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
             return result, await persist(None, directory, job, result)
         if eligibility.get("description"):
             job = {**job, "verified_job_description": eligibility["description"]}
+    if retained:
+        result = dict(retained["packet"]) if retained["packet"] else {
+            "state": "unsupported", "filled": [], "missing": [], "events": []}
+        result.update(reason=retained["reason"], preparation_preserved=True)
+        return result, retained["review_path"]
     if not selected_role:
         result = {"state": "waiting_input", "reason": "Ambiguous role; choose --role sde or --role ml",
                   "missing": [{"question": "Choose the SDE or ML resume variant"}], "events": [], "filled": []}

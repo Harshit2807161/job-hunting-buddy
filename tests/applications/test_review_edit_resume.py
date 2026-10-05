@@ -83,6 +83,19 @@ def test_explicit_edit_recovers_once_with_old_bound_draft_and_retained_response(
     assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone()
 
 
+def test_preparation_preservation_allows_only_verified_explicit_portal_edit(edited):
+    from jhb.applications.retained_preparation import retained_review
+    conn, key, book_path, packet_path, _ = edited
+    assert answer_resume.recover(conn, book_path) == 1
+    (config.ROOT / "data").mkdir()
+    with sqlite3.connect(config.ROOT / "data" / "jobs.sqlite3") as disk:
+        conn.backup(disk)
+    job = json.loads(packet_path.read_text())["job"]
+    book = booklet.load(book_path)
+    assert retained_review(job, book, book_path) is None
+    assert retained_review(job, book) is not None  # Generic retry has no bound edit context.
+
+
 @pytest.mark.parametrize("change", ["none", "revision", "question_id", "job_hash", "provider", "revoked", "binding", "packet_sha", "packet_path", "book_path", "context_ref", "resolved", "screenshot", "packet", "legacy_capture"])
 def test_generic_or_stale_edit_evidence_preserves_waiting_review(edited, change):
     conn, key, book_path, packet_path, qid = edited

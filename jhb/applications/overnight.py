@@ -187,21 +187,25 @@ def _manifest(job, packet, book):
     return manifest
 
 
-def _candidate(conn, row, auth, book):
+def _candidate(conn, row, auth, book, *, rejections=None):
+    def reject(code):
+        if rejections is not None:
+            rejections.append(code)
+        return None
     job = json.loads(row["job_json"])
     from .historical import match
     if match(conn, job):
-        return None
+        return reject("application_history_blocked")
     if auth.get("scope") == PORTAL_SCOPE and auth.get("job_hash") != row["job_hash"]:
-        return None
+        return reject("approval_job_mismatch")
     if booklet.job_excluded(book, job):
-        return None
+        return reject("candidate_excluded_job")
     identity = boards.job_identity(job.get("url", ""))
     allowed = ["greenhouse"] if auth.get("scope") == SCOPE else auth.get("boards", [])
     if (not identity or identity[0] not in allowed or not boards.submission_supported(identity[0])
             or row["state"] != "waiting_review" or not row["packet"]
             or boards.application_hash(job["url"]) != row["job_hash"]):
-        return None
+        return reject("application_not_submission_ready")
     if auth.get("scope") == SCOPE:
         source = conn.execute("SELECT j.first_seen,s.state,s.board,s.application_url FROM jobs j "
                               "JOIN application_sources s ON s.source_job_hash=j.dedupe_hash "
@@ -209,10 +213,10 @@ def _candidate(conn, row, auth, book):
         start, expiry = _timestamp(auth["authorized_at"]), _timestamp(auth["expires_at"])
         if (not source or not start <= source["first_seen"] < expiry or source["state"] != "resolved"
                 or source["board"] != "greenhouse" or boards.job_identity(source["application_url"]) != identity):
-            return None
+            return reject("source_authorization_mismatch")
     if conn.execute("SELECT name FROM sqlite_master WHERE name='confirmed_submissions'").fetchone():
         if any(boards.job_identity(item[0]) == identity for item in conn.execute("SELECT application_url FROM confirmed_submissions")):
-            return None
+            return reject("application_already_submitted")
     packet_path, packet, _ = _read_private(Path(row["packet"]).parent / "packet.json")
     if auth.get("scope") == PORTAL_SCOPE:
         from .approvals import validate_binding
@@ -221,13 +225,13 @@ def _candidate(conn, row, auth, book):
             or packet.get("missing") or packet.get("verification")
             or packet.get("job", {}).get("dedupe_hash") != row["job_hash"]
             or boards.job_identity(packet.get("job", {}).get("url", "")) != identity):
-        return None
+        return reject("review_packet_not_ready")
     _, eligibility, _ = _read_private(packet_path.parent / "eligibility.json")
     description = verified_description({**job, "verified_job_description": eligibility.get("description", {})})
     if (eligibility.get("state") != "eligible" or eligibility.get("policy") != POLICY_ID
             or not description or restrictions(description.get("title", ""), title=True)
             or restrictions(description["text"])):
-        return None
+        return reject("eligibility_not_verified")
     if os.environ.get("JHB_ROLE_FIT_REVIEW") == "1":
         from .role_fit import evidence_hash, POLICY as FIT_POLICY
         from .worker import role_for_job
@@ -237,7 +241,7 @@ def _candidate(conn, row, auth, book):
         if (role not in {"sde", "ml"} or fit.get("state") != "eligible" or fit.get("source") != FIT_POLICY
                 or fit.get("mode") != "independent_codex" or fit.get("selected_role") != role
                 or fit.get("evidence_hash") != evidence_hash({**job, "verified_job_description": description}, book, role)):
-            return None
+            return reject("role_fit_not_eligible" if fit.get("state") != "eligible" else "role_fit_not_verified")
     return job, packet_path, packet
 
 

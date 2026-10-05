@@ -336,6 +336,33 @@ def revoke(conn, job_hash):
     return {"job_hash": job_hash, "state": "revoked"}
 
 
+def _preflight_handoff(conn, job_hash, auth, book_path):
+    """Explain a zero-attempt handoff without changing any submission guard."""
+    row = conn.execute("SELECT * FROM applications WHERE job_hash=?", (job_hash,)).fetchone()
+    code = "submission_preflight_blocked"
+    try:
+        if row is None or row["state"] != "waiting_review":
+            code = "application_not_waiting_review"
+        else:
+            rejected = []
+            overnight._candidate(conn, row, auth, booklet.load(book_path), rejections=rejected)
+            code = rejected[0] if rejected else code
+    except (OSError, ValueError, KeyError, TypeError):
+        code = "submission_evidence_invalid"
+    messages = {
+        "application_not_waiting_review": "The application's saved state changed after approval; it is no longer ready for submission.",
+        "application_history_blocked": "Existing application history blocks a possible duplicate submission.",
+        "candidate_excluded_job": "Your saved exclusion prevents this application from being submitted.",
+        "eligibility_not_verified": "Current job eligibility evidence is unavailable, stale, or contains an excluded requirement.",
+        "role_fit_not_eligible": "The role-fit assessment rejected this role; the approval was not submitted.",
+        "role_fit_not_verified": "The role-fit assessment does not satisfy the current submission requirements.",
+        "review_packet_not_ready": "The saved review packet is incomplete or no longer matches this application.",
+        "submission_evidence_invalid": "Submission evidence needs review before the application can be sent.",
+    }
+    return {"job_hash": job_hash, "reason_code": code,
+            "reason": messages.get(code, "Submission checks blocked this application before any submit attempt.")}
+
+
 async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, job_hash=None):
     initialize(conn)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 10:
@@ -387,6 +414,10 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, job_
             if not isinstance(exc, Exception):
                 raise
         else:
+            if not result.get("attempted") and not result.get("submitted") and not result.get("uncertain"):
+                handoff = _preflight_handoff(conn, row["job_hash"], auth, book_path)
+                result = {**result, **handoff, "handoffs": max(1, result.get("handoffs", 0))}
+                summary.setdefault("blocked", []).append(handoff)
             state = "submitted" if result.get("submitted") else "uncertain" if result.get("uncertain") else "needs_review"
             conn.execute("UPDATE application_approvals SET state=?,result_json=? WHERE approval_id=? AND (state='submitting' OR ?='submitted')",
                          (state, json.dumps(result), row["approval_id"], state)); conn.commit()
