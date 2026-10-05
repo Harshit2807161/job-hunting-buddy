@@ -124,7 +124,8 @@ def context_response_key(field, answers):
         return None
     from .review_inventory import candidate_response
     expected = {"owned_description_sha256": hashlib.sha256(description.encode()).hexdigest(),
-                "owned_description_truncated": False}
+                "owned_description_truncated": False, "field_ref": field.get("ref"),
+                "country_context": normalize(str(field.get("country_context") or ""))}
     for key, record in answers.items():
         if (not key.startswith("custom.") or not candidate_response(record)
                 or _label({"label": record.get("question", "")}) != _label(field)
@@ -137,7 +138,9 @@ def context_response_key(field, answers):
             proofs = []
         proofs = [source, *proofs]
         if any(isinstance(proof, dict) and proof.get("owned_description_sha256") == expected["owned_description_sha256"]
-               and proof.get("owned_description_truncated") is False for proof in proofs):
+               and proof.get("owned_description_truncated") is False
+               and proof.get("field_ref") == expected["field_ref"]
+               and proof.get("country_context") == expected["country_context"] for proof in proofs):
             return key
     return None
 

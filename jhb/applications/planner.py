@@ -80,7 +80,10 @@ def completed_cs_degree_answer(education_records, *, as_of=None):
 def key_for_field(field, answers):
     label = normalize(field["label"])
     from .review_inventory import candidate_response, candidate_wording_requested
-    if candidate_wording_requested(label):
+    if candidate_wording_requested(label + "\n" + str(field.get("description", ""))):
+        from .known_answers import context_response_key, has_conditional_instruction
+        if has_conditional_instruction(field):
+            return context_response_key(field, answers)
         # A generated narrative cannot satisfy an employer's request for the
         # candidate's own words. Only an explicit scoped question response can.
         for key, item in answers.items():

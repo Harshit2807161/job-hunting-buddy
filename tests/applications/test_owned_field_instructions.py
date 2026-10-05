@@ -165,7 +165,8 @@ def test_unfamiliar_note_accepts_only_fresh_explicit_candidate_context_response(
     answers = facts()
     control = field('For a different contractual situation, select the applicable choice.')
     proof = {'owned_description_sha256': hashlib.sha256(control['description'].encode()).hexdigest(),
-             'owned_description_truncated': False}
+             'owned_description_truncated': False, 'field_ref': control['ref'],
+             'country_context': ''}
     source = {'provider': 'explicit user question response', 'question_id': 'q_synthetic',
               **(proof if proof_style == 'singular' else {'owned_description_proofs': [proof]})}
     answers['custom.context'] = {**booklet.answer(False, source), 'question': LABEL, 'field_ref': control['ref']}
@@ -176,16 +177,22 @@ def test_unfamiliar_note_accepts_only_fresh_explicit_candidate_context_response(
     assert key_for_field(control, answers) is None
 
 
-@pytest.mark.parametrize('change', ['wrong_digest', 'generated_provider', 'missing_question_id', 'missing_truncation'])
+@pytest.mark.parametrize('change', ['wrong_digest', 'generated_provider', 'missing_question_id', 'missing_truncation',
+                                  'missing_ref', 'changed_ref', 'missing_country', 'changed_country'])
 def test_context_response_requires_exact_complete_instruction_and_candidate_provenance(change):
     answers, control = facts(), field('Select the applicable contractual answer.')
     source = {'provider': 'explicit user question response', 'question_id': 'q_synthetic',
               'owned_description_sha256': hashlib.sha256(control['description'].encode()).hexdigest(),
-              'owned_description_truncated': False}
+              'owned_description_truncated': False, 'field_ref': control['ref'],
+             'country_context': ''}
     if change == 'wrong_digest':source['owned_description_sha256'] = '0'*64
     elif change == 'generated_provider':source['provider'] = 'generated'
     elif change == 'missing_question_id':source.pop('question_id')
-    else:source.pop('owned_description_truncated')
+    elif change == 'missing_truncation':source.pop('owned_description_truncated')
+    elif change == 'missing_ref':source.pop('field_ref')
+    elif change == 'changed_ref':source['field_ref'] = 'a different same-label control'
+    elif change == 'missing_country':source.pop('country_context')
+    else:source['country_context'] = 'united kingdom'
     answers['custom.context'] = {**booklet.answer(False, source), 'question': LABEL, 'field_ref': control['ref']}
     assert key_for_field(control, answers) is None
 
@@ -194,6 +201,35 @@ def test_explicit_no_cannot_override_california_instruction_even_when_na_unavail
     answers, control = facts(), field(choices=('Yes', 'No'))
     source = {'provider': 'explicit user question response', 'question_id': 'q_synthetic',
               'owned_description_sha256': hashlib.sha256(NOTE.encode()).hexdigest(),
-              'owned_description_truncated': False}
+              'owned_description_truncated': False, 'field_ref': control['ref'],
+             'country_context': ''}
     answers['custom.context'] = {**booklet.answer(False, source), 'question': LABEL, 'field_ref': control['ref']}
+    assert key_for_field(control, answers) is None
+
+
+def test_help_text_requests_candidate_wording_before_old_generated_custom_binding():
+    control = {'ref': 'motivation', 'label': 'Why are you interested in this role?', 'type': 'textarea',
+               'required': True, 'description': 'Please write your answer in your own words without using AI.'}
+    answers = {'custom.old': {**booklet.answer('Synthetic generated prose', {'provider': 'generated'}),
+                             'question': control['label'], 'field_ref': control['ref']}}
+    assert key_for_field(control, answers) is None
+    answers['custom.old']['source'] = {'provider': 'explicit user question response', 'question_id': 'q_synthetic'}
+    assert key_for_field(control, answers) == 'custom.old'
+
+
+def test_context_proof_country_is_bound_to_fresh_observation():
+    control = {**field('Select the applicable contractual answer.'), 'country_context': 'United States'}
+    proof = {'owned_description_sha256': hashlib.sha256(control['description'].encode()).hexdigest(),
+             'owned_description_truncated': False, 'field_ref': control['ref'], 'country_context': 'united states'}
+    record = {**booklet.answer(False, {'provider': 'explicit user question response', 'question_id': 'q_synthetic', **proof}),
+              'question': LABEL}
+    answers = {'custom.context': record}
+    assert key_for_field(control, answers) == 'custom.context'
+    assert key_for_field({**control, 'country_context': 'United Kingdom'}, answers) is None
+
+
+def test_own_wording_note_does_not_bypass_restriction_context_proof():
+    control = field('Please answer in your own words without using AI.')
+    answers = {'custom.old': {**booklet.answer(False, {'provider': 'explicit user question response', 'question_id': 'q_synthetic'}),
+                             'question': LABEL, 'field_ref': control['ref']}}
     assert key_for_field(control, answers) is None
