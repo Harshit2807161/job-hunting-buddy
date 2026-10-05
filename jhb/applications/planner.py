@@ -158,8 +158,9 @@ def key_for_field(field, answers):
     if known_key:
         return known_key
     from .known_answers import contact_location
-    if contact_location(field):
-        return None  # A scalar mailing location cannot fill a native contact catalog.
+    from .ashby_education import education_question
+    if contact_location(field) or education_question(field):
+        return None  # Native/current-study projections must precede scalar fallbacks.
     # Workday's observed repeater metadata maps original records by index;
     # generated DOM row ids need not be consecutive or start at zero.
     kind, index, column = (field.get("record_kind"), field.get("record_index"), field.get("record_column"))
@@ -238,6 +239,7 @@ def key_for_field(field, answers):
         "please provide your current address.": "standing.mailing_address",
         "are you willing to work in the office 5 days a week?": "standing.office_willingness",
         "are you willing to work in an office setting 5 days a week?": "standing.office_willingness",
+        "are you open to working five days a week in person at our san francisco office?": "standing.office_willingness",
     }
     if label in known_facts and known_facts[label] in answers:
         return known_facts[label]

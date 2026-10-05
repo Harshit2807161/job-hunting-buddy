@@ -91,6 +91,23 @@ def test_graduation_requires_explicit_real_day_in_the_same_current_degree_month(
     assert education.derive({**field("graduation"), "calendar_format": None}, answers(), as_of=TODAY) is None
 
 
+def test_current_education_is_bound_through_production_planner_and_audited_after_catalog_closes():
+    from jhb.applications.known_answers import enrich
+    from jhb.applications.planner import key_for_field, deterministic_plan, validate_plan
+    a = answers()
+    fields = [field(column) for column in ("school", "degree", "major", "graduation")]
+    for f in fields:
+        assert enrich(f, {}, a, as_of=TODAY)
+    plan = validate_plan(deterministic_plan({"fields": fields, "buttons": []}, a),
+                         {"fields": fields, "buttons": []}, a)
+    assert len(plan["bindings"]) == 4
+    closed = {**fields[0], "options": []}
+    assert key_for_field(closed, a) == key_for_field(fields[0], a)
+    changed = {**fields[0], "description": "For an already completed degree."}
+    assert key_for_field(changed, a) is None
+    assert enrich(changed, {}, a, as_of=TODAY) is None
+
+
 def test_controller_queries_only_the_verified_current_school(monkeypatch):
     import jhb.applications.ashby_education
     original = education.school_basis

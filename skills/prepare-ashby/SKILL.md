@@ -45,7 +45,8 @@ The standard contact Location autocomplete uses the verified application city,
 state and country to select one exact owned catalog result. Keep the mailing city
 separate; plain text is not a committed catalog selection. This mapping is scoped
 to the standard system field with no help or the observed “City, State, and Country”
-hint. Custom office questions
+hint. The same system control labeled Home Location accepts the observed hint
+“The city you currently live in. Start typing and select from the list.” Custom office questions
 or changed help text need their own answer binding.
 
 For School Name, Degree, Discipline/Field of Study and Graduation Date or

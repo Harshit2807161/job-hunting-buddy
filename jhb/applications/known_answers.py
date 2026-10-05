@@ -51,14 +51,16 @@ def _choices(field):
 
 
 def contact_location(field):
-    return (_label(field) == "location" and field.get("type") == "combobox"
+    return (_label(field) in {"location", "home location"} and field.get("type") == "combobox"
             and field.get("ref") == "ashby:_systemfield_location:control:0")
 
 
 def plain_contact_location(field):
     """Only the observed standard contact question has this standing mapping."""
+    hints = {"location": {"", "city, state, and country"},
+             "home location": {"the city you currently live in. start typing and select from the list."}}
     return (contact_location(field)
-            and normalize(field.get("description") or "") in {"", "city, state, and country"}
+            and normalize(field.get("description") or "") in hints.get(_label(field), set())
             and not field.get("description_truncated"))
 
 
@@ -78,7 +80,9 @@ def contact_location_basis(answers):
 def _signature(field):
     observation = {"ref": field.get("ref"), "label": _label(field), "type": field.get("type"),
                    "choices": _choices(field), "country_context": field.get("country_context")}
-    if (_label(field) == "state/country of residence" and field.get("type") == "combobox") or contact_location(field):
+    from .ashby_education import school_control
+    if ((_label(field) == "state/country of residence" and field.get("type") == "combobox")
+            or contact_location(field) or school_control(field)):
         # Search results are transient; a closed committed autocomplete emits
         # no options. Bind stable question metadata, then audit exact committed
         # value against the recorded native catalog choice and verified facts.
@@ -264,7 +268,11 @@ def enrich(field, job, answers, *, as_of=None):
     answers.pop("standing.observed." + _signature(field), None)
     label, choices = _label(field), _choices(field)
     value, evidence = None, None
-    if has_conditional_instruction(field) and field.get("type") in {"radio", "select", "combobox"}:
+    from .ashby_education import derive as education_derivation
+    education = education_derivation(field, answers, as_of=today)
+    if education:
+        value, evidence = education
+    elif has_conditional_instruction(field) and field.get("type") in {"radio", "select", "combobox"}:
         description = field.get("description")
         note = normalize(description).replace("note :", "note:") if isinstance(description, str) else ""
         residence = _california_residence(answers)

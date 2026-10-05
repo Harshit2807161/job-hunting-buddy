@@ -10,7 +10,9 @@ from jhb.applications.submission_runtime import _checks
 URL = 'https://jobs.ashbyhq.com/example/11111111-2222-3333-4444-555555555555/application'
 @pytest.mark.parametrize('available', [True, False])
 @pytest.mark.parametrize('existing', ['', 'San Diego, California, United States'])
-def test_native_contact_city_queries_restores_commits_and_fresh_audits(available, existing):
+@pytest.mark.parametrize('label,note', [('Location', 'City, State, and Country'),
+    ('Home Location', 'The city you currently live in. Start typing and select from the list.')])
+def test_native_contact_city_queries_restores_commits_and_fresh_audits(available, existing, label, note):
     from playwright.sync_api import sync_playwright
     html = '''<form class=ashby-application-form-container><div data-field-path=_systemfield_location>
 <label class=ashby-application-form-question-title for=_systemfield_location>Location</label>
@@ -21,7 +23,7 @@ window.inputEvents=0;window.commits=0;window.submissions=0;document.querySelecto
 function menu(e){e.setAttribute('aria-controls','options');e.setAttribute('aria-expanded','true');
 if(AVAILABLE)document.querySelector('#options').innerHTML='<div role="option" onclick="choose()">San Diego, California, United States</div><div role="option">San Diego, Texas, United States</div><div role="option">San Diego, California, Canada</div>'}
 function choose(){window.commits++;document.querySelector('input[role=combobox]').value='San Diego, California, United States';document.querySelector('input[role=combobox]').setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}
-</script>'''.replace('AVAILABLE', 'true' if available else 'false')
+</script>'''.replace('AVAILABLE', 'true' if available else 'false').replace('>Location</label>', '>'+label+'</label>').replace('City, State, and Country', note)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(); page = browser.new_page()
         page.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=html)); page.goto(URL)
