@@ -311,8 +311,16 @@ class OwnedTabs:
         except (OSError, ValueError, TypeError, KeyError, RuntimeError):
             return []
         finally:
-            if original and original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
-                self.helpers["switch_tab"](original)
+            # CDP may briefly list the source after close_tab has removed it.
+            # Never reattach the target this operation just attempted to close.
+            if original and original != target:
+                try:
+                    if original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
+                        self.helpers["switch_tab"](original)
+                except RuntimeError:
+                    # A different original tab can also disappear between the
+                    # target listing and attach; cleanup evidence remains valid.
+                    pass
         return []
 
     def record_readonly_observation(self, request, result):

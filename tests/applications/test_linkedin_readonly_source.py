@@ -240,6 +240,66 @@ def test_terminal_readonly_sources_close_after_classification_without_closing_us
     assert fixture.closed == [target]
 
 
+def test_terminal_cleanup_does_not_reattach_closed_current_source_from_stale_target_list(fixture_browser):
+    fixture, root = fixture_browser
+    result = resolve(fixture)
+    target = result['readonly_observation']['target_id']
+    path = terminal_proof(root, result)
+    original_helpers = fixture.helpers
+    reattached = []
+
+    def helpers():
+        values = original_helpers()
+        listing, switch = values['list_tabs'], values['switch_tab']
+        def stale_listing():
+            rows = listing()
+            if target in fixture.closed:
+                rows.append({'targetId': target, 'url': SOURCE})
+            return rows
+        def strict_switch(requested):
+            reattached.append(requested)
+            if requested not in fixture.pages:
+                raise RuntimeError('No target with given id found')
+            switch(requested)
+        return {**values, 'list_tabs': stale_listing, 'switch_tab': strict_switch}
+
+    fixture.helpers = helpers
+    # The close was issued, but the lagging listing cannot prove departure yet.
+    assert terminal_cleanup(fixture, path)['closed_targets'] == []
+    assert fixture.closed == [target] and reattached == [target]
+    assert set(fixture.pages) == {'user', 'unclaimed'}
+    owner = OwnedTabs(fixture.helpers(), root)
+    assert owner.tabs[target]['state'] == 'close_unconfirmed'
+    fixture.helpers = original_helpers
+    owner = OwnedTabs(fixture.helpers(), root)
+    owner.refresh()
+    assert owner.tabs[target]['state'] == 'departed'
+    assert terminal_cleanup(fixture, path)['closed_targets'] == []
+    assert fixture.closed == [target]
+
+
+def test_terminal_cleanup_preserves_result_when_previous_tab_disappears_before_reattach(fixture_browser):
+    fixture, root = fixture_browser
+    result = resolve(fixture)
+    target = result['readonly_observation']['target_id']
+    fixture.current = 'user'
+    original_helpers = fixture.helpers
+
+    def helpers():
+        values = original_helpers()
+        switch = values['switch_tab']
+        def disappearing_original(requested):
+            if requested == 'user' and target in fixture.closed:
+                raise RuntimeError('No target with given id found')
+            switch(requested)
+        return {**values, 'switch_tab': disappearing_original}
+
+    fixture.helpers = helpers
+    assert terminal_cleanup(fixture, terminal_proof(root, result))['closed_targets'] == [target]
+    assert fixture.closed == [target]
+    assert 'unclaimed' in fixture.pages
+
+
 @pytest.mark.parametrize('problem', ['edited_input', 'modal', 'application_form', 'uploaded_file', 'password',
     'changed_url', 'wrong_job', 'stale', 'native_click', 'wrong_target', 'changed_observation', 'application_owned', 'captcha'])
 def test_terminal_cleanup_preserves_ambiguous_or_user_edited_targets(fixture_browser, problem):
