@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from jhb.applications import booklet, planner, questions
+from jhb.applications import booklet, planner, question_routing, questions
 from tests.applications.test_education_years import book, snapshot
 from tests.applications.test_questions import job
 
@@ -38,7 +38,34 @@ def test_four_year_questions_keep_distinct_degree_refs_across_same_employer_jobs
     answers = booklet.for_role(saved, "sde"); answers.update(saved["custom_answers"])
     plan = planner.deterministic_plan(snapshot(), answers)
     assert [answers[b["answer_key"]]["value"] for b in plan["bindings"]] == ["2025", "2026", "2020", "2025"]
-    assert [r["status"] for r in questions.pending(path)] == ["pending"]*3
+    # All original years are verified in both role catalogs. The legacy
+    # roleless contexts still need an agent fill, not another candidate answer.
+    assert questions.pending(path) == []
+    unresolved = [record for record in saved["question_handoffs"].values() if record["status"] == "pending"]
+    assert len(unresolved) == 3
+    assert {record["field_ref"] for record in unresolved} == {"start-year--0", "end-year--0", "end-year--1"}
+    for record in unresolved:
+        contexts = question_routing.agent_contexts(saved, record)
+        assert set(contexts) == {job()["dedupe_hash"], job(2)["dedupe_hash"]}
+        assert all(context["routing"] == question_routing.KNOWN and not context.get("resolved")
+                   for context in contexts.values())
+
+
+def test_missing_original_year_stays_candidate_input_while_verified_years_are_agent_work(tmp_path):
+    source = book()
+    source["education_records"][0].pop("end_date")
+    path = save(tmp_path, source)
+    questions.collect(job(), missing(), path)
+    questions.collect(job(2), missing(), path)
+    saved = booklet.load(path)
+    visible = questions.pending(path)
+    assert len(visible) == 1 and visible[0]["field_ref"] == "end-year--0"
+    assert set(visible[0]["contexts"]) == {job()["dedupe_hash"], job(2)["dedupe_hash"]}
+    assert all(context["routing"] == question_routing.CANDIDATE for context in visible[0]["contexts"].values())
+    assert len(saved["question_handoffs"]) == 4
+    assert all(record["status"] == "pending" for record in saved["question_handoffs"].values())
+    assert sum(len(question_routing.agent_contexts(saved, record))
+               for record in saved["question_handoffs"].values()) == 6
 
 
 @pytest.mark.parametrize("role", ["sde", "ml"])
