@@ -287,6 +287,14 @@ class DashboardStore:
         path = self.root / "private" / "pipeline-pause.json"
         return path.exists() or path.is_symlink()
 
+    def submission_hold_reason(self):
+        if self.paused():
+            return "Automation is paused. Resume it before approving a submission. Your browser edits are preserved."
+        repair = self.root / "private" / "overnight-monitor" / "repair-pending.json"
+        if repair.exists() or repair.is_symlink():
+            return "Submission is temporarily held while a pipeline repair is validated. Your browser edits are preserved."
+        return None
+
     def details(self, job_hash):
         if not HASH.fullmatch(job_hash):
             raise ValueError("Invalid application identity")
@@ -468,6 +476,8 @@ class DashboardStore:
                 presentation["display_state"] = "needs_review"
             approval = {**approval, "can_approve": False,
                         "reason": "The saved browser tab is closed. The retained review is available, but the draft needs recovery before submission."}
+        if hold := self.submission_hold_reason():
+            approval = {**approval, "can_approve": False, "reason": hold}
         return {"job_hash": job_hash, "state": row["state"], **presentation, "location": _location(job),
             "discard": discard_status(self.root, job_hash),
             "related_submissions": related, "fields": output, "role_fit_notes": fit_notes[:20],
@@ -946,6 +956,8 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             raise HTTPException(404, "Unknown application")
         try:
             current_form = os.environ.get("JHB_APPROVE_CURRENT_LIVE_FORM") == "1"
+            if hold := store.submission_hold_reason():
+                raise HTTPException(409, hold)
             if current_form and os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED") != "1":
                 raise HTTPException(409, "Submission dispatch is temporarily held for maintenance; your browser edits are preserved")
             with store.answer_lock, questions._locked(store.book_path):

@@ -84,6 +84,21 @@ def test_busy_submission_lane_queues_exact_approval_without_refilling(current_fo
     assert [e[0] for e in events] == ["capture"]
 
 
+@pytest.mark.parametrize("marker", ["pipeline-pause.json", "overnight-monitor/repair-pending.json"])
+def test_maintenance_never_consumes_a_candidate_approval(current_form, marker):
+    portal, job, folder, url, revision, events = current_form
+    root, conn, book, client, headers = portal
+    booklet.write_private(root / "private" / marker, {"state": "held"})
+    before = (folder / "packet.json").read_bytes()
+    detail = client.get(url).json()
+    assert detail["approval"]["can_approve"] is False
+    response = client.post(url+"/approve", headers=headers, json={"revision": revision, "acknowledged_blank_refs": []})
+    assert response.status_code == 409 and "preserved" in response.json()["detail"]
+    assert not events
+    assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
+    assert (folder / "packet.json").read_bytes() == before
+
+
 def test_new_blank_preview_requires_another_explicit_click(current_form, monkeypatch):
     portal, job, folder, url, revision, events = current_form
     root, conn, book, client, headers = portal
