@@ -27,6 +27,8 @@ _SPONSORSHIP_DENIAL = re.compile(
     r"\b" + _SPONSOR + r"\s*:?\s*(?:is\s+|will be\s+|is currently\s+)?"
     r"(?:not (?:available|offered|provided|supported)|unavailable|cannot be (?:provided|offered|supported))\b|"
     r"\b(?:not eligible|ineligible)\s+for\s+" + _SPONSOR + r"|"
+    r"\b(?:does not|do not|cannot|will not)\s+qualify\s+for\s+"
+    r"(?:employer[- ]sponsored|sponsored)\s+(?:work authorization|employment visas?)\b|"
     r"\b(?:cannot|will not|do not|does not|unable to)\s+(?:consider|hire|employ|accept)\b"
     r"[^.;]{0,80}\b(?:need|require|requiring|needing)\s+" + _SPONSOR + r"|"
     r"\b(?:must|should)\s+not\s+(?:now\s+or\s+in\s+the\s+future\s+)?require\s+"
@@ -36,7 +38,7 @@ _SPONSORSHIP_ACCEPTANCE = re.compile(
     r"\b(?:with or without|regardless of)\s+(?:the need for\s+)?(?:visa\s+)?sponsorship\b|"
     r"\b(?:no|without)\s+" + _SPONSOR + r"\s+(?:restrictions?|limitations?|experience)\b|"
     r"\b" + _SPONSOR + r"\s+(?:is\s+)?(?:not required|not necessary|not needed)\b", re.I)
-_STUDENT_VISA = r"(?:f[- ]?1|(?:stem\s+)?opt|cpt)\b"
+_STUDENT_VISA = r"(?:f[- ]?1|(?:stem\s+)?opt)\b"
 _STUDENT_VISA_DENIAL = re.compile(
     r"\b(?:cannot|can't|do not|does not|will not|unable to)\s+(?:currently\s+)?"
     r"(?:consider|hire|employ|accept|support|accommodate)\b[^.;]{0,100}\b" + _STUDENT_VISA + r"|"

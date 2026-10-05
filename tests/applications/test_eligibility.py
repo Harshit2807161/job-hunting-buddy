@@ -68,6 +68,7 @@ def test_nonrequirements_are_not_excluded(text):
     'We cannot consider candidates who require sponsorship.',
     'OPT is supported, but we cannot sponsor H-1B visas in the future.',
     'Security clearance not required and visa sponsorship is not available.',
+    'This role does not qualify for employer-sponsored work authorization.',
 ])
 def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_need(text):
     assert {item['category'] for item in eligibility.restrictions(text)} == {'visa_sponsorship'}
@@ -90,6 +91,7 @@ def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_nee
     'F-1 OPT and STEM OPT candidates are welcome.',
     'Sponsorship:\nAvailable',
     'Security clearance:\nNone',
+    'CPT candidates are not eligible; OPT and STEM OPT candidates are welcome.',
 ])
 def test_mentions_and_questions_are_not_a_sponsorship_denial(text):
     assert eligibility.restrictions(text) == []

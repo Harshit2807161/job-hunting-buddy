@@ -23,7 +23,8 @@ wrappers and tracking links; submitted and uncertain attempts stay protected.
 The standing eligibility filter excludes jobs requiring a particular citizenship,
 security clearance, TS/SCI, or a polygraph, including the ability to obtain or
 maintain those requirements. It also excludes explicit employer refusals of
-present or future visa sponsorship and explicit F-1/OPT/CPT exclusions. Generic
+present or future visa sponsorship and explicit F-1/OPT exclusions. A CPT-only
+restriction does not exclude a post-graduation OPT application. Generic
 work authorization, sponsorship questions and offers of sponsorship are not
 denials. These are the candidate's standing employment restrictions, not a
 blanket ban on descriptions containing the words "visa" or "citizenship".
