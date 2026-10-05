@@ -59,6 +59,14 @@ check expected versus completed education, indexed schools/dates, authorization 
 sponsorship, separate-country phone formatting, selected SDE/ML document identity,
 required questions and conditional fields, and subjective statements for unsupported claims.
 Do not reject for competitiveness or a merely preferred qualification.
+When review_mode is candidate_current_form, the candidate clicked approval after
+editing the live browser form. The manifest is a fresh read of that exact form.
+Its scoped current values and uploaded document bytes are candidate-approved;
+do not reject merely because they differ from a prior generated draft or the
+answer booklet. Do not propose refilling, restoring prose, normalizing phone
+formatting, or replacing files. Check completeness, exact job identity and
+internal contradictions in the current form. Current-form approval does not
+claim candidate authorship of unchanged previously generated prose.
 Review every discovered question, including optional questions. An optional blank is
 acceptable only when its exact field ref appears in user_blank_acknowledgments for a
 portal-approved draft. Required-field completeness alone is not application completeness.

@@ -85,12 +85,20 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
         validate_binding(authority, packet_path)
         if authority.get("job_hash") != attempt["job_hash"]:
             raise ValueError("Portal approval belongs to a different application")
+        if authority.get("approval_mode") == "candidate_current_form" and (
+                packet.get("review_mode") != "candidate_current_form" or
+                authority.get("current_form_snapshot_sha256") != packet.get("live_review", {}).get("snapshot_sha256")):
+            raise ValueError("Current-form approval does not bind this live review")
     elif authority.get("approval_mode") == overnight.INDEPENDENT_MODE:
         from .approvals import _snapshot
         binding = attempt.get("review_binding", {})
         _, current, _ = _snapshot(packet_path, binding.get("book_path", ""))
         if binding != current:
             raise ValueError("Independently reviewed draft evidence changed")
+    if packet.get("review_mode") == "candidate_current_form" and (
+            authority.get("scope") != overnight.PORTAL_SCOPE or
+            authority.get("approval_mode") != "candidate_current_form"):
+        raise ValueError("Current-form evidence requires its explicit candidate approval")
     return authority, attempt, packet
 
 
@@ -153,9 +161,10 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
         if located.get("state"):
             return located
         client.target_id, client.expected_url = located["target_id"], persisted["application_url"]
-        # A freshly instantiated controller cannot trust an attached basename.
-        # Replace only approved documents; mutation-sensitive receipts bind bytes.
-        for key, document in documents.items():
+        # Explicit current-form approval preserves the native uploads. Fresh
+        # browser File hashes verify bytes without replacing the candidate's file.
+        current_form = authority.get("approval_mode") == "candidate_current_form"
+        for key, document in ({} if current_form else documents).items():
             snapshot = await client.invoke("check", **context, documents=documents, require_receipts=False)
             if snapshot.get("state"):
                 return snapshot

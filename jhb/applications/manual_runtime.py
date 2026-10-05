@@ -89,6 +89,9 @@ def dispatch(request, helpers):
     if request.get("target_id"):
         helpers["switch_tab"](request["target_id"])
     operation = request["operation"]
+    if operation == "review_current":
+        from .live_review import observe
+        return observe(request, helpers)
     if operation == "open":
         if not matches_scope(request["url"], scope):
             raise ValueError("Requested URL differs from approved manual job")

@@ -176,6 +176,8 @@ def _manifest(job, packet, book):
     uploaded = {field.get("key") for field in packet.get("filled", [])}
     documents = {key: answers[key] for key in ("documents.resume", "documents.cover_letter")
                  if key in uploaded and answers.get(key, {}).get("status") == "verified"}
+    if packet.get("review_mode") == "candidate_current_form":
+        documents = packet.get("live_documents", {})
     if "documents.resume" not in documents:
         raise ValueError("Submission needs an approved resume")
     manifest = {"selected_role": role, "documents": documents, "filled": packet.get("filled", [])}

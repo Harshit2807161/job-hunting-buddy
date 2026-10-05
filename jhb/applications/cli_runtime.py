@@ -350,6 +350,9 @@ def dispatch(request, helpers):
         return {"state": "focused", "focused": True, "guarded": True}
     if request.get("target_id"):
         helpers["switch_tab"](request["target_id"])
+    if operation == "review_current":
+        from .live_review import observe
+        return observe(request, helpers)
     if operation == "open":
         url = request["url"]
         identity = greenhouse_identity(url)

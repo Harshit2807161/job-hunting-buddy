@@ -255,7 +255,7 @@ def review(conn, job_hash, book_path=booklet.DEFAULT_PATH):
     return result
 
 
-def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, book_path=booklet.DEFAULT_PATH):
+def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, book_path=booklet.DEFAULT_PATH, *, current_form=False):
     """Called only by the portal's authenticated same-origin explicit click route."""
     initialize(conn)
     _expire_pending(conn, job_hash)
@@ -278,6 +278,13 @@ def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, boo
             "require_browser_double_check": True, "pause_unknown_answers": True,
             "require_receipt_before_sheet": True, "require_independent_review": True,
             "revision": revision, "binding": binding, "acknowledged_blank_refs": sorted(blanks)}
+    if current_form:
+        from .live_review import MODE
+        if packet.get("review_mode") != MODE or not packet.get("live_review", {}).get("snapshot_sha256"):
+            raise ValueError("Current-form approval requires fresh live evidence")
+        auth.update(approval_mode=MODE,
+                    current_form_snapshot_sha256=packet["live_review"]["snapshot_sha256"],
+                    preserve_candidate_live_edits=True)
     booklet.write_private(path, auth)
     with conn:
         # A concurrent click cannot approve the same draft twice.
@@ -329,7 +336,7 @@ def revoke(conn, job_hash):
     return {"job_hash": job_hash, "state": "revoked"}
 
 
-async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None):
+async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, job_hash=None):
     initialize(conn)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 10:
         raise ValueError("Portal submission batch limit out of range")
@@ -338,7 +345,14 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None):
     if os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED") != "1":
         return summary
     summary["enabled"] = True
-    for row in conn.execute("SELECT * FROM application_approvals WHERE state='approved' ORDER BY approved_at LIMIT ?", (limit,)).fetchall():
+    if job_hash is not None and not re.fullmatch(r"[a-f0-9]{64}", job_hash):
+        raise ValueError("Invalid exact approval job")
+    query = "SELECT * FROM application_approvals WHERE state='approved'"
+    params = []
+    if job_hash:
+        query += " AND job_hash=?"; params.append(job_hash)
+    query += " ORDER BY approved_at LIMIT ?"; params.append(limit)
+    for row in conn.execute(query, params).fetchall():
         try:
             auth = overnight.load_authorization(row["authorization_path"])
             if not auth:

@@ -160,6 +160,31 @@ def _review_matches(request, attempt, snapshot):
 
 
 def _checks(request, helpers, packet, attempt):
+    if packet.get("review_mode") == "candidate_current_form":
+        from .live_review import observe, project
+        if request.get("target_id") != packet.get("live_review", {}).get("target_id"):
+            raise ValueError("The candidate-approved browser target changed")
+        observation = observe({**request, "expected_url": attempt["application_url"]}, helpers)
+        current = project(packet, observation)
+        expected = [(r["ref"], r["value"]) for r in packet["filled"]]
+        actual = [(r["ref"], r["value"]) for r in current["filled"]]
+        metadata = ("ref", "question", "type", "required", "choices", "description", "description_truncated", "calendar_format")
+        old_fields = [{k:f.get(k) for k in metadata} for f in packet["review_inventory"]["fields"]]
+        new_fields = [{k:f.get(k) for k in metadata} for f in current["review_inventory"]["fields"]]
+        if expected != actual or old_fields != new_fields or current["optional_questions"] != packet.get("optional_questions", []):
+            return {"state": "waiting_review", "reason": "The live form changed after your current-form approval click", "click_started": False}
+        if {k:v["source"]["sha256"] for k,v in current["live_documents"].items()} != {k:v["sha256"] for k,v in request["documents"].items()}:
+            return {"state": "waiting_review", "reason": "An uploaded file changed after your current-form approval click", "click_started": False}
+        refs = [f["ref"] for f in current["filled"] if not f["ref"].startswith("uploaded:")]
+        board = boards.job_identity(attempt["application_url"])[0]
+        terminals = [b for b in observation["buttons"] if TERMINAL.fullmatch(normalize(b["label"]))
+                     and _native_form_submit(helpers, b, refs, board)]
+        if len(terminals) != 1:
+            return {"state": "waiting_review", "reason": "Final submission control is unavailable or ambiguous", "click_started": False}
+        keys = {r["ref"]:r["key"] for r in current["filled"]}
+        return {"fields": [{**x["field"], "answer_key": keys.get(x["field"]["ref"])} for x in observation["controls"]],
+                "retained": [{"ref":x["field"]["ref"],"answer_key":keys.get(x["field"]["ref"]),"state":x["state"]} for x in observation["controls"]],
+                "button": terminals[0], "double_check_count": len(current["filled"])}
     board = boards.job_identity(attempt["application_url"])[0]
     if (helpers["current_tab"]()["targetId"] != request.get("target_id")
             or boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(attempt["application_url"])

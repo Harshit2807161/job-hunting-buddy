@@ -2,12 +2,14 @@
 
 GETs read SQLite and a small explicit artifact allowlist. Explicit candidate
 actions save scoped answers or approve/revoke one immutable review draft.
-Explicit draft focus reuses an existing guarded browser tab; this server never
-launches a browser, submits an application, or sends mail.
+Explicit draft focus reuses an existing guarded browser tab. An authenticated
+candidate approval can dispatch that exact application for immediate submission.
+GET requests never start browser work or external writes.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -833,6 +835,9 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
         if not HASH.fullmatch(job_hash):
             raise HTTPException(404, "Unknown application")
         try:
+            current_form = os.environ.get("JHB_APPROVE_CURRENT_LIVE_FORM") == "1"
+            if current_form and os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED") != "1":
+                raise HTTPException(409, "Submission dispatch is temporarily held for maintenance; your browser edits are preserved")
             with store.answer_lock, questions._locked(store.book_path):
                 details = store.details(job_hash)
                 if (not details["inventory_complete"] or details["state"] != "waiting_review"
@@ -840,8 +845,33 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     raise HTTPException(409, "The complete current application must be reviewed first")
                 from .applications import approvals
                 with store.connection(write=True) as conn:
-                    result = approvals.approve(conn, job_hash, payload.revision,
-                        acknowledged_blank_refs=payload.acknowledged_blank_refs, book_path=store.book_path)
+                    if current_form:
+                        from .applications.live_review import capture_current
+                        packet, binding, revision = approvals._draft(conn, job_hash, store.book_path)
+                        if revision != payload.revision:
+                            raise ValueError("Saved job identity changed before approval")
+                        # Capture reads the exact existing tab, including every
+                        # candidate edit; it never fills or replaces uploads.
+                        asyncio.run(capture_current(binding["packet_path"], acknowledged_blank_refs=payload.acknowledged_blank_refs))
+                        live, _, revision = approvals._draft(conn, job_hash, store.book_path)
+                        blanks = [f["ref"] for f in live["review_inventory"]["fields"] if f["status"] != "answered"]
+                        result = approvals.approve(conn, job_hash, revision,
+                            acknowledged_blank_refs=blanks, book_path=store.book_path, current_form=True)
+                    else:
+                        result = approvals.approve(conn, job_hash, payload.revision,
+                            acknowledged_blank_refs=payload.acknowledged_blank_refs, book_path=store.book_path)
+            if current_form:
+                # Start this exact user-approved job in this request instead of
+                # waiting for the scheduled worker's next polling interval.
+                from .applications.service import _approved_lock
+                with _approved_lock() as owned:
+                    if owned:
+                        with store.connection(write=True) as conn:
+                            outcome = asyncio.run(approvals.drain(conn, store.book_path, limit=1, job_hash=job_hash))
+                            row = conn.execute("SELECT state FROM application_approvals WHERE approval_id=?", (result["approval_id"],)).fetchone()
+                        return {**result, "state": row[0] if row else "needs_review", "outcome": outcome,
+                                "manual_edits_preserved": True}
+                return {**result, "state": "approved", "reason": "Queued behind an active browser submission", "manual_edits_preserved": True}
             return {key: result[key] for key in ("approval_id", "state", "job_hash") if key in result}
         except ImportError:
             raise HTTPException(503, "Application approval is not configured") from None
