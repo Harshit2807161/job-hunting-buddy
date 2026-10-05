@@ -119,6 +119,7 @@ type ReviewDetail = { location?: string; related_submissions?: { job_hash: strin
     answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean; description?: string; description_truncated?: boolean }[];
   incident: { state: string; summary: string; blank_questions: { ref: string; question: string }[] } | null;
   approval: { can_approve: boolean; revision?: string; reason?: string; blank_questions: { ref: string; question: string; required: boolean; type: string }[];
+    requires_role_fit_acknowledgment?: boolean; role_fit_warning?: { reason: string; gaps: string[] } | null;
     approval?: { state: string } } };
 
 function discardMessage(result: ReviewDetail["discard"]) {
@@ -136,6 +137,7 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
   const [error, setError] = useState("");
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
+  const [fitAcknowledged, setFitAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState("");
   const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
@@ -155,13 +157,13 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
         if (!response.ok) throw Error("Detailed review is unavailable");
         const value: ReviewDetail = await response.json();
         if (active && !busyRef.current) {
-          if (revisionRef.current !== value.approval.revision) setAcknowledged([]);
+          if (revisionRef.current !== value.approval.revision) { setAcknowledged([]); setFitAcknowledged(false); }
           revisionRef.current = value.approval.revision; setDetail(value); setActionState(null); setError("");
           if (lastActionRef.current === "approve" && value.state === "submitted")
             setSaved("Application submitted. Confirmation is recorded; spreadsheet status will update below.");
           if (lastActionRef.current === "discard" && value.discard) setSaved(discardMessage(value.discard));
         }
-      } catch (e) { if (active) { setError(e instanceof Error ? e.message : "Detailed review is unavailable"); setDetail(null); setAcknowledged([]); } }
+      } catch (e) { if (active) { setError(e instanceof Error ? e.message : "Detailed review is unavailable"); setDetail(null); setAcknowledged([]); setFitAcknowledged(false); } }
       finally { inFlight = false; }
     }
     poll(); const interval = setInterval(poll, 5000);
@@ -174,7 +176,8 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
     filled_count: detail.fields.filter(f => f.status === "answered").length } : app;
   const stage = actionState || displayState(currentApp);
   const canApprove = !autonomous && detail?.submission_supported === true && detail?.state === "waiting_review" &&
-    !!detail.approval.can_approve && !!detail.approval.revision && !["approval_queued", "submitting"].includes(stage);
+    !!detail.approval.can_approve && !!detail.approval.revision && !["approval_queued", "submitting"].includes(stage) &&
+    (!detail.approval.requires_role_fit_acknowledgment || fitAcknowledged);
   const canDiscard = !!detail && !["submitted", "submission_uncertain", "submitting", "discarded"].includes(stage);
   async function changeApproval(action: "approve" | "revoke") {
     lastActionRef.current = action;
@@ -184,7 +187,8 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
       const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json());
       const response = await fetch(`/api/v1/applications/${app.id}/${action}`, { method: "POST",
         headers: { "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token },
-        body: JSON.stringify(action === "approve" ? { revision: detail?.approval.revision, acknowledged_blank_refs: acknowledged } : {}) });
+        body: JSON.stringify(action === "approve" ? { revision: detail?.approval.revision, acknowledged_blank_refs: acknowledged,
+          acknowledge_role_fit_warning: fitAcknowledged } : {}) });
       const result = await response.json();
       if (!response.ok) throw Error(result.detail || "Submission request could not be completed");
       setActionState(action === "approve" ? (result.state === "approved" ? "approval_queued" : result.state) : null);
@@ -196,7 +200,7 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
         result.reason || "Submission request recorded. Check the live status below.");
       onChanged();
       const updated = await fetch(`/api/v1/applications/${app.id}`, { cache: "no-store" }).then(r => r.json());
-      setDetail(updated); setAcknowledged([]);
+      setDetail(updated); setAcknowledged([]); setFitAcknowledged(false);
     } catch (e) { setActionState(null); setActionError(e instanceof Error ? e.message : "Submission request could not be completed"); }
     finally { busyRef.current = false; setBusy(false); setDetailRefresh(v => v + 1); }
   }
@@ -254,6 +258,7 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
       {detail?.approval.approval && <div className="notice">Submission status: {stateNames[stage] || stage}. Your current browser answers are preserved.</div>}
       {detail?.approval_outcome && <div className="notice warning" role="status"><b>{detail.approval_outcome.click_started === false ? "Stopped before clicking Submit" : "Previous submission request needs attention"}</b><p>{detail.approval_outcome.reason}</p>{detail.approval_outcome.expired && <p>The previous approval expired. After the blocker is resolved, use Submit current browser form to approve your retained answers again.</p>}</div>}
+      {detail?.approval.requires_role_fit_acknowledgment && detail.approval.role_fit_warning && <div className="notice warning"><b>Review this role's experience requirements</b><p>{detail.approval.role_fit_warning.reason}</p><ul>{detail.approval.role_fit_warning.gaps.map((gap, i) => <li key={i}>{gap}</li>)}</ul><label><input type="checkbox" checked={fitAcknowledged} disabled={busy} onChange={e => setFitAcknowledged(e.target.checked)}/> I reviewed these experience gaps and still want to apply for this role.</label></div>}
       {!autonomous && optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>For items still blank in Chrome, check each one you want to leave unanswered. Fields you filled in Chrome will use your current answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
       {detail?.state === "waiting_review" && (detail.submission_supported === true ? autonomous ? <div className="notice"><p>The independent reviewer decides when this draft is ready. Turn off Full autonomy to use per-application approval.</p></div> :
         <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Submit current browser form"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>Uses the answers and attachments currently in your Chrome tab. Your manual edits are preserved.</p>{!detail.approval.can_approve && detail.approval.reason && <p>{detail.approval.reason}</p>}</div> :
