@@ -122,6 +122,8 @@ FIELD_DATA = r"""(()=>{
    label:((e.type==='file'?((e.closest('.file-upload')?.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.closest('.file-upload')?.querySelector('.upload-label')?.innerText):'')||e.getAttribute('aria-label')||[...(e.labels||[])].map(l=>l.innerText).join(' ')||
      (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||'').trim(),
    ...ownedDescription(e),
+   phone_country:!!e.closest('.phone-input__country') && !!e.closest('.phone-input') &&
+     !!e.closest('.phone-input').querySelector('input[type=tel]'),
    separate_phone_country:e.type==='tel' && !!e.closest('.iti') &&
      [...(e.closest('.phone-input')||e.closest('.iti')).querySelectorAll('input[role="combobox"],select,[role="combobox"]')]
        .some(c=>c!==e && !c.disabled && !c.matches('.iti__search-input,[id$="__search-input"]') &&
@@ -137,8 +139,11 @@ def option_matches(label, value, *, field_id="", field_label=""):
     """Closed, auditable display translations; no fuzzy screening answers."""
     label = normalize(label)
     if isinstance(value, bool):
-        if field_id == "veteran_status" and value is False:
-            return label in {"i am not a protected veteran", "i am not a veteran", "not a veteran"}
+        if (field_id == "veteran_status" or normalize(field_label) in {"veteran status", "protected veteran status"}) and value is False:
+            return label in {"no", "false", "i am not a protected veteran", "i am not a veteran", "not a veteran"}
+        if normalize(field_label) == "are you hispanic/latino?":
+            return label in ({"yes", "yes, i am hispanic or latino", "yes (hispanic or latino)"} if value else
+                             {"no", "no, i am not hispanic or latino", "no (not hispanic or latino)"})
         return label in ({"yes", "true"} if value else {"no", "false", "no, i am not a veteran or active member"})
     if (normalize(field_label) in {"salary expectations", "desired salary", "what are your salary expectations?",
                                   "what are your base salary expectations?", "what are your yearly salary expectations?"}
@@ -440,7 +445,8 @@ def dispatch(request, helpers):
             fields.append({"ref": item["id"], "label": label,
                            "type": kind, "required": item["required"], "options": item["options"],
                            "description": item["description"], "description_truncated": item["description_truncated"],
-                           **({"separate_phone_country": item["separate_phone_country"]} if kind == "tel" else {})})
+                           **({"separate_phone_country": item["separate_phone_country"]} if kind == "tel" else {}),
+                           **({"phone_country": True} if item.get("phone_country") else {})})
         for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:((e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0]).trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||'',required:e.getAttribute('aria-required')==='true'}))"):
             upload["label"] = upload["label"].rstrip(" *")
             if upload["label"]:

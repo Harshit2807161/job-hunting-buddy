@@ -203,6 +203,28 @@ def key_for_field(field, answers):
                 # A source PDF path is never prose for Workable/Lever's
                 # cover-letter textarea or a freeform resume summary.
                 continue
+            if key == "identity.country" and re.search(r"\b(?:citizenship|nationality|citizen)\b", normalize(field.get("description") or "")):
+                return None  # Contact country does not establish nationality.
+            if key in {"disclosure.gender", "disclosure.hispanic", "disclosure.veteran", "disclosure.disability"}:
+                # Full offered wording determines whether the verified fact
+                # actually answers this question. Never infer past disability
+                # history or protected-veteran membership from a bare boolean.
+                context = label + " " + normalize(field.get("description") or "")
+                if key == "disclosure.veteran" and answers[key].get("value") is True and "protected" in context:
+                    return None  # Being a veteran does not prove a statutory protected class.
+                if key == "disclosure.gender" and re.search(r"\b(?:assigned at birth|biological sex|birth sex)\b", context):
+                    return None  # Current gender does not establish birth-assigned sex.
+                if key == "disclosure.disability" and answers[key].get("value") is False and re.search(
+                        r"\b(?:in the past|have (?:you )?ever|ever had|previously had|have had)\b", context):
+                    return None
+                options = [o for o in field.get("options", []) if isinstance(o, dict)
+                           and not o.get("disabled") and o.get("value") != ""]
+                if options:
+                    from .cli_runtime import option_matches
+                    compatible = [o for o in options if option_matches(o.get("label", ""), answers[key].get("value"),
+                                   field_id=field["ref"], field_label=field["label"])]
+                    if len(compatible) != 1:
+                        return None
             return key
     known_facts = {
         "are you located in the us?": "standing.located_us",

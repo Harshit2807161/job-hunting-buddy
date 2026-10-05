@@ -1,7 +1,7 @@
-"""Fresh owned native catalogs for explicitly public-guided Greenhouse answers.
+"""Fresh owned catalogs for verified standard or public-guided GH answers.
 
-Public metadata selects the exact field worth inspecting. It never supplies
-native choices or retention evidence; only the fixed describe operation does.
+Verified facts or exact public context select the field worth inspecting.
+Neither supplies native retention evidence; only fixed describe does.
 """
 from __future__ import annotations
 
@@ -9,10 +9,30 @@ import hashlib
 import json
 
 from . import boards
-from .booklet import normalize
+from .booklet import ALIASES, normalize
 from .cli_browser import BrowserOperationError
 
 MAX_PROBES = 12
+KNOWN_DISCLOSURES = frozenset({'disclosure.gender', 'disclosure.hispanic',
+                              'disclosure.veteran', 'disclosure.disability'})
+
+
+def _known_record(field, answers):
+    """Inspect only exact standard fields with an existing verified fact.
+
+    Inspecting the full catalog does not widen a fact's scope: a current
+    disability answer, for example, cannot establish past medical history.
+    """
+    label = normalize(field.get('label') or '')
+    for key in KNOWN_DISCLOSURES:
+        record = answers.get(key, {})
+        if (label in ALIASES[key] and record.get('status') == 'verified'
+                and record.get('source') and isinstance(record.get('value'), (str, bool))):
+            return True
+    # Phone catalogs can contain hundreds of entries. The fixed fill path
+    # queries the approved country and verifies the selected calling-code flag;
+    # do not truncate a global catalog and misclassify an already retained code.
+    return False
 
 
 def _guided_record(field, record):
@@ -25,19 +45,18 @@ def _guided_record(field, record):
 
 
 def _fields(snapshot, job, answers):
-    # Unrelated applications and unproven responses do not trigger exploration.
-    if not any(isinstance(record.get('source'), dict) and 'public_question_metadata_proofs' in record['source']
-               for key, record in answers.items() if key.startswith('custom.')):
-        return []
     identity = boards.job_identity(job.get('application_url') or job.get('url'))
     if not identity or identity[0] != 'greenhouse':
         return []
-    if boards.job_identity(snapshot.get('url')) != identity:
-        raise BrowserOperationError('Public-guided native inspection is outside the owned job')
     fields = [field for field in snapshot.get('fields', []) if field.get('type') in {'combobox', 'select'}
-              and any(_guided_record(field, record) for key, record in answers.items() if key.startswith('custom.'))]
+              and (_known_record(field, answers) or any(_guided_record(field, record)
+                   for key, record in answers.items() if key.startswith('custom.')))]
+    if not fields:
+        return []
+    if boards.job_identity(snapshot.get('url')) != identity:
+        raise BrowserOperationError('Approved-answer native inspection is outside the owned job')
     if len(fields) > MAX_PROBES:
-        raise BrowserOperationError('Public-guided native catalog inspection exceeds its bounded budget', retryable=True)
+        raise BrowserOperationError('Approved-answer native catalog inspection exceeds its bounded budget', retryable=True)
     return fields
 
 
@@ -46,12 +65,12 @@ def _attach(field, descriptor):
     if (not isinstance(choices, list) or not choices or len(choices) > 100 or descriptor.get('truncated')
             or any(not isinstance(label, str) or not label.strip() for label in choices)
             or len(set(choices)) != len(choices) or descriptor.get('type') != field['type']):
-        raise BrowserOperationError('Public-guided native dropdown catalog is unavailable', retryable=True)
+        raise BrowserOperationError('Approved-answer native dropdown catalog is unavailable', retryable=True)
     if field['type'] == 'select':
         options = [dict(option) for option in field.get('options', []) if isinstance(option, dict)
                    and not option.get('disabled') and option.get('value') != '']
         if [option.get('label') for option in options] != choices:
-            raise BrowserOperationError('Public-guided native select catalog changed during inspection', retryable=True)
+            raise BrowserOperationError('Approved-answer native select catalog changed during inspection', retryable=True)
         field['options'] = options  # Preserve observed native values; never infer IDs from labels.
     else:
         field['options'] = [{'label': label} for label in choices]
@@ -66,7 +85,7 @@ async def enrich_async(snapshot, job, answers, describe):
         except BrowserOperationError:
             raise
         except (ValueError, RuntimeError, TimeoutError) as exc:
-            raise BrowserOperationError('Public-guided native dropdown inspection failed', retryable=True) from exc
+            raise BrowserOperationError('Approved-answer native dropdown inspection failed', retryable=True) from exc
     return snapshot
 
 
@@ -77,5 +96,5 @@ def enrich_sync(snapshot, job, answers, describe):
         except BrowserOperationError:
             raise
         except (ValueError, RuntimeError, TimeoutError) as exc:
-            raise BrowserOperationError('Public-guided native dropdown inspection failed', retryable=True) from exc
+            raise BrowserOperationError('Approved-answer native dropdown inspection failed', retryable=True) from exc
     return snapshot
