@@ -51,7 +51,9 @@ def load_report_window(path=None, *, now=None):
 def report(conn, auth=None, *, now=None, sender=None):
     if os.environ.get("JHB_HOURLY_PROGRESS_EMAIL") != "1":
         return {"state": "disabled"}
-    now = int(time.time()) if now is None else int(now)
+    # A consent window can start partway through a second. Flooring before
+    # validation makes a freshly started watcher incorrectly exit as expired.
+    now = time.time() if now is None else now
     auth = auth or load_report_window(now=now)
     if not auth:
         return {"state": "authorization_ended"}

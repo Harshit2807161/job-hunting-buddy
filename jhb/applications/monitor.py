@@ -21,7 +21,7 @@ import subprocess
 import time
 
 from .. import config
-from . import attempt_feedback, booklet, overnight
+from . import attempt_feedback, booklet, monitor_window, overnight
 
 FEATURE_BRANCH = "feat/phase2-greenhouse-agent"
 REPAIR_SECONDS = 900
@@ -51,7 +51,19 @@ def directory():
 def authorization(path=None):
     if os.environ.get("JHB_OVERNIGHT_MONITOR_ENABLED") != "1" or os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
         return None
-    return overnight.load_authorization(path)
+    # Preparation supervision survives portal Review mode. Its scope is never
+    # consumed by a submit adapter, and report-only consent cannot start repairs.
+    window = monitor_window.load(path) if path is not None or monitor_window.configured() else None
+    if window is None and (path is not None or not monitor_window.configured()):
+        legacy = overnight.load_authorization(path)
+        window = ({**legacy, "monitoring_kind": "legacy_submission_window", "repair_authority": True,
+                   "submission_authority": False} if legacy else None)
+    if window is not None:
+        pause = config.ROOT / "private" / "pipeline-pause.json"
+        window["preparation_paused"] = pause.exists() or pause.is_symlink()
+        if window["preparation_paused"]:
+            window["repair_authority"] = False
+    return window
 
 
 def _private(path):
@@ -141,7 +153,8 @@ def _logs(state, issues):
 
 def _preclick_issues(connection, tables, auth, issues):
     """A retryable no-click attempt can need code repair without a failed draft."""
-    if not auth or not {"applications", "authorized_submission_attempts"} <= tables:
+    if (not auth or auth.get("monitoring_kind") != "legacy_submission_window"
+            or not {"applications", "authorized_submission_attempts"} <= tables):
         return
     columns = {row[1] for row in connection.execute("PRAGMA table_info(authorized_submission_attempts)")}
     if not {"job_hash", "authorization_id", "updated_at", "result_json", "attempt_path"} <= columns:
@@ -271,9 +284,13 @@ def protected_data(auth, database=None):
     """Detect changes to candidate facts, authority and submission proof/state."""
     paths = {Path(auth["authorization_path"]), config.ROOT / ".env",
              config.ROOT / "private" / "answer-booklet.json",
-             config.ROOT / "private" / "application-tracker.json"}
+             config.ROOT / "private" / "application-tracker.json",
+             config.ROOT / "private" / overnight.AUTH_NAME,
+             config.ROOT / "private" / "pipeline-pause.json"}
     private = config.ROOT / "private"
-    for pattern in ("authorized-submissions/**/*.json", "board-evaluation/**/submission-receipt.json",
+    for pattern in ("authorized-submissions/**/*.json", "application-approvals/**/*.json",
+                    "applications/**/packet.json", "multi-board/**/packet.json",
+                    "board-evaluation/**/packet.json", "board-evaluation/**/submission-receipt.json",
                     "applications/**/receipt.json", "applications/**/submission-receipt.json",
                     "credentials/**/*.json",
                     "*vault*.json", "browser-use-harness/**/auth.json"):
@@ -291,7 +308,7 @@ def protected_data(auth, database=None):
     if database.exists():
         with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            for table in ("confirmed_submissions", "authorized_submission_attempts"):
+            for table in ("confirmed_submissions", "authorized_submission_attempts", "application_approvals", "applications"):
                 if table in tables:
                     digest.update(json.dumps(conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall(), sort_keys=True).encode())
     return digest.hexdigest()
@@ -299,10 +316,12 @@ def protected_data(auth, database=None):
 
 def prompt(issue, auth):
     return f"""Repair one new technical failure in job-hunting-buddy on {FEATURE_BRANCH}.
-The user explicitly authorized overnight monitoring/repairs until {auth['expires_at']}.
+The user explicitly authorized monitoring/technical repairs until {auth['expires_at']}.
 This task is repository repair only. The supervisor holds application-worker.lock.
+This monitoring window grants no submission authority and does not change Review mode.
 Do not call the application worker/pipeline, send email, submit/replay applications,
-change candidate facts, passwords, auth files, approval policies or submission receipts,
+change candidate facts, retained/manual draft answers, packets, passwords, auth files,
+approval policies or submission receipts,
 close/reset browser tabs, delete files, commit/push/merge, or change main/v0.1.0.
 Read AGENTS.md. Make the smallest justified code fix with synthetic regression tests.
 Preserve all current submission guards, unknown-question handoffs and exact job scope.
@@ -369,7 +388,8 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
     outcome = {"state": "failed", "returncode": None}
     try:
         current = authorization(auth_path)
-        if current is None or current["authorization_id"] != auth["authorization_id"] or timeout <= 0:
+        if (current is None or current.get("repair_authority") is not True
+                or current["authorization_id"] != auth["authorization_id"] or timeout <= 0):
             return {"state": "authorization_ended", "returncode": None}
         with paths[0].open("w") as out, paths[1].open("w") as err:
             process = subprocess.Popen(command, cwd=config.ROOT, env=environment,
@@ -380,7 +400,8 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
                 process.stdin.close()
             while process.poll() is None:
                 current = authorization(auth_path)
-                if current is None or current["authorization_id"] != auth["authorization_id"]:
+                if (current is None or current.get("repair_authority") is not True
+                        or current["authorization_id"] != auth["authorization_id"]):
                     outcome["state"] = "authorization_ended"
                     break
                 if time.monotonic() - started >= timeout:
@@ -430,7 +451,8 @@ def validate(auth, run=bounded, *, auth_path=None):
         (["git", "diff", "--check"], VALIDATION_DIFF_SECONDS),
     ]):
         current = authorization(auth_path)
-        if current is None or current["authorization_id"] != auth["authorization_id"]:
+        if (current is None or current.get("repair_authority") is not True
+                or current["authorization_id"] != auth["authorization_id"]):
             return {"state": "authorization_ended"}
         remaining = min(overnight._timestamp(auth["expires_at"]),
                         overnight._timestamp(current["expires_at"])) - time.time()
@@ -450,13 +472,21 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
         if not owned:
             return {"state": "busy"}
         state = _state()
-        if auth and state.get("authorization_id") not in {None, auth["authorization_id"]}:
-            return {"state": "authorization_changed"}
         health = snapshot(state, auth, database)
         health["state"] = "observed" if auth else "authorization_ended"
+        health["monitoring_kind"] = auth.get("monitoring_kind") if auth else None
+        health["repair_authority"] = bool(auth and auth.get("repair_authority") is True)
+        health["submission_authority"] = False
+        health["preparation_paused"] = bool(auth and auth.get("preparation_paused"))
+        def finish(status, **details):
+            health["state"] = status
+            _write(directory() / "health.json", health)
+            return {"state": status, **details}
+        if auth and state.get("authorization_id") not in {None, auth["authorization_id"]}:
+            return finish("authorization_changed")
         if not auth:
             _write(directory() / "morning-report.json", {**health, "repairs": state["issues"]})
-            return {"state": "authorization_ended"}
+            return finish("authorization_ended")
         state["authorization_id"] = auth["authorization_id"]
         observed = state.setdefault("observed_issues", {})
         for item in health["technical_issues"]:
@@ -464,32 +494,36 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
         _write(directory() / "health.json", health)
         _write(directory() / "state.json", state)
         if (directory() / "repair-pending.json").exists() or (directory() / "repair-pending.json").is_symlink():
-            return {"state": "quarantined"}
+            return finish("quarantined")
+        if auth.get("repair_authority") is not True:
+            return finish("paused" if auth.get("preparation_paused") else "observing",
+                          repairs=0, technical_issues=len(health["technical_issues"]))
         new = [item for key, item in observed.items() if key not in state["issues"]]
         if not new:
-            return {"state": "healthy", "repairs": 0}
+            return finish("healthy", repairs=0)
         attempts = sum(item.get("authorization_id") == auth["authorization_id"] for item in state["issues"].values())
         if attempts >= MAX_REPAIRS:
-            return {"state": "repair_limit"}
+            return finish("repair_limit")
         # Never start a repair that has no budget left for full verification.
         budget = overnight._timestamp(auth["expires_at"]) - time.time() - VALIDATION_SECONDS
         if budget <= 30:
-            return {"state": "insufficient_time"}
+            return finish("insufficient_time")
         with _lock(config.ROOT / "private" / "overnight-repair.lock") as repair_owned:
             if not repair_owned:
-                return {"state": "repair_busy"}
+                return finish("repair_busy")
             with _lock(config.ROOT / "private" / "application-worker.lock") as worker_owned, \
                     _lock(config.ROOT / "private" / "approved-worker.lock") as approved_owned:
                 if not worker_owned:
-                    return {"state": "pipeline_busy"}
+                    return finish("pipeline_busy")
                 if not approved_owned:
-                    return {"state": "approved_worker_busy"}
+                    return finish("approved_worker_busy")
                 current = authorization(auth_path)
-                if current is None or current["authorization_id"] != auth["authorization_id"]:
-                    return {"state": "authorization_ended"}
+                if (current is None or current.get("repair_authority") is not True
+                        or current["authorization_id"] != auth["authorization_id"]):
+                    return finish("authorization_ended")
                 repo = inspect_repository()
                 if repo["branch"] != FEATURE_BRANCH or (repo["dirty"] and state.get("validated_repository") != repo):
-                    return {"state": "repository_busy"}
+                    return finish("repository_busy")
                 protected = protected_data(auth, database)
                 issue = new[0]
                 started = int(time.time())
@@ -498,6 +532,7 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
                 state["issues"][issue["fingerprint"]] = pending
                 _write(directory() / "state.json", state)
                 _write(directory() / "repair-pending.json", pending)
+                finish("repairing")
                 text = prompt(issue, auth)
                 prompt_path = directory() / f"repair-{started}-{issue['fingerprint'][:12]}.prompt.json"
                 _write(prompt_path, {"prompt": text})
@@ -523,7 +558,7 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
                 if pending["state"] == "quarantined":
                     _write(directory() / "repair-pending.json", pending)
                 _write(directory() / "morning-report.json", {**health, "repairs": state["issues"]})
-                return {"state": pending["state"], "fingerprint": issue["fingerprint"]}
+                return finish(pending["state"], fingerprint=issue["fingerprint"])
 
 
 def main(argv=None):

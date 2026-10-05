@@ -116,3 +116,22 @@ def test_reporting_consent_expiry_and_revocation_send_nothing(setup):
     assert hourly_reports.load_report_window(now=40000) is None
     booklet.write_private(path, {**window(auth), "enabled": False})
     assert hourly_reports.load_report_window(now=13600) is None
+
+
+def test_fractional_window_start_keeps_fresh_watcher_alive_and_hour_boundary_exact(setup, monkeypatch):
+    conn, auth = setup
+    start = 10000.75
+    auth = {**auth, "authorized_at": datetime.fromtimestamp(start, timezone.utc).isoformat()}
+    booklet.write_private(config.ROOT / "private" / hourly_reports.REPORT_WINDOW, window(auth))
+    mail = []
+    def send(jobs, **kwargs):
+        mail.append(kwargs)
+        return True
+    monkeypatch.setattr(hourly_reports.time, "time", lambda: start + .01)
+    assert hourly_reports.report(conn, sender=send)["state"] == "not_due"
+    assert hourly_reports.report(conn, now=start-.01, sender=send)["state"] == "authorization_ended"
+    assert hourly_reports.report(conn, now=start+3599.99, sender=send)["state"] == "not_due"
+    assert hourly_reports.report(conn, now=start+3600, sender=send)["state"] == "delivered"
+    assert hourly_reports.report(conn, now=start+3600.1, sender=send)["state"] == "delivered"
+    assert len(mail) == 1
+    assert hourly_reports.report(conn, now=40000, sender=send)["state"] == "authorization_ended"

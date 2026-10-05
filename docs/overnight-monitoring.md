@@ -2,16 +2,37 @@
 
 The local monitor checks application states and newly appended log tails every
 five minutes. It never submits an application, invokes the application pipeline,
-changes a queue, or sends email. The separately authorized overnight pipeline
-owns submission and post-confirmation sheet tracking.
+changes a queue, or sends email. Preparation supervision can continue while the
+portal is in Review mode. The separate submission worker still requires its
+actual candidate approval or an explicitly enabled, valid delegated review window;
+supervision grants neither. Post-confirmation sheet tracking also stays separate.
 
-Enable the monitor only for an explicitly authorized, finite window. It requires
-both `JHB_OVERNIGHT_MONITOR_ENABLED=1` and
-`JHB_OVERNIGHT_SUBMISSIONS_ENABLED=1`, plus the verified private authorization
-described in [overnight-submissions.md](overnight-submissions.md). It reuses that
-authorization's exact expiry and stops starting actions when it expires or is
-revoked. `CI=true` disables repair. No API key or subscription authentication
-belongs in CI.
+Enable `JHB_OVERNIGHT_MONITOR_ENABLED=1` only for an explicitly authorized, finite
+window. `private/preparation-monitor-window.json` selects preparation supervision
+independently of the submission environment gates or a revoked Full autonomy
+authorization. The private record must contain:
+
+- `scope`: `preparation monitoring and technical repair only`
+- `role: user`, `status: verified`, `enabled: true`
+- `submission_authority: false`, `repair_authority: true`
+- A nonempty `source` and the actual user `content` authorizing monitoring and
+  technical fixes; generated consent is not acceptable.
+- Timezone-aware `authorized_at` and `expires_at`, with a positive duration of
+  at most 24 hours. The current time must be within that window.
+
+The loader never creates or extends consent. Expiry, revocation, CI or disabling
+the monitor gate prevents new repairs. A pipeline pause also prevents repair and
+validation subprocesses, including those already running. Resume does not extend
+the finite window. No API key or subscription authentication belongs in CI.
+
+When no preparation window exists, a valid `private/progress-report-window.json`
+permits status observation only. It cannot start Codex or validation commands, and
+the monitor does not send progress email. The separate hourly-report process
+owns email delivery and its own gate. A malformed, revoked, expired or symlinked
+dedicated window fails closed; it does not fall back to another grant. Only when
+neither separate window is configured does the legacy monitor retain its original
+finite submission-window dependency for compatibility. That path still requires
+the gates in [overnight-submissions.md](overnight-submissions.md).
 
 The monitor uses the installed `codex exec` CLI and the existing local Codex
 login. It removes `OPENAI_API_KEY` and `CODEX_API_KEY` from child environments;
@@ -22,7 +43,7 @@ files. Its command uses `--ephemeral --sandbox workspace-write`, approval policy
 not authorize an application submission or changes to a candidate's account.
 
 ```sh
-JHB_OVERNIGHT_MONITOR_ENABLED=1 JHB_OVERNIGHT_SUBMISSIONS_ENABLED=1 \
+JHB_OVERNIGHT_MONITOR_ENABLED=1 \
   .venv/bin/python -m jhb.applications.monitor --watch
 ```
 
@@ -32,6 +53,13 @@ Alternatively, `--once` runs one check and can be scheduled with a 300-second
 interval. Interval scheduling must also be removed at the end of the window;
 after expiry those invocations produce an ended health report and never start
 Codex. Installation and activation are separate from fixture validation.
+
+The monitor binds its state to the exact window bytes. A different authorization
+returns `authorization_changed`; it never clears repair history or quarantine to
+adopt a new window. To begin a newly authorized window, stop the service, acquire
+the monitor and worker locks, review any pending repair, and archive the prior
+state privately before restarting. Never archive an unresolved quarantine to
+make the worker proceed.
 
 ## When a repair runs
 
@@ -52,15 +80,17 @@ checkout. A later repair may use only the exact diff previously validated by
 this monitor; other concurrent changes defer it. The monitor never commits,
 pushes, merges or changes `main` or `v0.1.0`. There are at most eight distinct
 repair attempts per authorization. Each Codex process has a maximum 15-minute
-runtime, further reduced by remaining authorization time. Each subsequent
-validation command has a maximum three-minute runtime. Owned process groups
-are terminated and reaped on timeout or revocation.
+runtime, further reduced by remaining authorization time. Compile, full pytest
+and diff checks have limits of 120, 900 and 30 seconds respectively; the complete
+validation budget is reserved before starting a repair. Owned process groups are
+terminated and reaped on timeout, pause or revocation.
 
 ## Serialization and quarantine
 
 `private/overnight-monitor/monitor.lock` serializes monitor checks.
-`private/overnight-repair.lock` and `private/application-worker.lock` serialize
-repair and pipeline work. Before Codex starts, the monitor writes
+`private/overnight-repair.lock`, `private/application-worker.lock` and
+`private/approved-worker.lock` serialize repair, preparation and approved
+submission work. Before Codex starts, the monitor writes
 `private/overnight-monitor/repair-pending.json`. The pipeline checks this file
 under its manager lock and skips a cycle while it exists, including a symlink.
 
@@ -71,8 +101,10 @@ A successful repair must pass, in order:
 3. `git diff --check`
 
 The feature branch and commit must remain unchanged, authorization must still
-be valid, and protected candidate facts, authority, credentials files and
-submission evidence/state must match their pre-repair digests. Only then does
+be valid, and protected candidate facts, manual-answer packets, actual submission
+authority, candidate approvals, credentials and application/submission state must
+match their pre-repair digests. A supervision window cannot conceal a change to
+the separate submission authorization. Only then does
 the monitor clear quarantine. A failed, interrupted, expired or untrusted
 repair leaves quarantine in place and does not repeatedly launch Codex.
 
@@ -89,9 +121,15 @@ The ignored `private/overnight-monitor/` directory contains `health.json`,
 and validation logs. Files are mode 600. Health reports include aggregate queue
 states, confirmed and uncertain submission counts, pending question counts and
 sanitized technical fingerprints. They do not include candidate field values.
+Health also exposes `monitoring_kind`, `repair_authority`, `submission_authority`
+(always false) and `preparation_paused`, distinguishing observation-only reporting
+from preparation repair. Review-mode preparation failures are scanned using the
+supervision window's start time. Submission-attempt repair evidence remains
+exclusive to its original matching legacy authorization.
 The repair prompt treats page, packet and log contents as untrusted evidence.
 
 Synthetic tests exercise authorization gates, duplicate suppression, locks,
 quarantine, private permissions, process cleanup, repository fingerprints and
-protected-data checks. These tests do not establish that an overnight Codex
+protected-data checks, Review-mode observation versus repair consent, and
+fractional-second hourly-report startup. These tests do not establish that an overnight Codex
 repair or a live submission has succeeded. Report those outcomes separately.
