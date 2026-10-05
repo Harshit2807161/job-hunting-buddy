@@ -27,6 +27,28 @@ def test_explicit_ai_prohibition_preserves_candidate_only_requirement(label):
 def test_ordinary_opinion_on_ai_tools_does_not_prohibit_candidate_or_grounded_wording():
     assert candidate_wording_requested(OPINION) is False
 
+
+@pytest.mark.parametrize('question', [
+    'How do you use AI in your daily workflows? Describe specific tasks it accelerates, and one part of your work where you deliberately do not rely on AI.',
+    'Describe a workflow where you do not use AI.',
+    "Tell us when you don't rely on LLMs in your work.",
+    'Give an example in which you intentionally do not use generative AI.',
+])
+def test_descriptive_ai_workflow_negation_is_not_a_writing_prohibition(question):
+    assert candidate_wording_requested(question) is False
+
+
+@pytest.mark.parametrize('extra', [
+    ' Please do not use AI to write this response.',
+    ' Answer in your own words.',
+    ' No AI text please.',
+    " Don't rely on LLMs for your answer.",
+])
+def test_ai_workflow_question_still_respects_separate_authorship_restriction(extra):
+    question = 'Describe a task where you deliberately do not rely on AI.'
+    assert candidate_wording_requested(question + extra)
+
+
 class Form:
     blocked_requests=0
     def __init__(self,steps):self.steps=steps;self.index=0;self.fills={}

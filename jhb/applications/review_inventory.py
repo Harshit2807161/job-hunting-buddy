@@ -11,8 +11,17 @@ def candidate_wording_requested(label):
     text = normalize(label).replace('’', "'")
     tools = r'(?:generative\s+)?(?:ai|artificial intelligence)|(?:large\s+)?language models?|llms?|chatgpt'
     prohibition = r'(?:no|without(?:\s+(?:using|(?:the )?use of|(?:assistance|help) from))?|do not (?:use|utilize|rely on)|don\x27t (?:use|utilize|rely on)|refrain from(?: using)?|avoid(?: using)?)'
-    return bool(re.search(r'\b'+prohibition+r'\s+(?:(?:any|a|an|the)\s+)?(?:'+tools+r')\b|'
-                         r'\b(?:your|my|their) own (?:words|wording)\b|\bhuman[- ]written\b', text))
+    if re.search(r'\b(?:your|my|their) own (?:words|wording)\b|\bhuman[- ]written\b', text):
+        return True
+    for match in re.finditer(r'\b'+prohibition+r'\s+(?:(?:any|a|an|the)\s+)?(?:'+tools+r')\b', text):
+        # A relative clause describing the applicant's AI workflow is not an
+        # instruction about authorship of this answer. Evaluate other clauses
+        # separately so an explicit writing prohibition still takes precedence.
+        descriptive = (match[0].startswith(('do not ', "don't ")) and re.search(
+            r'\b(?:where|when|in which) you (?:deliberately |intentionally |typically )?$', text[:match.start()]))
+        if not descriptive:
+            return True
+    return False
 
 
 def candidate_response(record):
