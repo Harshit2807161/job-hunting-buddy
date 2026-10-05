@@ -81,6 +81,38 @@ absence of an immediate receipt does not authorize a duplicate append. Subsequen
 pipeline cycles drain already-confirmed pending tracking work. This does not
 change which boards are eligible for automatic application preparation.
 
+## Import existing application history before preparation
+
+`jhb.applications.historical.import_sheet` reads the same configured tab through
+Composio CLI GET tools. It validates the complete grid and headers, saves a private
+hash-bound snapshot, and imports dated rows into `sheet_application_history`.
+The importer shares `application-tracker.lock` with the append worker, caches
+successful reads for 15 minutes, and never appends a row or creates a submission
+receipt. CI cannot use live Composio authentication. Missing, malformed or
+unavailable reads retain existing history and report a sanitized pending state.
+
+Call `historical.match(conn, job)` before source-browser access and again after
+resolving the exact ATS URL, including the original `source_url`. An existing
+canonical ATS/LinkedIn job identity returns an `exclude` decision. Tracking
+parameters and posting/application route differences do not create another job.
+Two distinct recognized ATS requisitions remain distinct even if their employer
+and title are identical.
+
+Older rows often have no usable job link. Matching employer and role, with no
+conflicting explicit location, returns a cautious `hold` for identity
+reconciliation. Punctuation, a terminal employer/remote title suffix, and observed
+city abbreviations can be normalized for that hold only. No fuzzy employer-wide
+exclusion or submission confirmation is inferred. An unresolved matching company
+job URL also produces a hold rather than an invented ATS identity. Damaged
+matching evidence blocks reapplication until reconciled.
+
+The existing ordinal-day/month application date is retained verbatim; the importer
+does not infer a year, timezone, confirmation timestamp, browser receipt or new
+submission count. Undated/planned/formula rows are not imported. Previously seen
+evidence is retained across subsequent reads, including sheet row moves/deletions.
+Correcting a historical exclusion requires explicit reconciliation, not erasing
+the import to permit another application.
+
 ## Validation
 
 Synthetic tests exercise receipt gating, ATS identity, legacy deduplication,
