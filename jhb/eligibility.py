@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-POLICY_ID = "exclude-incompatible-employment-requirements-v2"
+POLICY_ID = "exclude-incompatible-employment-requirements-v3"
 _CITIZEN = re.compile(r"\bcitizen(?:ship|s)?\b|\bnationality\b", re.I)
 _CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:secret|confidential|security)[-\s]+cleared|(?:active|current|secret|confidential|government|federal|dod)\s+clearance|clearance|top[-\s]*secret|ts\s*/\s*sci|ts[- ]sci|sci\s+clearance)\b", re.I)
 _POLYGRAPH = re.compile(r"\bpolygraph\b", re.I)
@@ -60,6 +60,17 @@ _RESIDENCY_ALTERNATIVE = re.compile(
     r"\bor\s+(?:(?:be|otherwise)\s+)*(?:eligible\s+(?:to\s+obtain|for)|obtain)\b"
     r"[^.;]{0,100}\b(?:export\s+(?:control\s+)?(?:licen[cs]e|authorization)|"
     r"authorizations?\s+from\s+the\s+US\s+Department\s+of\s+State)\b", re.I)
+_CITIZEN_RESIDENT_STATUSES = (r"(?:a\s+)?(?:US|United\s+States)\s+citizens?\s+or\s+"
+    r"(?:(?:a|US|United\s+States|lawful|legal)\s+)*"
+    r"(?:permanent\s+residents?|green[-\s]+card\s+holders?)")
+_EXCLUSIVE_EMPLOYMENT_STATUSES = re.compile(
+    r"\b(?:only\s+(?:able\s+to\s+)?(?:consider|hire|employ|accept)|"
+    r"(?:consider|hire|employ|accept)\s+only)\s+"
+    r"(?:(?:an?\s+)?(?:applicants?|candidates?)(?:\s+who\s+(?:are|is))?\s+)?"
+    + _CITIZEN_RESIDENT_STATUSES +
+    r"(?:\s+for\s+(?:employment(?:\s+opportunities)?|this\s+(?:role|position)))?\s*$|"
+    r"\b(?:must|shall)\s+be\s+" + _CITIZEN_RESIDENT_STATUSES + r"\s*$|"
+    r"\b" + _CITIZEN_RESIDENT_STATUSES + r"\s+only\s*$", re.I)
 _REQUIRED_HEADING = re.compile(r"(?:required|requirements|minimum requirements|basic qualifications|"
                                r"required qualifications|qualifications|what you (?:need|must have))\s*:?", re.I)
 _OTHER_HEADING = re.compile(r"(?:desired|preferred(?: qualifications)?|nice[- ]to[- ]have|nice to have|"
@@ -145,7 +156,17 @@ def restrictions(text, *, title=False):
         if (_STUDENT_VISA_DENIAL.search(clause) and not clause.endswith("?")
                 and not re.search(r"\b(?:experience|prior|previous)\b", clause, re.I)):
             hits.append({"category": "student_visa_restriction", "evidence": clause[:600]})
+        # A closed employment list of citizens OR residents still excludes the
+        # candidate's student status. Do not mistake it for an open export-
+        # authorization alternative, or make this decision from keywords alone.
+        exclusive_employment = bool(_EXCLUSIVE_EMPLOYMENT_STATUSES.search(clause)
+                and not re.search(r"\b(?:not|never)\s+only\b", clause, re.I)
+                and not _NONDISCRIMINATION.search(clause) and not _DISCLOSURE.search(clause))
+        if exclusive_employment:
+            hits.append({"category": "citizenship", "evidence": clause[:600]})
         for kind, pattern in [("citizenship", _CITIZEN), ("security_clearance", _CLEARANCE), ("polygraph", _POLYGRAPH)]:
+            if kind == "citizenship" and exclusive_employment:
+                continue  # The closed employment requirement was recorded above.
             # A customer's clearance is not a requirement on this applicant.
             # Retain other conditions in the same clause for normal screening.
             search_clause = re.sub(r"\b(?:top[-\s]*secret|secret|confidential|security)[-\s]+cleared(?=\s+(?:customers|clients)\b)",

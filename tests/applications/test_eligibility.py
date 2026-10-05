@@ -10,6 +10,34 @@ from jhb import eligibility
 from jhb.applications import booklet, questions, queue, worker
 from jhb.sources import simplify
 
+EXCLUSIVE_EMPLOYMENT = ('At this time, we are only able to consider applicants who are '
+                        'US Citizens or Green Card Holders for employment opportunities.')
+
+
+@pytest.mark.parametrize('text', [
+    EXCLUSIVE_EMPLOYMENT,
+    'We only consider candidates who are U.S. citizens or lawful permanent residents.',
+    'We can consider only US citizens or green-card holders for this role.',
+    'We only hire United States citizens or permanent residents for employment.',
+    'We only accept an applicant who is a US citizen or a green card holder.',
+    'Must be US citizen or permanent resident.',
+    'US citizens or lawful permanent residents only.',
+    'Applicants must be U.S. citizens or green card holders.',
+])
+def test_exclusive_citizen_or_resident_employment_list_is_incompatible(text):
+    assert {row['category'] for row in eligibility.restrictions(text)} == {'citizenship'}
+
+
+@pytest.mark.parametrize('text', [
+    'We do not only consider applicants who are US citizens or green card holders.',
+    'Do you only consider applicants who are US citizens or green card holders?',
+    'We only consider applicants who are US citizens or green card holders or eligible for an export control license.',
+    'We only consider applicants who are US citizens or green card holders, refugees, or asylees.',
+    'We welcome US citizens or green card holders for employment opportunities.',
+])
+def test_employment_status_rule_preserves_questions_and_open_alternatives(text):
+    assert eligibility.restrictions(text) == []
+
 
 @pytest.mark.parametrize("text", [
     "Applicants must be a U.S. citizen.", "U.S. citizenship is required.",
@@ -70,8 +98,6 @@ def test_cleared_nonrequirements_remain_eligible(text):
     "Medical clearance required for field work.",
     "Candidates will work with our security-cleared customers.",
     "All applicants must disclose citizenship status.",
-    "Must be US citizen or permanent resident.",
-    "US citizens or lawful permanent residents only.",
     "No US citizenship required.",
     "No citizenship or security clearance is required.",
 ])
@@ -181,7 +207,7 @@ def test_export_alternatives_do_not_become_citizenship_only_requirements(text):
 def test_alternative_citizenship_does_not_mask_separate_mandatory_clearance():
     assert {x['category'] for x in eligibility.restrictions(
         "Applicants must be US citizens or permanent residents, security clearance required."
-    )} == {"security_clearance"}
+    )} == {"citizenship", "security_clearance"}
 
 
 def test_required_clearance_bullet_stops_worker_before_browser(tmp_path, monkeypatch):
@@ -200,16 +226,37 @@ def job(description="Ordinary application development position."):
     return item
 
 
-@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph."])
+@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT])
 def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path, monkeypatch, text):
     def forbidden(*args, **kwargs):
         pytest.fail("Excluded job must not access the candidate browser")
     monkeypatch.setattr("jhb.applications.cli_browser.BrowserUseCLI", forbidden)
-    result, packet = asyncio.run(worker.run_job(job(text), {"roles": {"sde": {}, "ml": {}}}, artifacts=tmp_path))
+    item = job(text)
+    item['eligibility'] = {'state': 'eligible', 'policy': 'exclude-incompatible-employment-requirements-v2'}
+    result, packet = asyncio.run(worker.run_job(item, {"roles": {"sde": {}, "ml": {}}}, artifacts=tmp_path))
     assert result["state"] == "skipped"
     assert result["filled"] == result["missing"] == []
     assert packet.exists()
     assert json.loads((packet.parent / "eligibility.json").read_text())["findings"]
+
+
+@pytest.mark.parametrize('source', [False, True])
+def test_legacy_eligible_backlog_is_refiltered_before_either_queue_claim(source):
+    from jhb.applications import source_queue
+    module, table, state = (source_queue, 'application_sources', 'filtered') if source else (queue, 'applications', 'skipped')
+    conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
+    module.enqueue(conn, [job()])
+    stored = json.loads(conn.execute(f'SELECT job_json FROM {table}').fetchone()[0])
+    stored['verified_job_description'] = job(EXCLUSIVE_EMPLOYMENT)['verified_job_description']
+    stored['eligibility'] = {'state': 'eligible', 'policy': 'exclude-incompatible-employment-requirements-v2'}
+    conn.execute(f'UPDATE {table} SET job_json=?', (json.dumps(stored),)); conn.commit()
+    assert module.claim(conn) is None
+    row = conn.execute(f'SELECT * FROM {table}').fetchone()
+    assert row['state'] == state and row['attempts'] == 0
+    outcome = json.loads(row['job_json'])['eligibility']
+    assert outcome['policy'] == eligibility.POLICY_ID and outcome['state'] == 'skipped'
+    assert outcome['findings'][0]['category'] == 'citizenship'
+    conn.close()
 
 
 def test_unavailable_description_handoffs_before_browser_without_candidate_question(tmp_path, monkeypatch):
