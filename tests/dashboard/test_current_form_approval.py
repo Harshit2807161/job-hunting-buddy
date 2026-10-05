@@ -1,5 +1,7 @@
 """Explicit click dispatches only its current form; no live services used."""
 import json
+import hashlib
+import time
 from contextlib import contextmanager
 
 import pytest
@@ -82,6 +84,80 @@ def test_busy_submission_lane_queues_exact_approval_without_refilling(current_fo
     response = portal[3].post(url+"/approve", headers=portal[4], json={"revision": revision, "acknowledged_blank_refs": []})
     assert response.status_code == 200 and response.json()["state"] == "approved"
     assert [e[0] for e in events] == ["capture"]
+
+
+@pytest.fixture
+def current_stretch(current_form, monkeypatch):
+    from jhb import eligibility
+    from jhb.applications import job_context, role_fit
+    portal, job, folder, url, _, events = current_form
+    root, conn, book, client, headers = portal
+    data = booklet.load(book)
+    data["roles"]["sde"]["role.experience"] = booklet.answer("Synthetic software research", "Synthetic resume")
+    data["candidate_selected_jobs"] = {job["dedupe_hash"]: {
+        "job_hash": job["dedupe_hash"], "url": job["url"], "content": "Apply to " + job["url"],
+        "status": "verified", "role": "user", "action": "apply", "source": "Synthetic candidate message"}}
+    booklet.write_private(book, data)
+    text = "Research commercial software. Model training experience desired."
+    description = {"status": "verified", "text": text, "source_url": job_context.description_source(job["url"]),
+        "retrieved_at": time.time(), "sha256": hashlib.sha256(text.encode()).hexdigest()}
+    booklet.write_private(folder / "eligibility.json", {"state": "eligible", "policy": eligibility.POLICY_ID,
+        "description": description})
+    booklet.write_private(folder / "role-fit.json", {"state": "skipped", "verdict": "not_fit",
+        "review_status": "complete", "source": role_fit.POLICY, "mode": "independent_codex", "selected_role": "sde",
+        "reason": "Model training is not documented.", "matched_requirements": ["Software research"],
+        "unsupported_core_requirements": ["Model training"], "review_notes": [],
+        "evidence_hash": role_fit.evidence_hash({**job, "verified_job_description": description}, data, "sde")})
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    detail = client.get(url).json()
+    assert detail["approval"]["requires_role_fit_acknowledgment"]
+    return portal, job, folder, url, detail["approval"]["revision"], events
+
+
+@pytest.mark.parametrize("ack", [None, False, "true", 1])
+def test_stretch_role_requires_explicit_boolean_ack_before_browser_capture(current_stretch, ack):
+    portal, job, folder, url, revision, events = current_stretch
+    root, conn, book, client, headers = portal
+    before = (folder / "packet.json").read_bytes()
+    payload = {"revision": revision, "acknowledged_blank_refs": []}
+    if ack is not None: payload["acknowledge_role_fit_warning"] = ack
+    response = client.post(url + "/approve", headers=headers, json=payload)
+    assert response.status_code == (422 if ack in ("true", 1) else 409)
+    assert events == [] and (folder / "packet.json").read_bytes() == before
+    assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
+
+
+def test_stretch_role_ack_reaches_fresh_authority_without_replacing_manual_edits(current_stretch):
+    portal, job, folder, url, revision, events = current_stretch
+    root, conn, book, client, headers = portal
+    before = (folder / "role-fit.json").read_bytes()
+    result = client.post(url + "/approve", headers=headers, json={"revision": revision,
+        "acknowledged_blank_refs": [], "acknowledge_role_fit_warning": True})
+    assert result.status_code == 200, result.text
+    assert [event[0] for event in events] == ["capture", "dispatch"]
+    authority_path = conn.execute("SELECT authorization_path FROM application_approvals").fetchone()[0]
+    auth = json.loads(open(authority_path).read())
+    assert auth["acknowledge_role_fit_warning"] is True
+    assert auth["binding"]["candidate_selected_stretch"]["fit_verdict"] == "not_fit"
+    assert (folder / "role-fit.json").read_bytes() == before
+    assert json.loads((folder / "packet.json").read_text())["filled"][0]["value"] == "Candidate's manually edited name"
+
+
+def test_fit_warning_change_during_current_capture_requires_new_review(current_stretch, monkeypatch):
+    portal, job, folder, url, revision, events = current_stretch
+    root, conn, book, client, headers = portal
+    previous = live_review.capture_current
+    async def changed_warning(path, *, acknowledged_blank_refs):
+        await previous(path, acknowledged_blank_refs=acknowledged_blank_refs)
+        fit = json.loads((folder / "role-fit.json").read_text())
+        fit["review_notes"].append("New gap found since the displayed review.")
+        booklet.write_private(folder / "role-fit.json", fit)
+    monkeypatch.setattr(live_review, "capture_current", changed_warning)
+    response = client.post(url + "/approve", headers=headers, json={"revision": revision,
+        "acknowledged_blank_refs": [], "acknowledge_role_fit_warning": True})
+    assert response.status_code == 409 and "role-fit warning changed" in response.json()["detail"]
+    assert [event[0] for event in events] == ["capture"]
+    assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("marker", ["pipeline-pause.json", "overnight-monitor/repair-pending.json"])

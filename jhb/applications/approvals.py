@@ -218,6 +218,10 @@ def _snapshot(packet_path, book_path):
                "book_path": str(book_file), "facts_sha256": _facts(book, job, role), "selected_role": role,
                "document_sha256": {k: d["sha256"] for k, d in documents.items()},
                "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest()}
+    from .stretch_role import context
+    stretch = context(path, job, book, role, binding["document_sha256"])
+    if stretch:
+        binding["candidate_selected_stretch"] = stretch
     return packet, binding, _digest(binding)
 
 
@@ -242,12 +246,16 @@ def review(conn, job_hash, book_path=booklet.DEFAULT_PATH):
     latest = conn.execute("SELECT approval_id,state,approved_at,expires_at,revision FROM application_approvals "
                           "WHERE job_hash=? ORDER BY approved_at DESC,rowid DESC LIMIT 1", (job_hash,)).fetchone()
     result = {"job_hash": job_hash, "revision": None, "can_approve": False, "reason": "", "blank_questions": [],
-              "approval": dict(latest) if latest else None}
+              "approval": dict(latest) if latest else None,
+              "requires_role_fit_acknowledgment": False, "role_fit_warning": None}
     try:
         packet, binding, revision = _draft(conn, job_hash, book_path)
         result.update(revision=revision, can_approve=True, selected_role=binding["selected_role"],
                       packet_sha256=binding.get("packet_sha256"),
                       blank_questions=[f for f in packet["review_inventory"]["fields"] if f["status"] != "answered"])
+        if stretch := binding.get("candidate_selected_stretch"):
+            result.update(requires_role_fit_acknowledgment=True,
+                          role_fit_warning={"reason": stretch["reason"], "gaps": stretch["gaps"]})
         if latest and latest["state"] in {"approved", "submitting"}:
             result.update(can_approve=False, reason="This draft already has a pending approval")
     except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -255,13 +263,15 @@ def review(conn, job_hash, book_path=booklet.DEFAULT_PATH):
     return result
 
 
-def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, book_path=booklet.DEFAULT_PATH, *, current_form=False):
+def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, book_path=booklet.DEFAULT_PATH, *, current_form=False,
+            acknowledge_role_fit_warning=False):
     """Called only by the portal's authenticated same-origin explicit click route."""
     initialize(conn)
     _expire_pending(conn, job_hash)
     packet, binding, revision = _draft(conn, job_hash, book_path)
     if expected_revision != revision:
         raise ValueError("The draft changed; reload and review it again")
+    check_role_fit_acknowledgment(binding, acknowledge_role_fit_warning)
     blanks = {f["ref"] for f in packet["review_inventory"]["fields"] if f["status"] != "answered"}
     acknowledged = acknowledged_blank_refs or []
     if not isinstance(acknowledged, list) or any(not isinstance(r, str) for r in acknowledged) or set(acknowledged) != blanks:
@@ -278,6 +288,8 @@ def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, boo
             "require_browser_double_check": True, "pause_unknown_answers": True,
             "require_receipt_before_sheet": True, "require_independent_review": True,
             "revision": revision, "binding": binding, "acknowledged_blank_refs": sorted(blanks)}
+    if binding.get("candidate_selected_stretch"):
+        auth["acknowledge_role_fit_warning"] = True
     if current_form:
         from .live_review import MODE
         if packet.get("review_mode") != MODE or not packet.get("live_review", {}).get("snapshot_sha256"):
@@ -297,10 +309,22 @@ def approve(conn, job_hash, expected_revision, acknowledged_blank_refs=None, boo
     return {"approval_id": aid, "state": "approved", "job_hash": job_hash}
 
 
+def check_role_fit_acknowledgment(binding, acknowledged):
+    if binding.get("candidate_selected_stretch"):
+        if acknowledged is not True:
+            raise ValueError("Explicitly acknowledge the role-fit warning before approving this selected stretch role")
+    elif acknowledged is not False:
+        raise ValueError("The role-fit warning changed; reload and review it again")
+
+
 def validate_binding(auth, packet_path):
     """Recheck the user's exact evidence before every final browser operation."""
     binding = auth.get("binding", {})
     packet, current, revision = _snapshot(packet_path, binding.get("book_path", ""))
+    if current.get("candidate_selected_stretch"):
+        from .stretch_role import allowed
+        if not allowed(auth, current["candidate_selected_stretch"]):
+            raise ValueError("Portal approval does not acknowledge the current role-fit warning")
     if (auth.get("job_hash") != packet["job"]["dedupe_hash"] or binding != current or auth.get("revision") != revision
             or set(auth.get("acknowledged_blank_refs", [])) !=
             {f["ref"] for f in packet["review_inventory"]["fields"] if f["status"] != "answered"}):

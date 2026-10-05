@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 from typing import Literal
 
 from . import config
@@ -775,6 +775,7 @@ class ApprovalInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: str
     acknowledged_blank_refs: list[str] = []
+    acknowledge_role_fit_warning: StrictBool = False
 
 
 def _prepare_review_edits(conn, question):
@@ -972,16 +973,21 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                         packet, binding, revision = approvals._draft(conn, job_hash, store.book_path)
                         if revision != payload.revision:
                             raise ValueError("Saved job identity changed before approval")
+                        approvals.check_role_fit_acknowledgment(binding, payload.acknowledge_role_fit_warning)
                         # Capture reads the exact existing tab, including every
                         # candidate edit; it never fills or replaces uploads.
                         asyncio.run(capture_current(binding["packet_path"], acknowledged_blank_refs=payload.acknowledged_blank_refs))
-                        live, _, revision = approvals._draft(conn, job_hash, store.book_path)
+                        live, live_binding, revision = approvals._draft(conn, job_hash, store.book_path)
+                        if live_binding.get("candidate_selected_stretch") != binding.get("candidate_selected_stretch"):
+                            raise ValueError("The role-fit warning changed; reload and review it again")
                         blanks = [f["ref"] for f in live["review_inventory"]["fields"] if f["status"] != "answered"]
                         result = approvals.approve(conn, job_hash, revision,
-                            acknowledged_blank_refs=blanks, book_path=store.book_path, current_form=True)
+                            acknowledged_blank_refs=blanks, book_path=store.book_path, current_form=True,
+                            acknowledge_role_fit_warning=payload.acknowledge_role_fit_warning)
                     else:
                         result = approvals.approve(conn, job_hash, payload.revision,
-                            acknowledged_blank_refs=payload.acknowledged_blank_refs, book_path=store.book_path)
+                            acknowledged_blank_refs=payload.acknowledged_blank_refs, book_path=store.book_path,
+                            acknowledge_role_fit_warning=payload.acknowledge_role_fit_warning)
             if current_form:
                 # Start this exact user-approved job in this request instead of
                 # waiting for the scheduled worker's next polling interval.
@@ -1001,7 +1007,9 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             message = "Draft changed or blank questions were not acknowledged; refresh the review"
             if current_form:
                 text = str(exc)
-                if "attachment" in text or "uploaded" in text or "upload" in text or text.endswith((": Resume", ": Resume/CV", ": Cover Letter")):
+                if "role-fit warning" in text:
+                    message = text
+                elif "attachment" in text or "uploaded" in text or "upload" in text or text.endswith((": Resume", ": Resume/CV", ": Cover Letter")):
                     message = "The current attachment could not be verified. It was left unchanged; review the saved attachment in Chrome."
                 elif "optional blank" in text:
                     message = "A current optional field is blank. Refresh the review and acknowledge each field you want to leave blank."

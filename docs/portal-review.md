@@ -48,6 +48,22 @@ no-click result is distinguished from an unknown terminal outcome. Pipeline paus
 and repair holds disable approval before current-form capture and before creating
 an authorization, so maintenance cannot consume a candidate's approval click.
 
+An exact role explicitly requested by the candidate may retain a completed
+independent `not_fit` assessment as a visible advisory. The private booklet's
+`candidate_selected_jobs[job_hash]` records the original user request and exact
+URL with `status=verified`, `role=user`, `action=apply`, the matching `job_hash`,
+`content`, and its transcript `source`. This selection grants no submission
+authority. The portal exposes `approval.requires_role_fit_acknowledgment` and
+`approval.role_fit_warning` (reason and gaps). The candidate must explicitly
+check its warning and send `acknowledge_role_fit_warning=true` with a fresh
+approval. Selection, assessment bytes, current job description and resume bytes
+are bound alongside the usual facts, answers, documents and screenshot.
+Changed or missing evidence invalidates the approval; old approvals are never
+upgraded. The model verdict stays unchanged. Objective eligibility, exact-job
+exclusions, history, unknown facts and independent answer review retain their
+guards. This path never applies to autonomous Phase 1 submission or an
+unavailable, stale, failed or incomplete role-fit assessment.
+
 `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects legacy broad overnight authority even if
 its old environment flag is accidentally enabled. The separate
 `JHB_PORTAL_SUBMISSIONS_ENABLED=1` enables draining candidate-approved records;

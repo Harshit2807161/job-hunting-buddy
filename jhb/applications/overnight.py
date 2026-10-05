@@ -241,7 +241,10 @@ def _candidate(conn, row, auth, book, *, rejections=None):
         if (role not in {"sde", "ml"} or fit.get("state") != "eligible" or fit.get("source") != FIT_POLICY
                 or fit.get("mode") != "independent_codex" or fit.get("selected_role") != role
                 or fit.get("evidence_hash") != evidence_hash({**job, "verified_job_description": description}, book, role)):
-            return reject("role_fit_not_eligible" if fit.get("state") != "eligible" else "role_fit_not_verified")
+            from .stretch_role import allowed, context
+            stretch = context(packet_path, job, book, role, auth.get("binding", {}).get("document_sha256", {}))
+            if not allowed(auth, stretch):
+                return reject("role_fit_not_eligible" if fit.get("state") != "eligible" else "role_fit_not_verified")
     return job, packet_path, packet
 
 
