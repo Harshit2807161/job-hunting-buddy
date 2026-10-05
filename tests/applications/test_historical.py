@@ -105,6 +105,84 @@ def test_legacy_remote_is_a_work_arrangement_not_a_conflicting_location(setup):
     assert found["submission_confirmed"] is False
 
 
+@pytest.mark.parametrize('saved,current', [
+    ('US', '["United States"]'), ('USA', ['United States']),
+    ('U.S.A.', ['United States of America']), ('United States', ['New York, NY']),
+    ('US', ['San Francisco, CA']), ('US', ['Remote - United States']),
+    ('US', ['Remote']), ('Remote', ['Canada']), ('Multiple', ['Seattle, WA']),
+    ('NYC', ['New York, NY']), ('SF', ['San Francisco, California, USA']),
+    ('New York, NY; San Francisco, CA', ['San Francisco, CA']),
+    ('New York, NY | San Francisco, CA', ['New York, NY']),
+    ('US / Canada', ['Toronto, Canada']), ('US, Canada', ['Canada']),
+    ('["London, UK", "New York, NY"]', ['New York, NY']),
+    ('US', ['London, UK', 'Seattle, WA']),
+    ('California', ['San Diego, CA']), ('CA', ['California, US']),
+    ('London, UK', ['United Kingdom']),
+    ('Unlisted City', ['US']),  # A country is not established for this city.
+])
+def test_legacy_broad_alias_and_overlapping_locations_preserve_cautious_hold(setup, saved, current):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[73] = row(job, url='', date='21st sep', location=saved,
+                          title='Software Engineer - New Grad (Helios)')
+    historical.import_sheet(conn, executor=sheets)
+    found = historical.match(conn, {**job, 'title': 'Software Engineer New Grad - Helios', 'locations': current})
+    assert found['disposition'] == 'hold' and found['state'] == 'possible_prior_application'
+    assert found['match_kind'] == 'legacy_company_role_location' and found['row_number'] == 73
+    assert found['applied_date_raw'] == '21st sep' and found['location_raw'] == saved
+    assert found['submission_confirmed'] is False and sheets.appends == 0
+
+
+@pytest.mark.parametrize('saved,current', [
+    ('US', ['UK']), ('United States', ['Canada']), ('US', ['London, UK']),
+    ('US', ['London, UK', 'Berlin, Germany']),
+    ('San Francisco, CA', ['New York, NY']),
+    ('Portland, OR', ['Portland, ME']), ('California', ['New York, NY']),
+    ('San Francisco, CA; Austin, TX', ['London, UK', 'New York, NY']),
+    ('Germany', ['France']), ('London, UK', ['London, Canada']),
+])
+def test_only_disjoint_explicit_geographies_suppress_legacy_hold(setup, saved, current):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, url='', location=saved)
+    historical.import_sheet(conn, executor=sheets)
+    assert historical.match(conn, {**job, 'locations': current}) is None
+
+
+@pytest.mark.parametrize('saved,current', [
+    ('AI Engineer I', 'AI Engineer 1'),
+    ('Software Engineer I', 'Software Engineer 1'),
+    ('Software Engineer II, Backend', 'Backend Software Engineer 2'),
+    ('New Grad Software Engineer, Platform', 'Software Engineer Platform - New Grad'),
+])
+def test_legacy_role_level_and_word_order_variations_hold_without_exact_confirmation(setup, saved, current):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, url='', title=saved)
+    historical.import_sheet(conn, executor=sheets)
+    found = historical.match(conn, {**job, 'title': current})
+    assert found['disposition'] == 'hold' and found['submission_confirmed'] is False
+
+
+@pytest.mark.parametrize('saved,current', [
+    ('Software Engineer I', 'Software Engineer II'),
+    ('Software Engineer 1', 'Senior Software Engineer 1'),
+    ('Software Engineer New Grad 2026', 'Software Engineer New Grad 2027'),
+    ('Software Engineer, Backend', 'Software Engineer, Embedded'),
+    ('Software Engineer, ML Platform', 'Software Engineer, Data Platform'),
+])
+def test_title_normalization_preserves_conflicting_levels_cohorts_and_specialties(setup, saved, current):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, url='', title=saved)
+    historical.import_sheet(conn, executor=sheets)
+    assert historical.match(conn, {**job, 'title': current}) is None
+
+
+def test_new_aliases_never_merge_two_explicitly_different_ats_job_ids(setup):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, title='AI Engineer I', location='US')
+    historical.import_sheet(conn, executor=sheets)
+    assert historical.match(conn, {**job, 'title': 'AI Engineer 1', 'locations': ['United States'],
+        'url': ASHBY.replace('555555555555', '555555555556')}) is None
+
+
 @pytest.mark.parametrize("date", ["", "not applied", "TBD", "=TODAY()"])
 def test_pending_undated_rows_and_generic_links_are_not_submission_evidence(setup, date):
     conn, job, _, sheets, _ = setup

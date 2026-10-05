@@ -59,23 +59,78 @@ def _title(value, company):
     parts = re.split(r"\s+[-–—]\s+", text)
     if len(parts) > 1 and _company(parts[-1]) == _company(company):
         text = " - ".join(parts[:-1])
-    return _words(text)
+    text = _words(text)
+    levels = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5"}
+    text = re.sub(r"\b(engineer|developer|scientist|analyst|researcher)\s+(i|ii|iii|iv|v)\b",
+                  lambda match: match[1]+" "+levels[match[2]], text)
+    # Role word order varies between feeds and hand-entered rows. Retain every
+    # token (including level, specialty and cohort), rather than widening to a
+    # company-wide or generic software-engineer match.
+    return " ".join(sorted(text.split()))
 
 
 def _locations(value):
+    """Conservative (country, region, city) descriptions, not geocoding.
+
+    Empty components remain unknown. A broad or ambiguous location cannot
+    prove that an otherwise matching historical application is a different job.
+    """
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
             value = parsed if isinstance(parsed, list) else value
         except ValueError:
             pass
-    values = value if isinstance(value, list) else re.split(r"[;|]", str(value or ""))
-    aliases = {"sf": "san francisco", "san francisco ca": "san francisco",
-               "san francisco california": "san francisco", "nyc": "new york city"}
-    # Remote alone describes work arrangement, not a conflicting country/city.
-    unspecified = {"remote", "multiple locations", "remote multiple locations", "various locations"}
-    return {aliases.get(_words(item), _words(item)) for item in values
-            if _words(item) and _words(item) not in unspecified}
+    countries = {alias: canonical for canonical, aliases in {
+        "us": ("us", "u s", "usa", "u s a", "united states", "united states of america"),
+        "gb": ("uk", "u k", "gb", "united kingdom", "great britain"),
+        "ca": ("canada",), "in": ("india",), "de": ("germany",), "fr": ("france",),
+        "au": ("australia",), "ie": ("ireland",), "sg": ("singapore",),
+    }.items() for alias in aliases}
+    regions = dict(pair.split(":") for pair in (
+        "al:alabama|ak:alaska|az:arizona|ar:arkansas|ca:california|co:colorado|ct:connecticut|de:delaware|"
+        "dc:district of columbia|fl:florida|ga:georgia|hi:hawaii|id:idaho|il:illinois|in:indiana|ia:iowa|"
+        "ks:kansas|ky:kentucky|la:louisiana|me:maine|md:maryland|ma:massachusetts|mi:michigan|mn:minnesota|"
+        "ms:mississippi|mo:missouri|mt:montana|ne:nebraska|nv:nevada|nh:new hampshire|nj:new jersey|"
+        "nm:new mexico|ny:new york|nc:north carolina|nd:north dakota|oh:ohio|ok:oklahoma|or:oregon|"
+        "pa:pennsylvania|ri:rhode island|sc:south carolina|sd:south dakota|tn:tennessee|tx:texas|ut:utah|"
+        "vt:vermont|va:virginia|wa:washington|wv:west virginia|wi:wisconsin|wy:wyoming").split("|"))
+    regions.update({name: code for code, name in tuple(regions.items())})
+    # Normalize both abbreviations and full names to the same region code.
+    regions.update({code: code for code in tuple(regions) if len(code) == 2})
+    cities = {"sf": "san francisco", "san francisco ca": "san francisco",
+              "san francisco california": "san francisco", "nyc": "new york city", "new york": "new york city"}
+    result = set()
+    for item in value if isinstance(value, list) else [value]:
+        for part in re.split(r"[;|/\n]", str(item or "")):
+            part = re.sub(r"\b(?:remote|hybrid|on[- ]?site|multiple(?:\s+locations)?|various\s+locations|anywhere|worldwide|global)\b", "", part, flags=re.I)
+            parts = [_words(p) for p in part.split(",") if _words(p)]
+            if not parts:
+                continue
+            if all(p in countries for p in parts):
+                result.update((countries[p], "", "") for p in parts)
+                continue
+            country = countries.get(parts[-1], "")
+            if country:
+                parts.pop()
+            region = (regions.get(parts[-1], "") if parts and country in {"", "us"}
+                      and (country or len(parts) > 1 or len(parts[-1]) > 2) else "")
+            if region:
+                country = "us"; parts.pop()
+            # Unrecognized comma lists might name several cities. They cannot
+            # safely supply evidence of a conflicting single locality.
+            city = cities.get(parts[0], parts[0]) if len(parts) == 1 else ""
+            if city in regions and len(city) == 2:
+                city = ""  # A standalone CA, for example, has ambiguous scope.
+            result.add((country, region, city))
+    return result
+
+
+def _locations_conflict(saved, current):
+    left, right = _locations(saved), _locations(current)
+    return bool(left and right and all(
+        any(a and b and a != b for a, b in zip(old, new))
+        for old in left for new in right))
 
 
 def _url_key(value):
@@ -227,9 +282,7 @@ def match(conn, job, *, root=None):
             conflicting = identity and not exact and ats_identities and json.loads(identity)[0] != "linkedin"
             legacy = (not conflicting and company and _company(row[0]) == company
                       and _title(row[1], row[0]) == _title(job.get("title", ""), job.get("company", "")))
-            old_locations = _locations(row[2])
-            current_locations = _locations(job.get("locations") or job.get("location"))
-            if legacy and old_locations and current_locations and old_locations.isdisjoint(current_locations):
+            if legacy and _locations_conflict(row[2], job.get("locations") or job.get("location")):
                 legacy = False
             if not (exact or linked or legacy):
                 continue
