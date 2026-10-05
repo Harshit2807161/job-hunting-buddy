@@ -194,7 +194,7 @@ def project(packet, observation):
                     "all_observed_count": len(inventory), "answered_count": len(filled), "blank_count": len(blanks),
                     "declined_count": 0, "blank_substantive_count": 0, "candidate_wording_required_count": 0,
                     "requires_explicit_acknowledgment": bool(blanks), "requires_explicit_approval": True})
-    result.setdefault("events", []).append({"event": "candidate_current_form_approval", "changed_values_preserved": True})
+    result.setdefault("events", []).append({"event": "candidate_current_form_capture", "changed_values_preserved": True})
     return result
 
 
@@ -224,8 +224,6 @@ async def capture_current(packet_path, *, client=None, acknowledged_blank_refs=(
     if first != second:
         raise ValueError("The form changed while the approval click was being captured")
     blanks = {field["ref"] for field in result["review_inventory"]["fields"] if field["status"] != "answered"}
-    if not blanks.issubset(set(acknowledged_blank_refs)):
-        raise ValueError("Explicitly acknowledge each optional blank answer before approval")
     directory = path.parent
     stamp = str(time.time_ns())
     staged = directory / ("current-form-capture-"+stamp)
@@ -234,17 +232,22 @@ async def capture_current(packet_path, *, client=None, acknowledged_blank_refs=(
         raise ValueError("The current form screenshot could not be verified")
     # A failed capture leaves the prior review packet usable. Recheck the
     # private evidence immediately before promoting the new read-only snapshot.
-    if json.loads(path.read_bytes()) != packet:
-        raise ValueError("The draft changed while the current form was captured")
     from . import application_discard
-    application_discard.check(config.ROOT, packet["job"]["dedupe_hash"])
-    archive = directory / ("before-current-form-approval-"+stamp)
-    archive.mkdir(mode=0o700)
-    for name in ("packet.json", "browser.png", "review.html", "events.json"):
-        previous = directory / name
-        if previous.is_file():
-            shutil.copy2(previous, archive / name)
-    for name in ("browser.png", "review.html", "events.json", "packet.json"):
-        os.replace(staged / name, directory / name)
-    booklet.write_private(directory / "candidate-current-form.json", first)
+    with application_discard.action_lock(config.ROOT, packet["job"]["dedupe_hash"]):
+        if json.loads(path.read_bytes()) != packet:
+            raise ValueError("The draft changed while the current form was captured")
+        application_discard.check(config.ROOT, packet["job"]["dedupe_hash"])
+        archive = directory / ("before-current-form-approval-"+stamp)
+        archive.mkdir(mode=0o700)
+        for name in ("packet.json", "browser.png", "review.html", "events.json"):
+            previous = directory / name
+            if previous.is_file():
+                shutil.copy2(previous, archive / name)
+        for name in ("browser.png", "review.html", "events.json", "packet.json"):
+            os.replace(staged / name, directory / name)
+        booklet.write_private(directory / "candidate-current-form.json", first)
+    if not blanks.issubset(set(acknowledged_blank_refs)):
+        # Publish the read-only preview so a fresh portal GET can expose newly
+        # blank fields. This request grants no approval or terminal authority.
+        raise ValueError("Explicitly acknowledge each optional blank answer before approval")
     return directory / "review.html", result

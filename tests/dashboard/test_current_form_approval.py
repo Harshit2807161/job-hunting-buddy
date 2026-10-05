@@ -84,6 +84,28 @@ def test_busy_submission_lane_queues_exact_approval_without_refilling(current_fo
     assert [e[0] for e in events] == ["capture"]
 
 
+def test_new_blank_preview_requires_another_explicit_click(current_form, monkeypatch):
+    portal, job, folder, url, revision, events = current_form
+    root, conn, book, client, headers = portal
+    previous_capture = live_review.capture_current
+    async def new_blank(path, *, acknowledged_blank_refs):
+        await previous_capture(path, acknowledged_blank_refs=acknowledged_blank_refs)
+        packet = json.loads((folder / "packet.json").read_text())
+        packet["review_inventory"]["fields"].append({"ref": "new-blank", "question": "Optional website",
+            "type": "url", "required": False, "status": "blank"})
+        packet["optional_questions"] = [{"ref": "new-blank", "question": "Optional website", "required": False, "type": "url"}]
+        booklet.write_private(folder / "packet.json", packet)
+        raise ValueError("Explicitly acknowledge each optional blank answer before approval")
+    monkeypatch.setattr(live_review, "capture_current", new_blank)
+    response = client.post(url+"/approve", headers=headers, json={"revision": revision, "acknowledged_blank_refs": []})
+    assert response.status_code == 409
+    assert [event[0] for event in events] == ["capture"]
+    assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
+    refreshed = client.get(url).json()
+    assert refreshed["approval"]["can_approve"] is True
+    assert [item["ref"] for item in refreshed["approval"]["blank_questions"]] == ["new-blank"]
+
+
 @pytest.mark.parametrize("blocked", ["maintenance", "stale_revision", "csrf"])
 def test_blocked_click_does_not_read_or_mutate_browser(current_form, monkeypatch, blocked):
     portal, job, folder, url, revision, events = current_form
