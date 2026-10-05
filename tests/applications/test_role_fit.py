@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -209,3 +210,87 @@ def test_policy_bump_and_availability_change_invalidate_semantic_cache(inputs, m
     assert changed['evidence_hash'] != new['evidence_hash'] and len(calls) == 3
     assert role_fit.assess(job, book, role, execute=run)['evidence_hash'] == changed['evidence_hash']
     assert len(calls) == 3
+
+
+def test_timeout_retains_only_sanitized_partial_events_and_never_accepts_a_late_output(inputs, monkeypatch):
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    calls = []
+    def timed_out(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        assert kwargs["timeout"] == 120  # No blind deadline extension.
+        # Even an output written before process timeout is not a completed run.
+        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps({
+            "verdict": "fit", "reason": "Synthetic premature verdict", "matched_requirements": ["Python"],
+            "unsupported_core_requirements": [], "review_notes": []}))
+        events = (b'{"type":"thread.started","thread_id":"synthetic-private-id"}\n'
+                  b'{"type":"turn.started"}\n'
+                  b'{"type":"error","message":"synthetic-secret-credential"}\n')
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=events, stderr=b"synthetic-private-error")
+    result = role_fit.assess(*inputs, execute=timed_out)
+    assert result["state"] == "unsupported" and result["review_status"] == "technical_failure"
+    assert result["error_kind"] == "role_review_timeout" and result["retryable"] is True
+    assert "verdict" not in result
+    evidence = result["execution"]
+    assert evidence["event_counts"] == {"thread.started": 1, "turn.started": 1, "error": 1}
+    assert evidence["last_lifecycle_phase"] == "turn.started"
+    assert evidence["stdout_bytes"] > 0 and evidence["stderr_bytes"] > 0
+    assert evidence["exception_class"] == "TimeoutExpired" and evidence["timeout_seconds"] == 120
+    assert evidence["returncode"] is None and evidence["elapsed_seconds"] >= 0
+    assert not evidence["events_truncated"]
+    assert "synthetic-private" not in json.dumps(result) and "synthetic-secret" not in json.dumps(result)
+    cache = config.ROOT / "private" / "role-fit-reviews" / inputs[0]["dedupe_hash"] / (result["evidence_hash"] + ".json")
+    assert json.loads(cache.read_text())["execution"] == evidence
+    assert cache.stat().st_mode & 0o777 == 0o600
+    # A technical cache entry does not become a semantic decision or suppress a
+    # separately authorized retry. These are injected subprocesses, not live calls.
+    role_fit.assess(*inputs, execute=timed_out)
+    assert calls == [120, 120]
+
+
+def test_semantic_needs_review_is_distinct_from_retryable_execution_failure(inputs, monkeypatch):
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    result = role_fit.assess(*inputs, execute=executor({
+        "verdict": "needs_review", "reason": "Core scope is unclear", "matched_requirements": ["Python"],
+        "unsupported_core_requirements": [], "review_notes": []}, []))
+    assert result["state"] == "unsupported" and result["review_status"] == "needs_review"
+    assert result["retryable"] is False and "error_kind" not in result
+    assert result["execution"]["returncode"] == 0
+
+
+@pytest.mark.parametrize("mode,kind,retryable", [
+    ("exit", "role_review_process_exit", False),
+    ("missing", "role_review_output_missing", True),
+    ("malformed", "role_review_output_invalid", False),
+    ("schema", "role_review_output_invalid", False),
+    ("executable", "role_review_execution", False),
+])
+def test_execution_and_output_failures_have_safe_structured_diagnostics(inputs, monkeypatch, mode, kind, retryable):
+    monkeypatch.setenv("JHB_ROLE_FIT_REVIEW", "1")
+    def execute(command, **kwargs):
+        output = Path(command[command.index("--output-last-message") + 1])
+        if mode == "executable":
+            raise FileNotFoundError("synthetic-private-local-path")
+        if mode == "malformed":
+            output.write_text("synthetic-private-broken-output")
+        if mode == "schema":
+            output.write_text('{"verdict":"fit"}')
+        return SimpleNamespace(returncode=7 if mode == "exit" else 0,
+            stdout='{"type":"turn.failed","error":{"message":"synthetic-private-message"}}\n',
+            stderr="synthetic-secret-credential")
+    result = role_fit.assess(*inputs, execute=execute)
+    assert result["state"] == "unsupported" and result["review_status"] == "technical_failure"
+    assert result["error_kind"] == kind and result["retryable"] is retryable
+    assert "synthetic-private" not in json.dumps(result) and "synthetic-secret" not in json.dumps(result)
+
+
+def test_event_summary_uses_actual_last_phase_and_bounds_untrusted_json_lines():
+    stream = ('{"type":"turn.completed"}\n'
+              '{"type":"turn.failed","error":"synthetic-secret"}\n'
+              '{"type":"synthetic-private-command"}\ninvalid-synthetic-private-json\n')
+    evidence = role_fit._execution_evidence(stream, "synthetic-private-stderr")
+    assert evidence["last_lifecycle_phase"] == "turn.failed"
+    assert evidence["event_counts"] == {"turn.completed": 1, "turn.failed": 1, "other": 1}
+    assert evidence["malformed_event_count"] == 1
+    assert "synthetic-private" not in json.dumps(evidence) and "synthetic-secret" not in json.dumps(evidence)
+    large = role_fit._execution_evidence('{"type":"error"}\n' * 2100)
+    assert large["event_counts"] == {"error": 2000} and large["events_truncated"] is True

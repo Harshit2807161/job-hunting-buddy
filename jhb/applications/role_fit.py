@@ -16,12 +16,45 @@ from ..eligibility import verified_description
 from . import booklet
 
 POLICY = "resume-core-role-fit-v2"
+REVIEW_TIMEOUT_SECONDS = 120
 SPECIALTIES = {
     "robotics": r"\brobotics?\b|\brobot\s+(?:motion|navigation|control)\b",
     "embedded or firmware": r"\b(?:embedded|firmware|rtos)\b",
     "hardware or electrical": r"\b(?:fpga|asic|electrical|mechanical|hardware)\b",
     "control systems": r"\bcontrols?\s+(?:systems?\s+)?engineer\b",
 }
+
+
+def _execution_evidence(stdout=None, stderr=None):
+    """Keep only allowlisted CLI event counts, never prompt/error/message text.
+
+    codex exec --json emits thread/turn/item/error events, including before a
+    timeout. Their presence locates the stall without guessing its cause.
+    https://learn.chatgpt.com/docs/non-interactive-mode
+    """
+    def raw(value):
+        return value if isinstance(value, bytes) else value.encode("utf-8", errors="replace") if isinstance(value, str) else b""
+    output, errors = raw(stdout), raw(stderr)
+    counts = {}
+    kinds = {"thread.started", "turn.started", "turn.completed", "turn.failed",
+             "item.started", "item.updated", "item.completed", "error"}
+    lines = output[:1_000_000].splitlines()
+    malformed = 0
+    phase = "no_lifecycle_event"
+    for line in lines[:2000]:
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            malformed += 1
+            continue
+        name = event.get("type") if isinstance(event, dict) else None
+        name = name if isinstance(name, str) and name in kinds else "other"
+        counts[name] = counts.get(name, 0) + 1
+        if name in {"thread.started", "turn.started", "turn.completed", "turn.failed"}:
+            phase = name
+    return {"stdout_bytes": len(output), "stderr_bytes": len(errors), "event_counts": counts,
+            "malformed_event_count": malformed, "last_lifecycle_phase": phase,
+            "events_truncated": len(output) > 1_000_000 or len(lines) > 2000}
 
 
 def _verified_availability(book, role):
@@ -159,9 +192,19 @@ EVIDENCE:\n""" + json.dumps(data, ensure_ascii=False)
                "--output-last-message", str(output), "--json", "-C", str(config.ROOT), "-"]
     env = dict(os.environ)
     env.pop("OPENAI_API_KEY", None); env.pop("CODEX_API_KEY", None)
-    result = {**base, "state": "unsupported", "reason": "Independent role-fit review unavailable", "mode": "independent_codex"}
+    result = {**base, "state": "unsupported", "reason": "Independent role-fit review unavailable", "mode": "independent_codex",
+              "review_status": "technical_failure", "error_kind": "role_review_output_missing", "retryable": True}
+    execution = {"timeout_seconds": REVIEW_TIMEOUT_SECONDS, "returncode": None, **_execution_evidence()}
+    started = time.monotonic()
     try:
-        process = (execute or subprocess.run)(command, input=prompt, capture_output=True, text=True, env=env, timeout=120)
+        process = (execute or subprocess.run)(command, input=prompt, capture_output=True, text=True, env=env,
+                                            timeout=REVIEW_TIMEOUT_SECONDS)
+        execution.update(_execution_evidence(getattr(process, "stdout", None), getattr(process, "stderr", None)))
+        execution["returncode"] = process.returncode if type(process.returncode) is int else None
+        if process.returncode != 0:
+            # A nonzero exit alone does not establish a transient outage. It
+            # could need local authentication/configuration repair.
+            result.update(error_kind="role_review_process_exit", retryable=False)
         if process.returncode == 0 and output.is_file() and not output.is_symlink():
             output.chmod(0o600)
             verdict = json.loads(output.read_text())
@@ -171,12 +214,27 @@ EVIDENCE:\n""" + json.dumps(data, ensure_ascii=False)
             if state == "eligible" and (not verdict["matched_requirements"] or verdict["unsupported_core_requirements"]):
                 state = "unsupported"
                 verdict["reason"] = "Role review is inconsistent and needs another evidence check: " + verdict["reason"]
-            result = {**base, **verdict, "state": state, "mode": "independent_codex"}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass
+            result = {**base, **verdict, "state": state, "mode": "independent_codex", "retryable": False,
+                      "review_status": "needs_review" if verdict["verdict"] == "needs_review" else
+                                       "inconsistent_verdict" if state == "unsupported" else "complete"}
+    except subprocess.TimeoutExpired as exc:
+        execution.update(_execution_evidence(exc.stdout, exc.stderr))
+        execution["exception_class"] = "TimeoutExpired"
+        result.update(error_kind="role_review_timeout", retryable=True,
+                      reason="Independent role-fit review exceeded its bounded execution time; no fit verdict was established")
+    except OSError:
+        execution["exception_class"] = "OSError"
+        result.update(error_kind="role_review_execution", retryable=False)
+    except ValueError:
+        execution["exception_class"] = "ValueError"
+        result.update(error_kind="role_review_output_invalid", retryable=False)
     except Exception as exc:
         from jsonschema.exceptions import ValidationError
         if not isinstance(exc, ValidationError):
             raise
+        execution["exception_class"] = "ValidationError"
+        result.update(error_kind="role_review_output_invalid", retryable=False)
+    execution["elapsed_seconds"] = round(time.monotonic() - started, 2)
+    result["execution"] = execution
     booklet.write_private(cache, result)
     return result
