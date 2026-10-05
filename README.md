@@ -12,6 +12,18 @@ Only an explicit per-draft **Approve and submit** click authorizes the final
 browser action. Changed answers or documents require another review; uncertain
 attempts never replay automatically. Candidate data stays in ignored local files.
 
+Saving an answer queues eligible applications for another filling pass; it does
+not approve submission. The portal reports queued, paused, and still-blocked
+states as the workers progress. **Open saved draft** focuses the captured existing
+Chrome tab without opening a new form. **Original posting** is a separate link.
+Confirmed totals include imported historical receipts; daily counts use the
+actual confirmation date in America/Los_Angeles, not the time of tracker import.
+
+Phase 1's scheduled discovery, preparation, and approved-submission dispatch are
+separate lanes. Finite worker watches stop at their configured expiry; discovery
+keeps its own cadence. The persistent approved worker consumes only unexpired
+per-draft portal approvals. See the local worker guide for these distinct modes.
+
 - [Run the dashboard](docs/dashboard.md) and [local workers](docs/local-worker-service.md).
 - [Review and approval contract](docs/portal-review.md).
 - [Phase 1 → Phase 2 pipeline](docs/pipeline.md) and [board coverage](docs/board-adapter-evaluation.md).
@@ -153,5 +165,13 @@ Defined in `jhb/matching.py` and `jhb/config.py`, all regex, no model:
 conda run -n jhb python -m pytest tests/ -q
 ```
 
-105 tests covering title classification, seniority exclusion, US location parsing,
-ledger idempotency, role collapsing, and duplicate-email prevention.
+The Phase 1 baseline has 105 tests covering title classification, seniority
+exclusion, US location parsing, ledger idempotency, role collapsing, and
+duplicate-email prevention. Run the current Phase 2 suite from the project venv:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Browser fixtures require the installed local Chromium. These tests are separate
+from live Browser Use compatibility and never use candidate credentials in CI.

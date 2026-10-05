@@ -1,7 +1,15 @@
-# Phase 2 v1: Greenhouse application preparation
+# Historical Phase 2 v1: Greenhouse application preparation
+
+This document records the initial preparation-only implementation and its
+validation. Its Greenhouse-only routing, manual takeover and no-automated-submit
+statements describe that version, not the current portal workflow. Current
+behavior is documented in [pipeline.md](pipeline.md),
+[portal-review.md](portal-review.md), [dashboard.md](dashboard.md), and
+[board-adapter-evaluation.md](board-adapter-evaluation.md). Every current final
+submission requires the candidate's explicit approval of that exact draft.
 
 Phase 1 remains on `main`, tagged `v0.1.0`. Phase 2 stays on
-`feat/phase2-greenhouse-agent` for review. This release prepares applications and
+`feat/phase2-greenhouse-agent` for review. This v1 release prepares applications and
 hands them to the candidate; it never submits them.
 
 ## Implemented scope

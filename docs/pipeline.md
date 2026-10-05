@@ -134,9 +134,13 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" .venv/bin/python -m playwright i
 ```
 
 New application questions are employer scoped, carry their exact wording and
-form context, and are deduplicated across applications. Answering a question
-automatically resumes only `waiting_input` jobs whose required pending questions
-are all answered. It cannot resume review-ready, submitted, or skipped applications.
+form context, and are deduplicated across applications. CLI answers automatically
+resume eligible `waiting_input` jobs once their required pending questions are
+answered. An explicit portal edit of a reviewed draft also revokes its old
+approval and queues a fresh filling pass using a durable, snapshot-bound edit
+intent. Saving an answer during a pause still queues that work; workers remain
+idle until the pause clears. Neither path requeues running, submitted, skipped
+or uncertain applications. A refilled draft needs a new portal review and approval.
 `--decline` is available for optional questions; required questions require an
 explicit answer. Verification codes and credentials do not enter this ledger.
 
@@ -202,8 +206,12 @@ Review and verification handoffs do not retry
 without explicit intervention. Closing or submitting a draft manually does not
 automatically change its ledger state; update the recorded state before reusing
 capacity. Record actual submission evidence with `confirm-submission` rather than
-changing a draft state based on a click. The pipeline does not delete tabs or
-drafts to reclaim space.
+changing a draft state based on a click. The pipeline preserves unfinished
+drafts and user tabs. Bounded cleanup can close only proven worker-created
+read-only sources or positively confirmed
+applications with matching receipt evidence; see
+[browser-tab-lifecycle.md](browser-tab-lifecycle.md). A matching URL alone never
+establishes ownership or authorizes closure.
 
 If a user answers a question while a worker still holds an older booklet
 snapshot, the newer explicit answer is preserved. Once all current required

@@ -4,9 +4,13 @@ The current workflow prepares applications autonomously and stops for a portal
 review. Only the candidate's explicit **Approve and submit** click creates a
 per-application approval. Saving an answer only resumes filling.
 
-The local portal shows the live application link, chosen resume, retained final
-review screenshot, and an inventory of every discovered question. Optional
-questions remain visible. Each blank optional answer needs its own unchecked
+The local portal shows the chosen resume, retained final review screenshot,
+and an inventory of every discovered question. **Open saved draft** focuses the
+exact captured existing Chrome target through the official Browser Use CLI,
+keeping its submission guard enabled. It never opens a fresh form as a fallback;
+a closed, changed or disconnected target produces a handoff. **Original posting**
+is a separate link to the public job page. Optional questions remain visible.
+Each blank optional answer needs its own unchecked
 **Leave blank** acknowledgment; required missing answers cannot be approved.
 Older packets without a complete field inventory need a fresh preparation pass.
 Prompts asking for the candidate's own non-AI wording require candidate input or,

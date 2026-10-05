@@ -81,8 +81,8 @@ the candidate's own wording must be answered by the candidate or deliberately
 acknowledged as blank in the review.
 
 `/api/v1` is intentionally narrow: overview, local health/session, job review,
-validated screenshot, question answer, and approval/revocation. Mutations require
-an exact same-origin header and a process-local CSRF token. Cross-site requests,
+validated screenshot, explicit saved-draft focus, question answer, and
+approval/revocation. Mutations require an exact same-origin header and a process-local CSRF token. Cross-site requests,
 nonloopback clients and foreign/DNS-rebinding hosts are rejected. There is no
 raw private file, credential, cookie, log, resume-download or arbitrary path API.
 Screenshots must be PNGs beside an identity-matching private review packet;
