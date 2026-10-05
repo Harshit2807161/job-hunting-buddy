@@ -99,7 +99,7 @@ class BrowserUseCLI:
             # cancellation or a parser exception. Never echo captured content.
             self._stop(process)
 
-    def call(self, operation: str, *, _cancelled=None, **payload):
+    def call(self, operation: str, *, _cancelled=None, _before_run=None, **payload):
         started = time.monotonic()
         deadline = started + self.timeout
         cancelled = _cancelled or threading.Event()
@@ -129,6 +129,10 @@ class BrowserUseCLI:
         )
         env = dict(os.environ)
         env.pop("BU_NAME", None)  # One shared local daemon, never a per-job controller.
+        if operation == "review_focus":
+            from .browser_connection import endpoint_parts
+            endpoint_parts(env.get("BU_CDP_WS") or env.get("BU_CDP_URL", ""))
+            env["BH_REQUIRE_EXISTING_DAEMON"] = "1"
         env["BH_TELEMETRY"] = "0"
         env["BH_HOME"] = str(ROOT / "private" / "browser-use-harness")
         if not env.get("BU_CDP_URL") and not env.get("BU_CDP_WS"):
@@ -151,6 +155,8 @@ class BrowserUseCLI:
                     break
                 except BlockingIOError:
                     cancelled.wait(min(0.05, max(0, deadline-time.monotonic())))
+            if _before_run is not None:
+                _before_run()  # Revalidate saved evidence after acquiring the browser lane.
             result = self._run(script, env, deadline, cancelled)
         except (TimeoutError, RuntimeError):
             self.last_failure = {"operation": operation, "kind": "cancelled" if cancelled.is_set() else "timeout",

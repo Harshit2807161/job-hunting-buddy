@@ -38,8 +38,14 @@ automation, unavailable storage and screenshots are shown explicitly.
 Application review shows the saved `review_inventory`, including required and
 optional fields, answered and blank values, document filenames/variant,
 independent reviewer issues, and quality incidents. A saved screenshot is the
-preparation handoff, not a live browser view. The live form link opens the exact
-known ATS job. Legacy packets without a complete inventory remain inspectable
+preparation handoff, not a live browser view. **Open saved draft** explicitly
+focuses only the captured existing Chrome target through the official Browser
+Use CLI, without navigation, new tabs or changes to its submission guard. The
+API revalidates the current packet/capture after acquiring the shared browser
+lane, then verifies the exact live job identity and active guard. Closed,
+changed, unguarded or disconnected targets produce a handoff; the portal never
+opens a fresh form as a fallback. **Original posting** is a separate public
+posting link. Legacy packets without a complete inventory remain inspectable
 but cannot be approved. Receipt counts remain intact when a quality incident
 flags unanswered questions in a previously submitted application.
 

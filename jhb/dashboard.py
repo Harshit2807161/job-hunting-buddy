@@ -2,7 +2,8 @@
 
 GETs read SQLite and a small explicit artifact allowlist. Explicit candidate
 actions save scoped answers or approve/revoke one immutable review draft.
-This server never launches a browser, submits an application, or sends mail.
+Explicit draft focus reuses an existing guarded browser tab; this server never
+launches a browser, submits an application, or sends mail.
 """
 from __future__ import annotations
 
@@ -304,12 +305,39 @@ class DashboardStore:
             except (ValueError, OSError, TypeError, AttributeError):
                 pass
         return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
-            "screenshot": screenshot,
+            "screenshot": screenshot, "packet_revision": displayed_packet_sha,
+            "draft_focus_available": screenshot["available"] and self._focusable(row, packet),
             "questions": pending_questions,
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
             "incident": incident, "approval": approval, "automation_paused": self.paused()}
+
+    @staticmethod
+    def _focusable(row, packet):
+        item = packet.get("capture", {})
+        return (row["state"] in {"waiting_review", "waiting_input", "failed", "retry", "waiting_login", "waiting_captcha"}
+                and isinstance(item, dict) and item.get("verified") is True
+                and item.get("method") == "browser_use_cli" and isinstance(item.get("target_id"), str)
+                and bool(item["target_id"]) and len(item["target_id"]) <= 200)
+
+    def focus_snapshot(self, job_hash, revision):
+        if not HASH.fullmatch(job_hash) or not HASH.fullmatch(revision):
+            raise ValueError("Refresh the saved draft before opening it")
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM applications WHERE job_hash=?", (job_hash,)).fetchone()
+        if row is None:
+            raise ValueError("Saved draft is unavailable")
+        job = _json(row["job_json"])
+        if boards.application_hash(job.get("url")) != job_hash:
+            raise ValueError("Saved draft job identity changed")
+        path, packet, current_revision = self.packet(row, job, with_digest=True)
+        if current_revision != revision or path is None or not self._focusable(row, packet):
+            raise ValueError("Saved draft changed or is no longer available for review")
+        from .applications.capture import valid
+        if not valid(packet, self.private_bytes(path.with_name("browser.png"), limit=15*1024*1024)):
+            raise ValueError("Saved draft capture is unavailable; no new form was opened")
+        return job, packet["capture"]["target_id"]
 
     def heartbeat(self, *, submission=False):
         try:
@@ -470,6 +498,11 @@ class AnswerInput(BaseModel):
     revision: str
 
 
+class FocusInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: str
+
+
 class ApprovalInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: str
@@ -605,6 +638,24 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             return store.details(job_hash)
         except (ValueError, OSError, sqlite3.Error):
             raise HTTPException(404, "Application review is unavailable") from None
+
+    @app.post("/api/v1/applications/{job_hash}/focus")
+    def focus_application(job_hash: str, payload: FocusInput):
+        try:
+            job, target = store.focus_snapshot(job_hash, payload.revision)
+            from .applications.cli_browser import BrowserUseCLI
+            client = BrowserUseCLI(timeout=15)
+            client.target_id, client.expected_url = target, job["url"]
+            def revalidate():
+                fresh_job, fresh_target = store.focus_snapshot(job_hash, payload.revision)
+                if fresh_target != target or boards.job_identity(fresh_job["url"]) != boards.job_identity(job["url"]):
+                    raise ValueError("Saved draft changed before focus")
+            result = client.call("review_focus", url=job["url"], _before_run=revalidate)
+            if result.get("focused") is not True or result.get("guarded") is not True:
+                raise ValueError("Saved draft could not be focused")
+            return {"state": "focused", "job_hash": job_hash, "guarded": True}
+        except (ValueError, OSError, sqlite3.Error, RuntimeError, TimeoutError):
+            raise HTTPException(409, "Saved draft is unavailable, changed, or disconnected. No new form was opened; refresh this review.") from None
 
     @app.post("/api/v1/applications/{job_hash}/approve")
     def approve_application(job_hash: str, payload: ApprovalInput):

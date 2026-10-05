@@ -302,6 +302,29 @@ def dispatch(request, helpers):
         wait(0.15)
 
     operation = request["operation"]
+    if operation == "review_focus":
+        # Explicit portal action: foreground only this saved, still-guarded
+        # target. Never create, navigate, repair or remove its submit guard.
+        from .boards import job_identity
+        identity = job_identity(request.get("url"))
+        target = request.get("target_id")
+        if (identity is None or not isinstance(target, str) or not target or len(target) > 200
+                or helpers.get("daemon_browser_kind", lambda: None)() not in {"local", "cdp"}):
+            raise ValueError("Saved draft requires the existing local browser")
+        matching = [tab for tab in helpers["list_tabs"]() if tab.get("targetId") == target]
+        if len(matching) != 1 or job_identity(matching[0].get("url")) != identity:
+            raise ValueError("Saved draft tab is unavailable or belongs to another job")
+        helpers["switch_tab"](target)
+        def validate():
+            current = helpers["current_tab"]()
+            if current.get("targetId") != target or job_identity(js("location.href")) != identity:
+                raise ValueError("Saved draft tab changed; no new form was opened")
+            if js("window.__jhbGuard === true") is not True:
+                raise ValueError("Saved draft has no active submission guard")
+        validate()
+        helpers["activate_tab"](target)
+        validate()
+        return {"state": "focused", "focused": True, "guarded": True}
     if request.get("target_id"):
         helpers["switch_tab"](request["target_id"])
     if operation == "open":

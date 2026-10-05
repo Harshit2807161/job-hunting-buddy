@@ -66,6 +66,12 @@ def workspace(fragment="", state=None, configure=None):
             elif path.endswith("/approve"):
                 detail["approval"]["can_approve"] = False
                 detail["approval"]["approval"] = {"state": "approved"}
+            if path.endswith("/focus"):
+                if state is not None and state.get("focus_unavailable"):
+                    route.fulfill(status=409, content_type="application/json", body=json.dumps({"detail": "Saved draft tab is unavailable. No new form was opened."}))
+                    return
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"state": "focused", "guarded": True}))
+                return
             value = {"status": "answered", "state": "approved", "job_hash": KEY,
                 "affected_jobs": [KEY], "resumed_jobs": [KEY], "automation_paused": True,
                 "applications": [{"job_hash": KEY, "state": "queued", "remaining_required_questions": 0}]}
@@ -258,3 +264,29 @@ def test_owned_help_text_is_plain_and_changed_note_invalidates_unsaved_answer():
         page.get_by_text("<script>window.__helpExecuted = true</script> Please use your own words.", exact=True).wait_for()
         assert page.evaluate("window.__helpExecuted === undefined") is True
         assert actions == [] and errors == []
+
+
+def test_saved_draft_focus_is_explicit_csrf_post_without_approval_or_new_tab():
+    def focus_enabled(question, detail):
+        detail['draft_focus_available'] = True
+        detail['packet_revision'] = 'a'*64
+    with workspace(f'#review/{KEY}', configure=focus_enabled) as (page, actions, errors):
+        page.get_by_role('button', name='Open saved draft').click()
+        page.get_by_text('Your existing draft is focused in Chrome. Its submission guard remains enabled.').wait_for()
+        assert actions == [(f'/api/v1/applications/{KEY}/focus', {'revision': 'a'*64})]
+        assert len(page.context.pages) == 1 and not errors
+        assert page.get_by_role('link', name='Open live form').count() == 0
+
+
+def test_unavailable_saved_draft_reports_handoff_without_fresh_form_fallback():
+    state = {'focus_unavailable': True}
+    def focus_enabled(question, detail):
+        detail['draft_focus_available'] = True
+        detail['packet_revision'] = 'a'*64
+    with workspace(f'#review/{KEY}', state=state, configure=focus_enabled) as (page, actions, errors):
+        page.get_by_role('button', name='Open saved draft').click()
+        page.get_by_role('alert').get_by_text('Saved draft tab is unavailable. No new form was opened.').wait_for()
+        page.wait_for_timeout(5200)  # Live inventory refresh must not erase action feedback.
+        assert page.get_by_role('alert').get_by_text('Saved draft tab is unavailable. No new form was opened.').is_visible()
+        assert actions == [(f'/api/v1/applications/{KEY}/focus', {'revision': 'a'*64})]
+        assert len(page.context.pages) == 1 and not errors

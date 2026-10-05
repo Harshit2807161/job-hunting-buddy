@@ -103,6 +103,7 @@ type ReviewDetail = { job_hash: string; state: string; inventory_complete: boole
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
   role_fit_notes?: string[]; questions?: Question[];
+  packet_revision?: string; draft_focus_available?: boolean;
   screenshot?: { available: boolean; revision: string | null; captured_at: string | number | null };
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
     answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean; description?: string; description_truncated?: boolean }[];
@@ -117,6 +118,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState("");
   const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
+  const [focusError, setFocusError] = useState("");
   const busyRef = useRef(false);
   const revisionRef = useRef<string | undefined>(undefined);
   const [detailRefresh, setDetailRefresh] = useState(0);
@@ -159,13 +161,26 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
     } catch (e) { setError(e instanceof Error ? e.message : "Approval could not be saved"); }
     finally { busyRef.current = false; setBusy(false); setDetailRefresh(v => v + 1); }
   }
+  async function focusDraft() {
+    busyRef.current = true; setBusy(true); setFocusError(""); setSaved("");
+    try {
+      const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json());
+      const response = await fetch(`/api/v1/applications/${app.id}/focus`, { method: "POST",
+        headers: { "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token },
+        body: JSON.stringify({ revision: detail?.packet_revision }) });
+      if (!response.ok) { const value = await response.json(); throw Error(value.detail || "Saved draft is unavailable. No new form was opened."); }
+      setSaved("Your existing draft is focused in Chrome. Its submission guard remains enabled.");
+    } catch (e) { setFocusError(e instanceof Error ? e.message : "Saved draft is unavailable. No new form was opened."); }
+    finally { busyRef.current = false; setBusy(false); setDetailRefresh(v => v + 1); }
+  }
   const displayAnswer = (answer: ReviewDetail["fields"][number]["answer"]) =>
     answer === null ? "Left blank" : typeof answer === "boolean" ? answer ? "Yes" : "No" : Array.isArray(answer) ? answer.join(", ") : String(answer);
   return <div className="modal-backdrop" onClick={close}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title" onClick={e => e.stopPropagation()}>
     <div className="review-heading"><div><div className="eyebrow">YOUR APPLICATION REVIEW</div><h2 id="review-title">{app.company}</h2><p>{app.title}</p></div><button className="icon-button" aria-label="Close review" onClick={close}><Icon name="close"/></button></div>
-    <div className="review-facts"><span className={`status ${app.state}`}><i/>{applicationLabel(app)}</span><span>{app.filled_count} recorded filled fields</span>{app.url && <a href={app.url} target="_blank" rel="noreferrer">Open live form<Icon name="link" size={13}/></a>}</div>
+    <div className="review-facts"><span className={`status ${app.state}`}><i/>{applicationLabel(app)}</span><span>{app.filled_count} recorded filled fields</span><button className="text-button" disabled={busy || !detail?.draft_focus_available || !detail.packet_revision} onClick={focusDraft}>Open saved draft<Icon name="link" size={13}/></button>{app.url && <a href={app.url} target="_blank" rel="noreferrer">Original posting<Icon name="link" size={13}/></a>}</div>
     <div className="review-body">
       {error && <div className="notice warning" role="alert">{error}</div>}
+      {focusError && <div className="notice warning" role="alert">{focusError}</div>}
       {detail?.incident && <div className="notice incident"><b>Submission quality incident</b><p>{detail.incident.summary}</p><ul>{detail.incident.blank_questions.map(q => <li key={q.ref}>{q.question}</li>)}</ul><p>The submission receipt remains recorded. This flag concerns unanswered questions.</p></div>}
       {detail && !detail.inventory_complete && <div className="notice warning">Full form inventory is unverified. Listed answers do not establish that every application question was reviewed. Approval is disabled.</div>}
       {detail?.automation_paused && <div className="notice warning">Automation is paused. Saving an answer or approval does not restart the agent.</div>}
@@ -179,10 +194,10 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
       {detail?.approval.approval && <div className="notice success">Your approval status: {detail.approval.approval.state.replaceAll("_", " ")}. A pending approval is specific to this saved draft.</div>}
       {optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>Check each item only if you deliberately want to submit without an answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
-      {detail?.state === "waiting_review" && <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Saving…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div>}
+      {detail?.state === "waiting_review" && <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div>}
       {saved && <div className="notice success" role="status">{saved}</div>}
     </div>
-    {(detail?.screenshot?.available ?? app.has_screenshot) ? <><p className="screenshot-caption">Saved at the preparation handoff{(detail?.screenshot?.captured_at ?? app.screenshot_at) ? ` · ${timeLabel((detail?.screenshot?.captured_at ?? app.screenshot_at)!)} PT` : ""}. Open the live form to inspect its current state.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot${detail?.screenshot?.revision ? `?revision=${encodeURIComponent(detail.screenshot.revision)}` : ""}`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
+    {(detail?.screenshot?.available ?? app.has_screenshot) ? <><p className="screenshot-caption">Saved at the preparation handoff{(detail?.screenshot?.captured_at ?? app.screenshot_at) ? ` · ${timeLabel((detail?.screenshot?.captured_at ?? app.screenshot_at)!)} PT` : ""}. Use Open saved draft to inspect its current state in the existing tab.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot${detail?.screenshot?.revision ? `?revision=${encodeURIComponent(detail.screenshot.revision)}` : ""}`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
     {app.confirmed_at && <div className="receipt-banner"><Icon name="check" size={16}/>Submission confirmed {dateLabel(app.confirmed_date!, true)} at {timeLabel(app.confirmed_at)} PT{app.sheet_synced ? " · Sheets synced" : ""}.</div>}
   </section></div>;
 }

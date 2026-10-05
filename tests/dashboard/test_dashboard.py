@@ -611,3 +611,72 @@ def test_review_help_text_is_bounded_and_keeps_original_question_label(portal):
     assert view["question"] == field["question"]
     assert view["description"].startswith("<script>") and len(view["description"]) == 4096
     assert view["description_truncated"] is True
+
+
+def focusable(portal):
+    import base64
+    root, conn, book, client, headers = portal
+    job, folder, packet = add_job(conn, root, complete=True)
+    image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC')
+    (folder / 'browser.png').write_bytes(image)
+    packet['capture'] = {'schema_version': 1, 'capture_id': 'a'*32, 'verified': True,
+        'job_hash': job['dedupe_hash'], 'filename': 'browser.png', 'method': 'browser_use_cli',
+        'target_id': 'synthetic-draft', 'packet_created_at': packet['created_at'],
+        'captured_at': '2026-10-05T00:30:00Z', 'sha256': hashlib.sha256(image).hexdigest()}
+    booklet.write_private(folder / 'packet.json', packet)
+    return job, folder, packet
+
+
+def test_explicit_focus_uses_saved_exact_target_without_queue_or_book_changes(portal, monkeypatch):
+    root, conn, book, client, headers = portal
+    job, folder, packet = focusable(portal)
+    called = []
+    def call(self, operation, *, _before_run, **payload):
+        _before_run()
+        called.append((operation, self.target_id, payload))
+        return {'focused': True, 'guarded': True}
+    monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI.call', call)
+    before = book.read_bytes()
+    url = f"/api/v1/applications/{job['dedupe_hash']}"
+    detail = client.get(url).json()
+    assert detail['draft_focus_available'] is True
+    response = client.post(url+'/focus', json={'revision': detail['packet_revision']}, headers=headers)
+    assert response.status_code == 200 and response.json()['state'] == 'focused'
+    assert called == [('review_focus', 'synthetic-draft', {'url': job['url']})]
+    assert book.read_bytes() == before
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'waiting_review'
+    assert client.post(url+'/focus', json={'revision': detail['packet_revision']}).status_code == 403
+
+
+@pytest.mark.parametrize('fault', ['stale', 'missing_capture', 'bad_png', 'submitted', 'submission_uncertain', 'running', 'wrong_job', 'symlink'])
+def test_focus_rejects_stale_unsafe_or_unverified_saved_evidence(portal, monkeypatch, fault):
+    root, conn, book, client, headers = portal
+    job, folder, packet = focusable(portal)
+    url = f"/api/v1/applications/{job['dedupe_hash']}"
+    revision = client.get(url).json()['packet_revision']
+    if fault == 'stale': packet['filled'][0]['value'] = 'Changed answer'
+    elif fault == 'missing_capture': packet.pop('capture')
+    elif fault == 'bad_png': (folder / 'browser.png').write_bytes(PNG+b'bad')
+    elif fault == 'wrong_job': packet['job']['url'] += '999'
+    elif fault == 'symlink':
+        (folder / 'browser.png').unlink(); (folder / 'browser.png').symlink_to(book)
+    else:
+        conn.execute('UPDATE applications SET state=?', (fault,)); conn.commit()
+    if fault in {'stale', 'missing_capture', 'wrong_job'}: booklet.write_private(folder / 'packet.json', packet)
+    monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI.call', lambda *a, **k: pytest.fail('Unsafe focus invoked'))
+    response = client.post(url+'/focus', json={'revision': revision}, headers=headers)
+    assert response.status_code == 409 and 'No new form' in response.json()['detail']
+
+
+def test_focus_rechecks_packet_after_waiting_for_browser_lane(portal, monkeypatch):
+    job, folder, packet = focusable(portal)
+    client, headers = portal[3:]
+    url = f"/api/v1/applications/{job['dedupe_hash']}"
+    revision = client.get(url).json()['packet_revision']
+    def call(self, operation, *, _before_run, **payload):
+        packet['capture']['target_id'] = 'different-tab'
+        booklet.write_private(folder / 'packet.json', packet)
+        _before_run()
+        pytest.fail('Stale target must never reach CLI')
+    monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI.call', call)
+    assert client.post(url+'/focus', json={'revision': revision}, headers=headers).status_code == 409
