@@ -71,6 +71,23 @@ def test_incompatible_new_choice_stays_candidate_input():
     assert result['missing'][0]['choices'] == ['Canada', 'France']
 
 
+def test_partial_country_catalog_cannot_turn_known_answer_into_a_question():
+    import pytest
+    from jhb.applications.cli_browser import BrowserOperationError
+    class Form:
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {'fields': [{'ref': 'country', 'label': 'Country', 'type': 'combobox', 'required': True}], 'buttons': []}
+        async def fill(self, field, value): raise ValueError('Stored answer is absent from dropdown options')
+        async def describe(self, field): return {'choices': ['Canada', 'France'], 'truncated': True}
+    with pytest.raises(BrowserOperationError) as failure:
+        asyncio.run(prepare(None, {'url': 'synthetic'},
+            {'identity.country': booklet.answer('United States', 'synthetic profile')},
+            deterministic_plan, None, cli_actions=Form()))
+    assert failure.value.retryable
+
+
 def test_portal_answer_cannot_leak_to_a_hidden_sibling_application():
     from jhb.applications.worker import _scoped_custom_answers
     scope = {'board': 'example', 'ats': 'greenhouse'}

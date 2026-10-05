@@ -409,10 +409,14 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 if hasattr(actions, "describe") and field["type"] in {"combobox", "select"}:
                     try:
                         described = await actions.describe(field)
-                        if isinstance(described.get("choices"), list):
-                            observed["options"] = [{"label": value} for value in described["choices"] if isinstance(value, str)]
-                    except (ValueError, RuntimeError):
-                        pass
+                        choices = described.get("choices") if isinstance(described, dict) else None
+                        if (not isinstance(choices, list) or not choices or described.get("truncated")
+                                or any(not isinstance(value, str) or not value.strip() for value in choices)
+                                or len(set(choices)) != len(choices)):
+                            raise BrowserOperationError("Verified answer needs a complete native catalog", retryable=True)
+                        observed["options"] = [{"label": value} for value in choices]
+                    except (ValueError, RuntimeError) as inspection_error:
+                        raise BrowserOperationError("Verified answer needs a native field inspection", retryable=True) from inspection_error
                 from .question_routing import CANDIDATE, field_route
                 if field_route(observed, answers) != CANDIDATE:
                     raise BrowserOperationError("Verified answer needs a field repair", retryable=True) from exc
