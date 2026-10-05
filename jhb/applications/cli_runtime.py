@@ -300,7 +300,7 @@ def dispatch(request, helpers):
 
     def upload_container(label):
         # Inspect each filename only inside its own labeled upload control.
-        return "(()=>{const wanted="+json.dumps(normalize(label))+";return [...document.querySelectorAll('.file-upload')].find(e=>{const l=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.querySelector('label')?.innerText||e.innerText.split('\\n')[0]||'';return l.trim().replace(/[ *]+$/,'').toLowerCase()===wanted})})()"
+        return "(()=>{const wanted="+json.dumps(normalize(label))+";const matches=[...document.querySelectorAll('.file-upload')].filter(e=>{const l=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.querySelector('label')?.innerText||e.innerText.split('\\n')[0]||'';return l.trim().replace(/[ *]+$/,'').toLowerCase()===wanted});return matches.length===1?matches[0]:null})()"
 
     def upload_state(label):
         return js("(()=>{const e="+upload_container(label)+";return e?{filename:e.querySelector('.file-upload__filename p')?.innerText||'',receipt:e.__jhbUploadReceipt||null}:null})()")
@@ -509,30 +509,55 @@ def dispatch(request, helpers):
             if (request.get("upload_receipt") and previous and
                     previous["receipt"] == request["upload_receipt"] and previous["filename"] == path.name):
                 return {"verified": True, "filename": path.name, "upload_receipt": previous["receipt"], "cached": True}
-            if ref.startswith("uploaded:"):
-                # A filename alone cannot identify SDE vs ML resumes with the same
-                # basename. Replace it from the approved role-specific source.
+            group = cdp("Runtime.evaluate", expression=upload_container(field["label"]),
+                        returnByValue=False)["result"].get("objectId")
+            if not group:
+                raise ValueError("Owned uploaded-file container is unavailable or ambiguous")
+            before = cdp("Runtime.callFunctionOn", objectId=group,
+                functionDeclaration="function(){const inputs=[...this.querySelectorAll('input[type=file]')].filter(e=>e.closest('.file-upload')===this);return {connected:this.isConnected,ids:inputs.map(e=>e.id)}}",
+                returnByValue=True)["result"].get("value")
+            if not before or not before["connected"] or len(before["ids"]) > 1:
+                raise ValueError("Owned upload input is unavailable or ambiguous")
+            replacing = ref.startswith("uploaded:")
+            if replacing:
+                # Capture the exact owner before removal. Arbitrary custom
+                # attachment labels must never fall back to the resume input.
                 remove = [n for n in ax() if n.get("role", {}).get("value") == "button"
                           and n.get("name", {}).get("value") == "Remove file"]
                 eligible = []
-                for node in remove:
-                    obj = cdp("DOM.resolveNode", backendNodeId=node["backendDOMNodeId"])["object"]["objectId"]
+                for candidate in remove:
+                    obj = cdp("DOM.resolveNode", backendNodeId=candidate["backendDOMNodeId"])["object"]["objectId"]
                     inside = cdp("Runtime.callFunctionOn", objectId=obj,
-                                 functionDeclaration="function(){return this.closest('.file-upload')==="+upload_container(field["label"])+"}",
-                                 returnByValue=True)["result"].get("value")
+                                 functionDeclaration="function(owner){return this.closest('.file-upload')===owner}",
+                                 arguments=[{"objectId": group}], returnByValue=True)["result"].get("value")
                     if inside:
-                        eligible.append(node)
+                        eligible.append(candidate)
                 if len(eligible) != 1:
                     raise ValueError("Matching uploaded-file removal control is ambiguous")
                 click(eligible[0]["backendDOMNodeId"])
                 wait(0.2)
-                ref = "cover_letter" if field["label"] == "Cover Letter" else "resume"
-            # Hidden upload input is absent from AX: use the documented DOM fallback.
-            doc = cdp("DOM.getDocument")["root"]["nodeId"]
-            node = cdp("DOM.querySelector", nodeId=doc, selector="[id="+json.dumps(ref)+"]")["nodeId"]
+            input_object = None
+            for _ in range(20 if replacing else 1):
+                expression = ("function(ref,replacing,previousId){if(!this.isConnected)return null;"
+                    "const inputs=[...this.querySelectorAll('input[type=file]')].filter(e=>e.closest('.file-upload')===this&&!e.disabled);"
+                    "if(inputs.length!==1)return null;const e=inputs[0];"
+                    "if(!replacing&&e.id!==ref||previousId&&e.id!==previousId)return null;"
+                    "if(e.id&&[...document.querySelectorAll('[id]')].filter(n=>n.id===e.id).length!==1)return null;return e}")
+                input_object = cdp("Runtime.callFunctionOn", objectId=group, functionDeclaration=expression,
+                    arguments=[{"value": ref}, {"value": replacing}, {"value": before["ids"][0] if before["ids"] else ""}],
+                    returnByValue=False)["result"].get("objectId")
+                if input_object:
+                    break
+                if replacing:
+                    wait(0.1)
+            if not input_object:
+                raise ValueError("Upload input is unavailable")
+            # Hidden inputs are absent from AX. Request the actual owned node,
+            # rather than using a global selector or an inferred field ID.
+            node = cdp("DOM.describeNode", objectId=input_object)["node"].get("backendNodeId")
             if not node:
                 raise ValueError("Upload input is unavailable")
-            cdp("DOM.setFileInputFiles", nodeId=node, files=[str(path.resolve())])
+            cdp("DOM.setFileInputFiles", backendNodeId=node, files=[str(path.resolve())])
             wait(1)
             for _ in range(20):
                 observed = upload_state(field["label"])
