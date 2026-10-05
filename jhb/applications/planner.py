@@ -15,6 +15,12 @@ from .booklet import ALIASES, answer, normalize, write_private
 
 SCHEMA_PATH = ROOT / "schemas" / "application-plan.json"
 SKILL_PATH = ROOT / "skills" / "prepare-greenhouse" / "SKILL.md"
+
+
+def _current_month():
+    return datetime.now(ZoneInfo("America/Los_Angeles")).date().replace(day=1)
+
+
 _CS_DEGREE_QUESTIONS = {
     "do you have your bachelor’s degree or master’s degree in computer science?",
     "do you have your bachelor's degree or master's degree in computer science?",
@@ -108,6 +114,9 @@ def key_for_field(field, answers):
             if key.startswith("custom.profile."):
                 source = item.get("source", {})
                 if not isinstance(source, dict):
+                    continue
+                if (source.get("method") == "verified_start_month_to_observed_quarter"
+                        and source.get("assessment_month") != _current_month().isoformat()):
                     continue
                 if any(base in answers and (answers[base].get("value") != value
                        or answers[base].get("status") != "verified" or not answers[base].get("source"))
@@ -381,7 +390,8 @@ def _observed_profile_key(field, answers):
             bounds = _bounds(item["value"])
             if bounds is None:
                 return None
-            available = bounds[0].replace(day=1)
+            assessment_month = _current_month()
+            available = max(bounds[0].replace(day=1), assessment_month)
             offered = []
             for choice in choices:
                 match = re.fullmatch(r"Q([1-4]): ([A-Za-z]+ \d{4}) - ([A-Za-z]+ \d{4})", choice)
@@ -401,6 +411,7 @@ def _observed_profile_key(field, answers):
             if len(matches) == 1:
                 return save(matches, {"method": "verified_start_month_to_observed_quarter", "original_source": item["source"],
                                       "original_value": item["value"], "observed_choice": matches[0],
+                                      "assessment_month": assessment_month.isoformat(),
                                       "criterion": "Earliest offered quarter compatible with verified availability"})
     if label == "please indicate all locations that you would be interested in relocating to for this position." and kind == "multiselect":
         item = verified("standing.relocate_anywhere")

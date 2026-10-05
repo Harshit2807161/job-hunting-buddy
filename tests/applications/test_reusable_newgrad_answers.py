@@ -299,3 +299,18 @@ def test_duplicate_or_invalid_earliest_quarter_is_not_guessed():
     assert value(control, answers) is None
     control['options'] = [{'label': 'Q1: April 2030 - June 2030', 'disabled': False}]
     assert value(control, answers) is None
+
+
+def test_quarter_binding_expires_when_the_offered_quarter_is_in_the_past(monkeypatch):
+    from datetime import date
+    from jhb.applications import planner
+    answers = booklet.for_role(book(), 'sde')
+    answers['preferences.start_date'] = booklet.answer('2029-12-14', 'synthetic earliest availability')
+    control = field('Please indicate which quarter you would be able to start work for this position.', 'multiselect',
+                    choices=['Q1: January 2030 - March 2030', 'Q2: April 2030 - June 2030'])
+    monkeypatch.setattr(planner, '_current_month', lambda: date(2030, 1, 1))
+    assert value(control, answers) == ['Q1: January 2030 - March 2030']
+    monkeypatch.setattr(planner, '_current_month', lambda: date(2030, 4, 1))
+    assert value(control, answers) == ['Q2: April 2030 - June 2030']
+    monkeypatch.setattr(planner, '_current_month', lambda: date(2030, 7, 1))
+    assert value(control, answers) is None
