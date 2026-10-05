@@ -57,6 +57,17 @@ For a candidate-reported submission, use `source: "explicit_user_confirmation"`
 and `user_evidence_path` pointing to a private JSON file with `role: "user"` and
 the original affirmative statement in `content`.
 
+The earliest local Greenhouse CLI receipts used `confirmation_url` and
+`confirmation_text` without retaining a browser target ID. An explicit historical
+reconciliation can wrap that original private artifact with
+`source: "archived_browser_confirmation"` and `archived_evidence_path`. This
+separate provenance requires the original successful state, exact Greenhouse
+confirmation URL, captured positive text, authorization record and original
+timestamp. The wrapper must preserve the text and timestamp exactly. Both files
+remain hash-bound for later reconciliation; changing either blocks delivery and
+replay. No current browser target, new application, or current live observation
+is inferred from the archive.
+
 Synchronization validates the existing headers, reads the current grid, and
 checks canonical ATS job links before appending. Legacy rows without a usable ATS
 link use the normalized employer, role and application-date combination. A

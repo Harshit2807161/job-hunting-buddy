@@ -361,3 +361,71 @@ def test_employer_we_received_wording_records_once_and_syncs_without_reclick(set
     assert first['state'] == 'submitted' and first['tracking']['synced'] == 1
     assert second['tracking']['synced'] == 0 and sheets.appends == 1
     assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'submitted'
+
+
+def archived_greenhouse(setup):
+    conn, job, receipt, sheets, settings = setup
+    url = 'https://job-boards.greenhouse.io/example/jobs/123'
+    job = {**job, 'url': url}
+    archive = receipt.with_name('original-browser-confirmation.json')
+    original = {'state': 'submitted', 'submitted': True,
+                'authorization': 'Candidate explicitly requested submission of this exact job',
+                'confirmed_at': '2026-10-02T07:28:13+00:00',
+                'confirmation_url': url+'/confirmation?gh_src=fixture',
+                'confirmation_text': 'Thank you for applying! Your application has been received.',
+                'source': 'Browser Use CLI, actual Greenhouse confirmation page'}
+    booklet.write_private(archive, original)
+    booklet.write_private(receipt, {'state': 'submitted', 'url': url,
+                'confirmed_at': original['confirmed_at'],
+                'source': 'archived_browser_confirmation',
+                'confirmation': original['confirmation_text'], 'body': original['confirmation_text'],
+                'archived_evidence_path': str(archive)})
+    return conn, job, receipt, sheets, settings, archive
+
+
+def test_archived_actual_browser_receipt_preserves_original_date_and_provenance(setup):
+    conn, job, receipt, sheets, _, archive = archived_greenhouse(setup)
+    result = tracking.record_confirmed(conn, job, receipt, executor=sheets)
+    assert result['tracking']['synced'] == 1
+    saved = conn.execute('SELECT * FROM confirmed_submissions').fetchone()
+    proof = json.loads(saved['proof_json'])
+    assert proof['kind'] == 'archived_browser_confirmation'
+    assert proof['archived_evidence_path'] == str(archive)
+    assert 'target_id' not in json.loads(receipt.read_text())
+    assert saved['confirmed_at'] == '2026-10-02T07:28:13+00:00'
+    assert sheets.rows[2][3] == '2nd oct'
+    assert tracking.confirmed_application(conn, job['url'])['verified'] is True
+    tracking.record_confirmed(conn, job, receipt, executor=sheets)
+    assert sheets.appends == 1
+
+
+@pytest.mark.parametrize('change', [
+    {'state': 'waiting_review'}, {'submitted': False}, {'submitted': 1},
+    {'source': 'Agent assumes success'}, {'authorization': ''},
+    {'confirmation_url': 'https://job-boards.greenhouse.io/example/jobs/124/confirmation'},
+    {'confirmation_url': 'https://job-boards.greenhouse.io/example/jobs/123'},
+    {'confirmation_text': 'Clicked the Submit button'},
+    {'confirmed_at': '2026-10-03T07:28:13+00:00'},
+    {'confirmed_at': '2026-10-02'},
+])
+def test_archived_attempts_wrong_jobs_and_changed_evidence_never_sync(setup, change):
+    conn, job, receipt, sheets, _, archive = archived_greenhouse(setup)
+    booklet.write_private(archive, {**json.loads(archive.read_text()), **change})
+    with pytest.raises(ValueError):
+        tracking.record_confirmed(conn, job, receipt, executor=sheets)
+    assert sheets.calls == []
+    assert conn.execute('SELECT COUNT(*) FROM confirmed_submissions').fetchone()[0] == 0
+
+
+def test_archived_evidence_is_immutable_for_pending_sync_and_replay_protection(setup):
+    conn, job, receipt, sheets, settings, archive = archived_greenhouse(setup)
+    config_value = json.loads(settings.read_text())
+    booklet.write_private(settings, {**config_value, 'enabled': False})
+    tracking.record_confirmed(conn, job, receipt, executor=sheets)
+    # Even an added harmless property changes the original evidence bytes.
+    booklet.write_private(archive, {**json.loads(archive.read_text()), 'changed_after_recording': True})
+    booklet.write_private(settings, config_value)
+    summary = tracking.sync_pending(conn, executor=sheets)
+    assert summary['failed'] == 1 and sheets.calls == []
+    assert tracking.confirmed_application(conn, job['url'])['verified'] is False
+    assert queue.enqueue(conn, [{**job, 'dedupe_hash': 'later-source'}]) == 0

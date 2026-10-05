@@ -14,6 +14,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from .. import config
@@ -22,6 +23,7 @@ from . import boards, queue
 HEADERS = ["Company", "Role", "Location(s)", "Date applied", "Initial OA?",
            "Status last checked", "Verdict", "Link"]
 CONFIG_NAME = "application-tracker.json"
+POSITIVE_CONFIRMATION = r"(?:your application (?:was successfully submitted|has been submitted successfully|has been received)|we(?: have|'ve)? received your application|thank you for applying)"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS confirmed_submissions (
  submission_key TEXT PRIMARY KEY, ats TEXT NOT NULL, application_url TEXT NOT NULL,
@@ -93,11 +95,31 @@ def _proof(job, receipt_path):
             raise ValueError("User-confirmed submission needs an actual affirmative user statement")
         kind = "explicit_user_confirmation"
         extra = {"user_evidence_path": str(evidence_path), "user_evidence_sha256": evidence_digest}
+    elif source == "archived_browser_confirmation":
+        # The first local Greenhouse CLI receipts predate the target-id schema.
+        # Preserve that original evidence instead of inventing a live target or
+        # treating an old queue state as a newly observed success page.
+        evidence_path, evidence, evidence_digest = _private_json(receipt.get("archived_evidence_path", ""))
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("confirmation_url"), str):
+            raise ValueError("Archived submission requires an original browser confirmation object")
+        parsed = urlsplit(evidence.get("confirmation_url", ""))
+        archived_identity = ats_identity(urlunsplit(parsed._replace(path=parsed.path.removesuffix("/confirmation"))))
+        if (evidence.get("state") != "submitted"
+                or evidence.get("submitted") is not True
+                or evidence.get("source") != "Browser Use CLI, actual Greenhouse confirmation page"
+                or not parsed.path.endswith("/confirmation") or not archived_identity
+                or archived_identity[0] != identity[0] or identity[0][0] != "greenhouse"
+                or _timestamp(evidence.get("confirmed_at")).isoformat() != confirmed_at
+                or not isinstance(evidence.get("authorization"), str) or not evidence["authorization"].strip()
+                or body != evidence.get("confirmation_text") or confirmation != body
+                or not re.search(POSITIVE_CONFIRMATION, confirmation, re.I)):
+            raise ValueError("Archived submission requires the original exact-job browser confirmation")
+        kind = "archived_browser_confirmation"
+        extra = {"archived_evidence_path": str(evidence_path), "archived_evidence_sha256": evidence_digest}
     else:
-        positive = r"(?:your application (?:was successfully submitted|has been submitted successfully|has been received)|we(?: have|'ve)? received your application|thank you for applying)"
         if (not source.startswith("Live ") or "success page" not in source.lower()
                 or not isinstance(receipt.get("target_id"), str) or not receipt["target_id"]
-                or not re.search(positive, confirmation, re.I)):
+                or not re.search(POSITIVE_CONFIRMATION, confirmation, re.I)):
             raise ValueError("A submit attempt or login screen is not a successful receipt")
         kind, extra = "live_success_page", {}
     return identity, confirmed_at, {"kind": kind, "receipt_path": str(path), "receipt_sha256": digest,
@@ -155,7 +177,7 @@ def confirmed_application(conn, url):
             job, saved = json.loads(row["job_json"]), json.loads(row["proof_json"])
             checked, confirmed_at, proof = _proof(job, saved["receipt_path"])
             if (checked[0] != identity[0] or ats_identity(row["application_url"])[0] != identity[0]
-                    or confirmed_at != row["confirmed_at"] or proof["receipt_sha256"] != saved.get("receipt_sha256")):
+                    or confirmed_at != row["confirmed_at"] or proof != saved):
                 continue
             return {"job": {**job, "url": checked[1], "dedupe_hash": boards.application_hash(url)},
                     "receipt_path": proof["receipt_path"], "verified": True}
@@ -381,6 +403,10 @@ def sync_pending(conn, *, config_path=None, executor=None):
                     _, _, user_digest = _private_json(proof["user_evidence_path"])
                     if user_digest != proof["user_evidence_sha256"]:
                         raise ValueError("User confirmation changed after recording")
+                if proof.get("kind") == "archived_browser_confirmation":
+                    _, _, archived_digest = _private_json(proof["archived_evidence_path"])
+                    if archived_digest != proof["archived_evidence_sha256"]:
+                        raise ValueError("Archived confirmation changed after recording")
                 wanted = _sheet_row(event, settings)
                 rows = _read_sheet(execute, settings)
                 found = _existing(rows, wanted)
