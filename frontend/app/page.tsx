@@ -22,7 +22,7 @@ const stateNames: Record<string, string> = { queued: "Queued", running: "Prepari
 const applicationLabel = (a: Application) => a.state === "waiting_review" && !!a.pending_required_questions ? "Needs your answer" : a.state === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[a.state] || a.state;
 const initials = (s: string) => s.trim().split(/\s+/).slice(0, 2).map(v => v[0]).join("").toUpperCase() || "?";
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-const dateLabel = (day: string, short = false) => new Date(day + "T12:00:00").toLocaleDateString("en-US", { month: short ? "short" : "long", day: "numeric", ...(short ? {} : { year: "numeric" }) });
+const dateLabel = (day: string, short = false) => day ? new Date(day + "T12:00:00").toLocaleDateString("en-US", { month: short ? "short" : "long", day: "numeric", ...(short ? {} : { year: "numeric" }) }) : "—";
 const timeLabel = (value: number | string) => new Date(typeof value === "number" ? value * 1000 : value).toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" });
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -208,7 +208,9 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
 
 export default function Dashboard() {
   const [data, setData] = useState<Overview | null>(null);
-  const [day, setDay] = useState(today);
+  // Static export can be opened days after build; first render must not depend
+  // on the build machine's clock or differ from browser hydration.
+  const [day, setDay] = useState("");
   const [error, setError] = useState("");
   const [tab, setTab] = useState<Tab>("all");
   const [query, setQuery] = useState("");
@@ -218,6 +220,7 @@ export default function Dashboard() {
   const [allQuestions, setAllQuestions] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
+  useEffect(() => { setDay(today()); }, []);
   const reload = useCallback(() => setRefresh(v => v + 1), []);
   const openReview = useCallback((application: Application) => {
     window.history.replaceState(null, "", `#review/${application.id}`);
@@ -238,6 +241,7 @@ export default function Dashboard() {
     return () => window.removeEventListener("hashchange", followReviewLink);
   }, [data]);
   useEffect(() => {
+    if (!day) return;
     let active = true; const controller = new AbortController(); let inFlight = false;
     async function poll() {
       if (inFlight) return; inFlight = true;

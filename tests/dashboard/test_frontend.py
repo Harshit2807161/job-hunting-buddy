@@ -1,5 +1,6 @@
 """Headless dashboard fixtures only, never live job-site browser validation."""
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -25,7 +26,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 @contextmanager
-def workspace(fragment="", state=None, configure=None):
+def workspace(fragment="", state=None, configure=None, browser_now=None):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(ROOT / ".local-browsers"))
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(BUILD)))
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -89,6 +90,8 @@ def workspace(fragment="", state=None, configure=None):
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 1050})
+            if browser_now is not None:
+                page.clock.set_fixed_time(browser_now)
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.route("**/api/v1/**", respond)
             page.goto(base+fragment)
@@ -97,6 +100,13 @@ def workspace(fragment="", state=None, configure=None):
             browser.close()
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_static_export_uses_browser_pacific_date_without_build_day_hydration_error():
+    with workspace(browser_now=datetime(2031, 1, 2, 2, tzinfo=timezone.utc)) as (page, actions, errors):
+        assert page.get_by_label('Dashboard date').input_value() == '2031-01-01'
+        assert page.get_by_text('On Jan 1 · before submission', exact=True).is_visible()
+        assert not actions and not errors
 
 
 def test_dashboard_question_requires_explicit_value_and_keeps_false_boolean():
