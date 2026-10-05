@@ -62,6 +62,9 @@ _OBSERVE = r"""() => ({
 
 
 def classify_ats(url: str) -> str:
+    from .boards import board_type
+    if board_type(url) == "successfactors":
+        return "successfactors"
     try:
         host = (urlsplit(url).hostname or "").lower()
     except (TypeError, ValueError):

@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _SLUG = r"[A-Za-z0-9_-]+"
 _GH_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io", "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io"}
+# This NS2 endpoint was observed through the isolated source checker. Other
+# SuccessFactors datacenters remain unregistered until their URL rules are reviewed.
+_SUCCESSFACTORS_HOSTS = {"career-hcm03.ns2cloud.com"}
 ADAPTERS = {
     "greenhouse": {"prep_enabled": True, "submit_enabled": True, "skill": "skills/prepare-greenhouse/SKILL.md"},
     "ashby": {"prep_enabled": True, "submit_enabled": True, "skill": "skills/prepare-ashby/SKILL.md"},
@@ -21,6 +24,7 @@ ADAPTERS = {
     "lever": {"prep_enabled": True, "submit_enabled": False, "skill": "skills/prepare-lever/SKILL.md"},
     "smartrecruiters": {"prep_enabled": False, "submit_enabled": False, "skill": None},
     "icims": {"prep_enabled": False, "submit_enabled": False, "skill": None},
+    "successfactors": {"prep_enabled": False, "submit_enabled": False, "skill": None},
     "linkedin": {"prep_enabled": False, "submit_enabled": False, "skill": "skills/prepare-linkedin/SKILL.md"},
     "linkedin_easy_apply": {"prep_enabled": False, "submit_enabled": False, "skill": "skills/prepare-linkedin/SKILL.md"},
 }
@@ -47,6 +51,8 @@ def board_type(url):
     host = p.hostname
     if host in _GH_HOSTS:
         return "greenhouse"
+    if host in _SUCCESSFACTORS_HOSTS:
+        return "successfactors"
     if host == "jobs.ashbyhq.com":
         return "ashby"
     if host == "apply.workable.com":
@@ -86,6 +92,26 @@ def job_identity(url):
     p, board = _parts(url), board_type(url)
     if not p:
         return None
+    if board == "successfactors":
+        if p.path != "/sfcareer/jobreqcareer" or p.fragment or len(p.query) > 8192:
+            return None
+        if re.search(r"%(?![0-9a-fA-F]{2})", p.query):
+            return None
+        try:
+            query = parse_qs(p.query, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
+        except ValueError:
+            return None
+        # Duplicate or case-variant parameters have ambiguous server meaning.
+        if (any(len(values) != 1 for values in query.values())
+                or len({key.casefold() for key in query}) != len(query)):
+            return None
+        company, job_id = query.get("company", [""])[0], query.get("jobId", [""])[0]
+        if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", company)
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", job_id)):
+            return None
+        # Keep the exact tenant ID: case equivalence is not established by the
+        # observed route or SAP's published URL documentation.
+        return (board, p.hostname, company, job_id)
     if board == "greenhouse":
         gh = greenhouse_identity(url)
         return (board, *gh) if gh else None
@@ -135,6 +161,9 @@ def canonical_url(url):
         return f"https://{host}/{item[2]}/jobs/{item[3]}"
     if item[0] == "linkedin":
         return f"https://www.linkedin.com/jobs/view/{item[1]}/"
+    if item[0] == "successfactors":
+        query = urlencode({"jobId": item[3], "company": item[2]})
+        return urlunsplit(("https", item[1], "/sfcareer/jobreqcareer", query, ""))
     # Keep observed slugs and locale paths; those may be required by the ATS.
     path = re.sub(r"/(?:application|apply)/?$", "", p.path).rstrip("/")
     return urlunsplit(("https", p.hostname, path, "", ""))

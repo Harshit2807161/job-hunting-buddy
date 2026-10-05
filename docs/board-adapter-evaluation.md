@@ -118,3 +118,19 @@ tenant authentication or real upload service. Live evidence in the table above
 comes from actual CLI calls and retained controls on the stated sites. No claim
 of autonomous CAPTCHA handling or general Workday/Workable support follows from
 either type of validation.
+
+SuccessFactors classification recognizes the observed NS2 host
+`career-hcm03.ns2cloud.com` and exact `/sfcareer/jobreqcareer` route with one
+positive decimal `jobId` and one explicit `company` tenant. The canonical URL
+retains both identity parameters; duplicate/case-variant parameters, unsafe URLs,
+listing pages and redirects to another tenant or requisition do not yield an
+application route. Tenant case is preserved because case equivalence is not
+established. Other SuccessFactors datacenters remain outside this exact identity
+registry until their URL rules are reviewed. Preparation and submission are
+disabled, and no preparation skill is implied by this classification. The local
+isolated-source evidence establishes the destination URL; synthetic tests cover
+identity parsing and routing, not a live SuccessFactors form fill. SAP's own
+[NS2 SuccessFactors documentation](https://userapps.support.sap.com/sap/support/knowledge/en/3763492)
+identifies the hosting family, and its
+[job-posting URL documentation](https://userapps.support.sap.com/sap/support/knowledge/en/2852775)
+describes the tenant/requisition URL shape.
