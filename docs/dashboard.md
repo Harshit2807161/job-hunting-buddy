@@ -59,6 +59,12 @@ approval/submission. Revocation uses the same ledger. An approved draft still
 passes the pipeline's independent reviewer and fresh native checks before an
 authorized browser action.
 
+For a board whose final submission adapter is not validated, the review stays
+available with saved fields, documents, screenshot and **Open saved draft**.
+The portal says automatic submission is unavailable and offers no approval action.
+An existing approval can still be revoked. Missing capability metadata also
+prevents approval until the review is refreshed; no adapter flag changes here.
+
 Question answers persist through `questions.answer`, preserving employer scope
 and provenance. A blocked input handoff queues filling after all required
 questions are answered, including while automation is paused. An explicit answer editing a reviewed draft safely revokes its

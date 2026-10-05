@@ -820,3 +820,32 @@ def test_distinct_role_or_employer_is_not_a_related_submission(portal):
             f"proof{n}", "greenhouse", previous["url"], json.dumps(previous), "2026-10-04T01:00:00+00:00", "{}", 1))
     conn.commit()
     assert client.get(f"/api/v1/applications/{target['dedupe_hash']}").json()["related_submissions"] == []
+
+
+@pytest.mark.parametrize('url', [
+    'https://example.wd5.myworkdayjobs.com/en-US/Careers/job/City/Software-Engineer_R123',
+    'https://wbdus.rec.pro.ukg.net/WBD1000WBD/JobBoard/11111111-2222-3333-4444-555555555555/OpportunityDetail?opportunityId=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+])
+def test_unsupported_terminal_board_keeps_review_fields_and_image_but_rejects_approval(portal, url):
+    root, conn, book, client, headers = portal
+    old_job, folder, packet = reviewable(portal)
+    identity = boards.job_identity(url)
+    assert identity and identity[0] in {'workday', 'ukg'}
+    job = {**old_job, 'url': url, 'dedupe_hash': boards.application_hash(url), 'board_type': identity[0]}
+    packet['job'] = job
+    booklet.write_private(folder / 'packet.json', packet)
+    conn.execute('UPDATE applications SET job_hash=?,job_json=? WHERE job_hash=?',
+                 (job['dedupe_hash'], json.dumps(job), old_job['dedupe_hash']))
+    conn.commit()
+    endpoint = f"/api/v1/applications/{job['dedupe_hash']}"
+    detail = client.get(endpoint).json()
+    assert detail['submission_supported'] is False and detail['inventory_complete'] is True
+    assert detail['fields'][0]['answer'] == 'Synthetic Candidate'
+    assert detail['documents'] and detail['screenshot']['available'] is True
+    assert detail['approval']['can_approve'] is False and detail['approval']['revision'] is None
+    assert 'final submission adapter still needs validation' in detail['approval']['reason']
+    assert client.get(endpoint+'/screenshot').status_code == 200
+    response = client.post(endpoint+'/approve', headers=headers,
+                           json={'revision': 'untrusted-stale-revision', 'acknowledged_blank_refs': ['why']})
+    assert response.status_code == 409
+    assert conn.execute('SELECT COUNT(*) FROM application_approvals').fetchone()[0] == 0

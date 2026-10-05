@@ -387,7 +387,8 @@ class DashboardStore:
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
-            "incident": incident, "approval": approval, "automation_paused": self.paused()}
+            "incident": incident, "approval": approval, "automation_paused": self.paused(),
+            "submission_supported": boards.submission_supported(boards.route_board(job.get("url"), job.get("board_type")))}
 
     @staticmethod
     def _focusable(row, packet):

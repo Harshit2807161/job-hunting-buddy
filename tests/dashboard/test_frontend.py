@@ -45,7 +45,7 @@ def workspace(fragment="", state=None, configure=None, browser_now=None):
         "questions": 1, "uncertain": 0, "sheet_synced": 0, "legacy_review": 0}, "daily": [{"date": "2026-10-04", "confirmed": 0, "prepared": 1}],
         "states": {"waiting_review": 1}, "source_states": {}, "applications": [app], "applications_truncated": False,
         "questions": [question], "activity": [], "pipeline": None, "submission_pipeline": None}
-    detail = {"job_hash": KEY, "state": "waiting_review", "inventory_complete": True, "resume_role": "sde", "automation_paused": True,
+    detail = {"job_hash": KEY, "state": "waiting_review", "inventory_complete": True, "resume_role": "sde", "automation_paused": True, "submission_supported": True,
         "documents": [{"kind": "resume", "filename": "synthetic-sde.pdf"}], "reviewer_issues": [], "incident": None,
         "role_fit_notes": ["This posting prefers another year of experience."],
         "fields": [{"ref": "name", "question": "Full Name", "type": "text", "required": True, "status": "answered", "category": "profile_fact",
@@ -344,3 +344,40 @@ def test_related_submission_warning_shows_distinct_locations_without_auto_action
         assert page.get_by_role('link', name='View confirmed application').get_attribute('href') == '/#review/'+'2'*64
         assert page.get_by_text('These are different posting IDs.', exact=False).is_visible()
         assert not actions and not errors
+
+
+@pytest.mark.parametrize('capability', [False, None])
+def test_unsupported_or_missing_submission_capability_keeps_review_without_approve_action(capability):
+    def unsupported(question, detail):
+        if capability is None:
+            detail.pop('submission_supported')
+        else:
+            detail['submission_supported'] = capability
+        # Even a stale affirmative approval hint cannot enable an unknown board.
+        detail['approval']['can_approve'] = True
+        detail['approval']['reason'] = "This board's final submission adapter still needs validation"
+        detail['draft_focus_available'] = True
+        detail['packet_revision'] = '9'*64
+        detail['screenshot'] = {'available': True, 'revision': '8'*64, 'captured_at': 1791144000}
+    with workspace(f'#review/{KEY}', configure=unsupported) as (page, actions, errors):
+        page.get_by_text('Synthetic Candidate', exact=True).wait_for()
+        expected = ('Prepared for review. Automatic submission is not available for this board yet.' if capability is False
+                    else 'Submission capability is unavailable. Refresh this review before approving.')
+        assert page.get_by_text(expected, exact=True).is_visible()
+        assert page.get_by_text("This board's final submission adapter still needs validation", exact=True).is_visible()
+        assert page.get_by_role('button', name='Approve and submit this application').count() == 0
+        assert page.get_by_role('button', name='Open saved draft').is_enabled()
+        assert page.get_by_alt_text('Saved review screenshot for Synthetic Employer').is_visible()
+        assert not actions and not errors
+
+
+def test_unsupported_submission_board_preserves_explicit_revoke_action():
+    def approved_unsupported(question, detail):
+        detail['submission_supported'] = False
+        detail['approval']['approval'] = {'state': 'approved'}
+    with workspace(f'#review/{KEY}', configure=approved_unsupported) as (page, actions, errors):
+        page.get_by_text('Synthetic Candidate', exact=True).wait_for()
+        assert page.get_by_role('button', name='Approve and submit this application').count() == 0
+        page.get_by_role('button', name='Revoke approval', exact=True).click()
+        page.get_by_text('Approval revoked. This draft cannot be submitted.', exact=True).wait_for()
+        assert actions == [(f'/api/v1/applications/{KEY}/revoke', {})] and not errors

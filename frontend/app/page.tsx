@@ -105,7 +105,7 @@ type ReviewDetail = { location?: string; related_submissions?: { job_hash: strin
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
   role_fit_notes?: string[]; questions?: Question[]; agent_tasks?: {question: string; ref: string; task_kind: string; required: boolean}[];
-  packet_revision?: string; draft_focus_available?: boolean;
+  packet_revision?: string; draft_focus_available?: boolean; submission_supported?: boolean;
   screenshot?: { available: boolean; revision: string | null; captured_at: string | number | null };
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
     answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean; description?: string; description_truncated?: boolean }[];
@@ -144,7 +144,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
   }, [app.id, detailRefresh]);
   const blanks = detail?.approval.blank_questions || [];
   const optionalBlanks = blanks.filter(q => !q.required);
-  const canApprove = detail?.state === "waiting_review" && detail.inventory_complete &&
+  const canApprove = detail?.submission_supported === true && detail?.state === "waiting_review" && detail.inventory_complete &&
     !blanks.some(q => q.required) && !detail.questions?.some(q => q.required) &&
     !!detail?.approval.can_approve && !!detail.approval.revision &&
     optionalBlanks.every(q => acknowledged.includes(q.ref));
@@ -198,7 +198,9 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
       {detail?.approval.approval && <div className="notice success">Your approval status: {detail.approval.approval.state.replaceAll("_", " ")}. A pending approval is specific to this saved draft.</div>}
       {optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>Check each item only if you deliberately want to submit without an answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
-      {detail?.state === "waiting_review" && <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div>}
+      {detail?.state === "waiting_review" && (detail.submission_supported === true ?
+        <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div> :
+        <div className="notice warning"><b>{detail.submission_supported === false ? "Prepared for review. Automatic submission is not available for this board yet." : "Submission capability is unavailable. Refresh this review before approving."}</b><p>{detail.approval.reason || "You can inspect the saved answers and existing draft. No submission approval is available."}</p>{detail.approval.approval && <button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button>}</div>)}
       {saved && <div className="notice success" role="status">{saved}</div>}
     </div>
     {(detail?.screenshot?.available ?? app.has_screenshot) ? <><p className="screenshot-caption">Saved at the preparation handoff{(detail?.screenshot?.captured_at ?? app.screenshot_at) ? ` · ${timeLabel((detail?.screenshot?.captured_at ?? app.screenshot_at)!)} PT` : ""}. Use Open saved draft to inspect its current state in the existing tab.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot${detail?.screenshot?.revision ? `?revision=${encodeURIComponent(detail.screenshot.revision)}` : ""}`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
