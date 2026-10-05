@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS sheet_history_imports (
 );
 """
 READ_TOOLS = {"GOOGLESHEETS_GET_SPREADSHEET_INFO", "GOOGLESHEETS_BATCH_GET"}
+HOLD_SCHEMA = """CREATE TABLE IF NOT EXISTS audited_history_holds (
+ hold_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, entry_key TEXT NOT NULL,
+ evidence_json TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL,
+ state TEXT NOT NULL DEFAULT 'active', resolved_at REAL, resolution_reason TEXT
+)"""
 APPLIED_DATE = re.compile(r"(?:0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\s+"
                           r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)(?:\s+[0-9]{4})?", re.I)
 
@@ -244,6 +249,131 @@ def _snapshot(path, *, root=None):
     return snapshot, hashlib.sha256(raw).hexdigest()
 
 
+def _hold_scope(url):
+    identity = boards.job_identity(url)
+    if identity:
+        return "identity:"+_json(identity)
+    key = _url_key(url)
+    return "source:"+key if key else None
+
+
+def _hold_reason(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 1200:
+        raise ValueError("A bounded explicit audit reason is required")
+    return value.strip()
+
+
+def _hold_id(scope, entry_key, source_hash):
+    return hashlib.sha256(_json([scope, entry_key, source_hash if scope.startswith("source:") else None]).encode()).hexdigest()
+
+
+def _imported_evidence(conn, entry_key, *, root=None):
+    if not re.fullmatch(r"[a-f0-9]{64}", str(entry_key)):
+        raise ValueError("An exact imported history entry key is required")
+    row = conn.execute("SELECT row_number,row_json,snapshot_path,snapshot_sha256,sink_key "
+                       "FROM sheet_application_history WHERE entry_key=?", (entry_key,)).fetchone()
+    if row is None:
+        raise ValueError("The audited spreadsheet row was not imported")
+    number, encoded, path, digest, sink = row
+    values = json.loads(encoded)
+    snapshot, actual = _snapshot(path, root=root)
+    original = snapshot.get("rows", {}).get(str(number), [])
+    original = original[:8]+[""]*max(0, 8-len(original))
+    if (actual != digest or original != values or snapshot.get("source") != "configured_application_spreadsheet"
+            or hashlib.sha256(_json([sink, number, values]).encode()).hexdigest() != entry_key):
+        raise ValueError("Imported history evidence failed integrity verification")
+    return {"entry_key": entry_key, "row_number": number, "row": values,
+            "snapshot_path": path, "snapshot_sha256": digest}
+
+
+def record_hold(conn, job, *, entry_key, reason, company_alias_reason=None, root=None):
+    """Record one explicit audit, never fuzzy matching or submission authority.
+
+    ATS aliases bind their canonical identity, independent of a discovery-row
+    dedupe hash. Unrecognized sources need both an exact job URL and source hash.
+    """
+    reason = _hold_reason(reason)
+    url = job.get("application_url") or job.get("url") or job.get("canonical_url")
+    scope = _hold_scope(url)
+    source_hash = job.get("dedupe_hash")
+    if not scope or not re.fullmatch(r"[a-f0-9]{64}", str(source_hash)):
+        raise ValueError("Audited holds require an exact job URL and hash")
+    evidence = _imported_evidence(conn, entry_key, root=root)
+    identity, old_identity = boards.job_identity(url), boards.job_identity(tracking._link(evidence["row"][7]))
+    if identity and old_identity and identity[0] != "linkedin" and old_identity[0] != "linkedin" and identity != old_identity:
+        raise ValueError("Distinct explicit ATS identities cannot be an ambiguous history hold")
+    company = _company(job.get("company", ""))
+    if not company:
+        raise ValueError("The audited employer must be identified")
+    if company != _company(evidence["row"][0]):
+        company_alias_reason = _hold_reason(company_alias_reason)
+    elif company_alias_reason is not None:
+        company_alias_reason = _hold_reason(company_alias_reason)
+    evidence.update(scope_key=scope, job_url=url, source_job_hash=source_hash,
+                    canonical_job_hash=boards.application_hash(url), company_key=company,
+                    company_alias_reason=company_alias_reason)
+    hold_id = _hold_id(scope, entry_key, source_hash)
+    with conn:
+        conn.execute(HOLD_SCHEMA)
+        previous = conn.execute("SELECT state FROM audited_history_holds WHERE hold_id=?", (hold_id,)).fetchone()
+        if previous and previous[0] != "active":
+            raise ValueError("An explicitly resolved audit must not be silently reopened")
+        conn.execute("INSERT OR IGNORE INTO audited_history_holds "
+                     "(hold_id,scope_key,entry_key,evidence_json,reason,created_at) VALUES(?,?,?,?,?,?)",
+                     (hold_id, scope, entry_key, _json(evidence), reason, time.time()))
+    return {"hold_id": hold_id, "state": "active", "scope_key": scope, "entry_key": entry_key,
+            "submission_confirmed": False}
+
+
+def release_hold(conn, hold_id, *, reason):
+    """Explicitly resolve this audit only; other independent history still applies."""
+    reason = _hold_reason(reason)
+    with conn:
+        changed = conn.execute("UPDATE audited_history_holds SET state='released',resolved_at=?,resolution_reason=? "
+                               "WHERE hold_id=? AND state='active'", (time.time(), reason, hold_id)).rowcount
+    if not changed:
+        raise ValueError("No active audited hold matches this resolution")
+    return {"hold_id": hold_id, "state": "released", "submission_confirmed": False}
+
+
+def _audited_hold(conn, job, *, root=None):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='audited_history_holds'").fetchone():
+        return None
+    scopes = {_hold_scope(job.get(key)) for key in ("url", "source_url", "application_url", "canonical_url") if job.get(key)} - {None}
+    if not scopes:
+        return None
+    records = conn.execute("SELECT hold_id,scope_key,entry_key,evidence_json,reason FROM audited_history_holds "
+                           "WHERE state='active' AND scope_key IN ("+",".join("?" for _ in scopes)+") ORDER BY created_at",
+                           tuple(sorted(scopes))).fetchall()
+    for hold_id, scope, entry_key, encoded, reason in records:
+        try:
+            evidence = json.loads(encoded)
+            if hold_id != _hold_id(scope, entry_key, evidence["source_job_hash"]):
+                raise ValueError("Audited history binding changed")
+            if scope.startswith("source:") and evidence["source_job_hash"] not in {
+                    job.get("dedupe_hash"), job.get("source_job_hash")}:
+                continue  # Unknown boards require the audited source row too.
+            current = _imported_evidence(conn, entry_key, root=root)
+            snapshot, digest = _snapshot(evidence["snapshot_path"], root=root)
+            original = snapshot.get("rows", {}).get(str(evidence["row_number"]), [])
+            original = original[:8]+[""]*max(0, 8-len(original))
+            if (evidence["scope_key"] != scope or _hold_scope(evidence["job_url"]) != scope
+                    or current["row"] != evidence["row"] or current["row_number"] != evidence["row_number"]
+                    or digest != evidence["snapshot_sha256"]
+                    or original != evidence["row"]):
+                raise ValueError("Audited history evidence changed")
+            return {"state": "possible_prior_application", "disposition": "hold", "submission_confirmed": False,
+                    "match_kind": "audited_history_hold", "hold_id": hold_id, "row_number": evidence["row_number"],
+                    "company": evidence["row"][0], "title": evidence["row"][1], "location_raw": evidence["row"][2],
+                    "applied_date_raw": evidence["row"][3], "evidence_path": evidence["snapshot_path"],
+                    "evidence_sha256": digest, "reason": reason}
+        except (OSError, ValueError, KeyError, TypeError, IndexError, sqlite3.DatabaseError):
+            return {"state": "history_integrity_handoff", "disposition": "hold", "submission_confirmed": False,
+                    "match_kind": "audited_history_unverified_evidence", "hold_id": hold_id,
+                    "reason": "An audited history hold requires explicit evidence reconciliation"}
+    return None
+
+
 def match(conn, job, *, root=None):
     """Return a pre-browser exclusion/hold; never claim a confirmed submission."""
     urls = [job.get(key) for key in ("url", "source_url", "application_url") if isinstance(job.get(key), str)]
@@ -258,6 +388,8 @@ def match(conn, job, *, root=None):
                     "existing_receipt_verified": verified, "match_kind": "existing_submission_record",
                     "evidence_path": confirmation.get("receipt_path"),
                     "reason": "An existing exact-job submission record prevents reapplication"}
+    if held := _audited_hold(conn, job, root=root):
+        return held
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='sheet_application_history'").fetchone():
         return None
     identities = {_json(identity) for url in urls if (identity := boards.job_identity(url))}
