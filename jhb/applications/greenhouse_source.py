@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import json
 import re
 import time
@@ -95,7 +94,11 @@ def _observed_description(observation):
         content = record.get("description", record.get("text"))
         if not isinstance(content, str) or not isinstance(title, str) or not title.strip():
             continue
-        text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", content))).strip()
+        from ..eligibility import plain_text
+        # Requirements and preferred qualifications need separate lines. A
+        # flattened page can let a later "preferred" mask a mandatory bullet.
+        text = "\n".join(re.sub(r"\s+", " ", line).strip()
+                         for line in plain_text(content).splitlines() if line.strip())
         if len(text) < 100 or len(text.encode()) > 1024*1024:
             continue
         from .job_context import _metadata_country

@@ -67,3 +67,45 @@ def test_employer_observed_individual_non_greenhouse_frame_is_followed_and_verif
     assert result['application_url']==ASHBY and result['identity']==list(job_identity(ASHBY))
     assert result['verified_job_description']['source_url']==ASHBY
     assert [args['url'] for name,args in transport.calls if name=='browser_navigate']==[employer,ASHBY]
+
+
+
+def test_mcp_description_retains_requirement_and_preferred_section_boundaries():
+    from jhb import eligibility
+    html = ("<h2>Requirements</h2><ul><li>TS/SCI with Polygraph</li>"
+            "<li>Build production Python services and maintain distributed data systems with good testing practices.</li></ul>"
+            "<h2>Preferred</h2><ul><li>Kubernetes experience</li></ul>")
+    result, _ = resolve({ASHBY: page(ASHBY, job_postings=[{**posting(), 'description': html}])}, ASHBY)
+    description = result['verified_job_description']
+    assert 'Requirements\nTS/SCI with Polygraph\n' in description['text']
+    assert '\nPreferred\nKubernetes experience' in description['text']
+    assert {item['category'] for item in eligibility.restrictions(description['text'])} == {'security_clearance', 'polygraph'}
+    assert description['sha256'] == hashlib.sha256(description['text'].encode()).hexdigest()
+
+
+def test_rendered_mcp_description_preserves_optional_heading_without_false_exclusion():
+    from jhb import eligibility
+    text = ('Requirements\nBuild reliable Python backend systems and developer tooling with robust observability and production tests.\n'
+            'Preferred\nCurrent TS/SCI clearance\nKubernetes experience')
+    result, _ = resolve({ASHBY: page(ASHBY, descriptions=[{'url': ASHBY, 'title': 'Software Engineer', 'text': text}])}, ASHBY)
+    description = result['verified_job_description']
+    assert description['text'] == text
+    assert eligibility.restrictions(description['text']) == []
+
+
+def test_mcp_required_clearance_reaches_worker_gate_before_candidate_browser(tmp_path, monkeypatch):
+    import asyncio
+    import pytest
+    from jhb.applications import worker
+    from jhb.applications.boards import application_hash
+    html = ('<h2>Requirements</h2><ul><li>US citizenship</li><li>TS/SCI with Polygraph</li>'
+            '<li>Build production Python services and maintain reliable distributed data processing applications.</li></ul>'
+            '<h2>Preferred</h2><p>Kubernetes experience</p>')
+    outcome, _ = resolve({ASHBY: page(ASHBY, job_postings=[{**posting(), 'description': html}])}, ASHBY)
+    job = {'dedupe_hash': application_hash(ASHBY), 'url': ASHBY, 'title': 'Software Engineer', 'company': 'Synthetic',
+           'role_classes': 'swe', 'verified_job_description': outcome['verified_job_description']}
+    monkeypatch.setattr('jhb.applications.cli_browser.BrowserUseCLI', lambda: pytest.fail('Excluded source reached candidate browser'))
+    result, _ = asyncio.run(worker.run_job(job, {'roles': {'sde': {}, 'ml': {}}}, artifacts=tmp_path))
+    assert result['state'] == 'skipped'
+    assert result['filled'] == []
+    assert {item['category'] for item in result['eligibility']['findings']} == {'citizenship', 'security_clearance', 'polygraph'}
