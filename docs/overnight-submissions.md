@@ -1,6 +1,18 @@
 # Expiring overnight submission policy
 
-**Historical mode.** The current local policy requires a candidate Approve click
+The current Full autonomy mode requires fresh, finite user delegation of final
+review to an independent agent. It retains complete-question inventory, current
+screenshot and candidate/document bindings, two live retained-value checks,
+one-shot terminal attempts, exact positive receipts and verified spreadsheet
+delivery. Each optional blank needs a grounded reviewer decision. Unknown facts,
+unvalidated board adapters and uncertain submissions remain handoffs.
+
+`approval_mode: "independent_reviewer"` and `require_complete_inventory: true`
+distinguish this mode from historical broad authorization. The default portal
+gate remains enabled; only the active delegated window and separate overnight
+runtime gate permit this exception. Ending the window restores per-draft review.
+
+**Historical narrow mode.** The default local policy requires a candidate Approve click
 for each exact draft through the portal. `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects
 the broad authority described below, even if its environment flag is enabled.
 See [portal-review.md](portal-review.md). Compatibility tests retain the older

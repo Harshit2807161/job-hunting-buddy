@@ -85,6 +85,12 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
         validate_binding(authority, packet_path)
         if authority.get("job_hash") != attempt["job_hash"]:
             raise ValueError("Portal approval belongs to a different application")
+    elif authority.get("approval_mode") == overnight.INDEPENDENT_MODE:
+        from .approvals import _snapshot
+        binding = attempt.get("review_binding", {})
+        _, current, _ = _snapshot(packet_path, binding.get("book_path", ""))
+        if binding != current:
+            raise ValueError("Independently reviewed draft evidence changed")
     return authority, attempt, packet
 
 
@@ -170,6 +176,7 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
             independent = await asyncio.to_thread(reviewer, job, {**answers, "documents": documents,
                                                                  "approved_documents": answers["documents"],
                                                                  "application_inventory": packet.get("review_inventory"),
+                                                                 "review_mode": authority.get("approval_mode", "portal"),
                                                                  "user_blank_acknowledgments": authority.get("acknowledged_blank_refs", [])}, snapshot, authorization)
             from .application_review import snapshot_digest
             snapshot_sha = snapshot_digest(snapshot)

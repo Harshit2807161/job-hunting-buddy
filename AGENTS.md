@@ -56,9 +56,14 @@ not submit real applications in development, test, or scheduled automation.
 A later explicit request to submit one named application authorizes only that
 interactive action after its retained answers and documents have been checked;
 record the authorization and live receipt privately. Other drafts keep their guards.
-The current user policy requires a separate explicit Approve click in the local
-portal for every application. Keep `JHB_REQUIRE_PORTAL_APPROVAL=1`; old overnight
-authorization cannot replace this approval. The portal shows every observed
+The default policy requires an explicit Approve click in the local portal.
+The user's newer instruction delegates final review during an explicitly enabled,
+finite Full autonomy window to a separate read-only agent. Keep
+`JHB_REQUIRE_PORTAL_APPROVAL=1` as the fallback; only an active authorization with
+`approval_mode=independent_reviewer`, complete-inventory validation and the
+separate overnight runtime gate may replace the per-application click. Expiry,
+revocation or selecting review mode restores candidate approval. Old broad
+overnight authorization does not enable this exception. The portal shows every observed
 question, including optional blanks, and requires individual acknowledgment of
 each blank before approval. Approval binds one exact packet, candidate facts,
 document bytes, and review screenshot, expires after two hours, and cannot be
@@ -66,6 +71,9 @@ reused after changes or a terminal attempt. Never click Approve on the user's
 behalf. A separate read-only reviewer, two retained-answer audits and a positive
 receipt remain required. See `docs/portal-review.md`. Legacy finite authorization
 code remains for compatibility tests; it is disabled in the current local setup.
+In delegated mode every optional blank needs an individual grounded reviewer
+decision; substantive answers and expected documents cannot be omitted merely
+because they are optional. Do not fabricate candidate approval or facts.
 Technical repairs must pass checks before preparation or submission resumes.
 Unknown factual answers and unresolved verification challenges are explicit handoffs.
 Check actual role fit against the chosen resume before filling. A generic

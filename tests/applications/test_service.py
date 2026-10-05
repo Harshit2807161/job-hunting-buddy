@@ -171,6 +171,23 @@ def test_prepare_service_cannot_fall_back_to_legacy_blanket_mode(context, monkey
     assert service.once("prepare", connector=lambda: pytest.fail("Legacy submit policy reached service"))["reason_code"] == "portal_required"
 
 
+@pytest.mark.parametrize("authority,allowed", [(None, False), ({"approval_mode": "legacy"}, False),
+    ({"approval_mode": "independent_reviewer"}, True)])
+def test_preparation_in_delegated_mode_needs_current_valid_authority(context, monkeypatch, authority, allowed):
+    from jhb.applications import overnight
+    connector, book = context
+    monkeypatch.setenv("JHB_REQUIRE_PORTAL_APPROVAL", "0")
+    monkeypatch.setattr(overnight, "load_authorization", lambda: authority)
+    called = []
+    def prepare(*args, **kwargs):
+        called.append(True)
+        return {"applications_prepared": 1}
+    result = service.once("prepare", connector=connector, book_path=book, prepare=prepare)
+    assert bool(called) is allowed
+    if not allowed:
+        assert result["reason_code"] == "portal_required"
+
+
 def test_async_portal_failure_records_safe_status_without_echoing_exception_data(context):
     connector, book = context
     seed(connector)

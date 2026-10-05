@@ -1,8 +1,10 @@
 # Candidate approval before submission
 
-The current workflow prepares applications autonomously and stops for a portal
-review. Only the candidate's explicit **Approve and submit** click creates a
-per-application approval. Saving an answer only resumes filling.
+Review mode prepares applications autonomously and stops for a portal review.
+Only the candidate's explicit **Approve and submit** click creates a
+per-application portal approval. Saving an answer only resumes filling. A separately
+enabled, finite Full autonomy window can delegate final review to an independent
+agent without manufacturing portal approvals; see [overnight-submissions.md](overnight-submissions.md).
 
 The local portal shows the chosen resume, retained final review screenshot,
 and an inventory of every discovered question. **Open saved draft** focuses the

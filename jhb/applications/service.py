@@ -35,7 +35,10 @@ def _gate(mode):
         if os.environ.get("JHB_APPLICATIONS_ENABLED") != "1":
             return "preparation_disabled"
         if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") != "1":
-            return "portal_required"
+            from .overnight import load_authorization, INDEPENDENT_MODE
+            authority = load_authorization()
+            if not authority or authority.get("approval_mode") != INDEPENDENT_MODE:
+                return "portal_required"
     elif os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") != "1" or os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED") != "1":
         return "portal_disabled"
     endpoint = os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL", "")

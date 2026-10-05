@@ -92,7 +92,7 @@ def test_reporting_window_sends_while_submission_authority_is_disabled(setup, mo
     def send(jobs, **kwargs): mail.append(kwargs); return True
     assert hourly_reports.report(conn, now=13600, sender=send)["state"] == "delivered"
     assert hourly_reports.report(conn, now=14000, sender=send)["state"] == "delivered"
-    assert len(mail) == 1 and "explicit approval" in mail[0]["details"]
+    assert len(mail) == 1 and "independent checks remain required" in mail[0]["details"]
 
 
 @pytest.mark.parametrize("change", [

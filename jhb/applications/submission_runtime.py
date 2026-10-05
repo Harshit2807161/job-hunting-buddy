@@ -179,7 +179,8 @@ def _checks(request, helpers, packet, attempt):
                 approved[r["key"]]["user_override"] = True
             if r.get("country_context"):
                 approved[r["key"]]["country_context"] = r["country_context"]
-    if attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal":
+    if (attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal"
+            or attempt.get("review_binding")):
         inventory = packet.get("review_inventory", {}).get("fields", [])
         for field in snapshot["fields"]:
             matches = [f for f in inventory if
@@ -190,7 +191,7 @@ def _checks(request, helpers, packet, attempt):
                        and (f.get("description") or "") == (field.get("description") or "")
                        and bool(f.get("description_truncated")) == bool(field.get("description_truncated"))]
             if len(matches) != 1:
-                return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
+                return {"state": "waiting_review", "reason": "Application questions changed after review; review the updated form",
                         "click_started": False}
     from .native_question_context import enrich_sync
     enrich_sync(snapshot, packet.get("job", {}), approved,

@@ -62,6 +62,16 @@ Do not reject for competitiveness or a merely preferred qualification.
 Review every discovered question, including optional questions. An optional blank is
 acceptable only when its exact field ref appears in user_blank_acknowledgments for a
 portal-approved draft. Required-field completeness alone is not application completeness.
+When review_mode is independent_reviewer, the user delegated the final review to you.
+Inspect every blank individually and return blank_decisions with its field_ref,
+decision (leave_blank or needs_answer), and a concrete evidence-based reason.
+Leave a blank only when an explicit saved preference supports it, the employer
+explicitly invites that blank and verified preferences fit, or it is an inapplicable
+conditional question. Optional demographic questions may remain unanswered rather
+than inventing a sensitive fact. Never approve an omitted substantive application
+answer or expected cover letter merely because the website marks it optional.
+Any needs_answer decision requires handoff. Do not treat delegated review as a
+candidate's affirmative answer, consent, or acknowledgment of an unknown fact.
 If a prompt requests the candidate's own non-AI wording, check that any supplied answer
 has explicit candidate provenance; never approve generated wording as candidate-authored.
 Do reject mandatory citizenship/security-clearance requirements and factual contradictions.
@@ -101,6 +111,14 @@ EVIDENCE:
             validate(parsed, json.loads((config.ROOT / "schemas/application-review.json").read_text()))
             if parsed["verdict"] == "approved" and parsed["issues"]:
                 parsed["verdict"] = "reject"
+            if manifest.get("review_mode") == "independent_reviewer" and parsed["verdict"] == "approved":
+                fields = manifest.get("application_inventory", {}).get("fields", [])
+                blanks = {field["ref"] for field in fields if field.get("status") != "answered"}
+                decisions = parsed.get("blank_decisions", [])
+                if (len(decisions) != len(blanks) or {item["field_ref"] for item in decisions} != blanks
+                        or any(item["decision"] != "leave_blank" or not item["reason"].strip() for item in decisions)):
+                    parsed = {"verdict": "handoff", "issues": [],
+                              "summary": "Every optional blank requires a grounded independent review decision"}
             verdict = parsed
     except (OSError, subprocess.TimeoutExpired, ValueError):
         pass

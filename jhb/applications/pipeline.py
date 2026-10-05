@@ -512,7 +512,10 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
                     summary["question_handoffs"] += 1
     # The current portal policy consumes only one explicit approval per exact
     # draft. Legacy finite-authority dispatch remains gated for compatibility.
-    if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1":
+    from .overnight import load_authorization, INDEPENDENT_MODE
+    delegated = load_authorization()
+    if (os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1"
+            and not (delegated and delegated.get("approval_mode") == INDEPENDENT_MODE)):
         from .approvals import drain as drain_authorized
     else:
         from .overnight import drain as drain_authorized

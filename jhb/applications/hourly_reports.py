@@ -103,11 +103,12 @@ def report(conn, auth=None, *, now=None, sender=None):
                      (auth["authorization_id"], bucket, int(lower), now, json.dumps(summary)))
         conn.commit()
     def send(keys):
+        policy = "Applications follow the active review policy shown on the dashboard; independent checks remain required.\n"
         details = (f"Confirmed submissions since the previous update: {summary['confirmed_this_period']}\n"
                    f"Confirmed submissions in this run: {summary['confirmed_in_window']}\n"
                    f"Verified spreadsheet entries for this period: {summary['spreadsheet_verified_this_period']}\n"
                    f"Current application states: {json.dumps(summary['application_states'], sort_keys=True)}\n"
-                   "Submission requires explicit approval of each complete application in the local review portal.\n"
+                   + policy +
                    "Only positive submission receipts are counted. Drafts and uncertain attempts are excluded.")
         when = datetime.fromtimestamp(summary['end_at'], ZoneInfo('America/Los_Angeles')).strftime('%b %d %H:%M %Z')
         return (sender or notify.send)(summary["applications"], details=details,

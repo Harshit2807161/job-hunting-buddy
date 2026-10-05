@@ -79,6 +79,30 @@ def test_multi_board_authority_is_explicit_and_preserves_guards(setup, changes):
     assert overnight.load_authorization() is None
 
 
+@pytest.mark.parametrize("change,valid", [({}, True), ({"require_complete_inventory": False}, False),
+    ({"require_independent_review": False}, False), ({"content": "Keep submitting applications throughout the night"}, False),
+    ({"content": "Remove the final approval step and use a subagent; do not submit applications"}, False)])
+def test_explicit_delegated_final_review_still_requires_finite_complete_evidence(setup, change, valid):
+    _, _, path, _ = setup
+    value = {**json.loads(path.read_text()), "approval_mode": overnight.INDEPENDENT_MODE,
+             "require_complete_inventory": True,
+             "content": "Keep working on submitting applications throughout the night. Remove the final approval step, instead use a new subagent that does doublechecking."}
+    booklet.write_private(path, {**value, **change})
+    assert (overnight.load_authorization() is not None) is valid
+
+
+def test_delegating_review_never_makes_a_legacy_incomplete_draft_submittable(setup):
+    conn, book_path, path, _ = setup
+    job, packet = manual_packet(setup)
+    overnight.register_manual_draft(conn, packet)
+    booklet.write_private(path, {**json.loads(path.read_text()), "approval_mode": overnight.INDEPENDENT_MODE,
+                                "require_complete_inventory": True})
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Incomplete inventory reached the browser under delegated review")
+    assert asyncio.run(overnight.drain(conn, book_path, submitter=forbidden))["attempted"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM authorized_submission_attempts").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("url", [ASHBY, GH])
 def test_explicit_finite_scope_accepts_verified_existing_manual_draft_without_phase1_row(setup, url):
     conn, book_path, _, _ = setup

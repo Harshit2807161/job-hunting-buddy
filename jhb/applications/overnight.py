@@ -24,6 +24,7 @@ MULTI_SCOPE = "approved existing and new application drafts on enabled boards du
 MULTI_JOB_POLICY = "existing_and_new_verified_drafts"
 PORTAL_SCOPE = "one exact application explicitly approved in the local review portal"
 AUTH_NAME = "overnight-submission-authorization.json"
+INDEPENDENT_MODE = "independent_reviewer"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS authorized_submission_attempts (
  job_hash TEXT PRIMARY KEY, authorization_id TEXT NOT NULL,
@@ -70,14 +71,25 @@ def valid_authority(auth, *, now=None):
                     and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable)\b", content))
         scoped = auth.get("board") == "greenhouse"
     elif auth.get("scope") == MULTI_SCOPE:
-        explicit = (re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
-                    and re.search(r"\b(?:all (?:job )?boards|everything)\b", content)
+        portal_delegation = (auth.get("source") == "local_review_portal" and auth.get("action") == "enable_autonomy"
+                             and auth.get("approval_mode") == INDEPENDENT_MODE
+                             and auth.get("require_complete_inventory") is True)
+        delegated = (auth.get("approval_mode") == INDEPENDENT_MODE
+                     and re.search(r"\b(?:keep|continue)\b.{0,40}\bsubmitting applications\b", content)
+                     and "night" in content and "remove the final approval step" in content
+                     and re.search(r"\b(?:subagent|independent reviewer)\b", content)
+                     and auth.get("require_complete_inventory") is True)
+        explicit = (portal_delegation or re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
+                    and (re.search(r"\b(?:all (?:job )?boards|everything)\b", content) or delegated)
                     and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable)\s+(?:apply|applying|submit|submitting|applications?|automation)\b", content))
         enabled = auth.get("boards")
         scoped = (isinstance(enabled, list) and bool(enabled) and len(enabled) == len(set(enabled))
                   and all(isinstance(board, str) and board in boards.ADAPTERS for board in enabled)
                   and auth.get("candidate_job_policy") == MULTI_JOB_POLICY
-                  and auth.get("require_independent_review") is True)
+                  and auth.get("require_independent_review") is True
+                  and (auth.get("approval_mode") is None or
+                       auth.get("approval_mode") == INDEPENDENT_MODE
+                       and auth.get("require_complete_inventory") is True))
     elif auth.get("scope") == PORTAL_SCOPE:
         explicit = auth.get("action") == "approve" and auth.get("source") == "local_review_portal"
         scoped = (bool(re.fullmatch(r"[a-f0-9]{64}", auth.get("job_hash", "")))
@@ -95,7 +107,9 @@ def valid_authority(auth, *, now=None):
 
 def gate_enabled(auth):
     portal = auth.get("scope") == PORTAL_SCOPE
-    if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1" and not portal:
+    delegated = (auth.get("scope") == MULTI_SCOPE and auth.get("approval_mode") == INDEPENDENT_MODE
+                 and auth.get("require_complete_inventory") is True and auth.get("require_independent_review") is True)
+    if os.environ.get("JHB_REQUIRE_PORTAL_APPROVAL") == "1" and not portal and not delegated:
         return False
     return os.environ.get("JHB_PORTAL_SUBMISSIONS_ENABLED" if portal else "JHB_OVERNIGHT_SUBMISSIONS_ENABLED") == "1"
 
@@ -336,6 +350,10 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
             job, packet_path, packet = candidate
             manifest = _manifest(job, packet, current_book)
             packet_sha = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+            binding = None
+            if auth.get("approval_mode") == INDEPENDENT_MODE:
+                from .approvals import _snapshot
+                _, binding, _ = _snapshot(packet_path, book_path)
             previous = conn.execute("SELECT * FROM authorized_submission_attempts WHERE job_hash=?", (row["job_hash"],)).fetchone()
             if previous and not _safe_preclick_retry(previous, packet_sha, now=time.time() if now is None else now,
                                                     authorization_id=auth["authorization_id"]):
@@ -373,6 +391,8 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
                    "started_at": datetime.now(timezone.utc).isoformat(), "state": "in_progress",
                    "runtime_click_started": False, "attempt_count": previous["attempt_count"]+1 if previous else 1,
                    "packet_path": str(packet_path), "packet_sha256": packet_sha}
+        if binding is not None:
+            attempt["review_binding"] = binding
         try:
             booklet.write_private(attempt_path, attempt)
             result = await asyncio.wait_for(submitter(job, packet_path, manifest, authorization=auth,

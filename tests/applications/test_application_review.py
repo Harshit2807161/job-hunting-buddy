@@ -76,6 +76,21 @@ def test_ci_cannot_launch_subscription_reviewer(context,monkeypatch):
     assert review.review_application(*context[:4])['verdict']=='handoff'
 
 
+@pytest.mark.parametrize('decisions,expected', [
+    ([], 'handoff'),
+    ([{'field_ref':'optional','decision':'needs_answer','reason':'Missing substantive answer'}], 'handoff'),
+    ([{'field_ref':'another','decision':'leave_blank','reason':'Different field'}], 'handoff'),
+    ([{'field_ref':'optional','decision':'leave_blank','reason':'Employer explicitly invites blank when open to anything; verified preference is open'}], 'approved'),
+])
+def test_delegated_review_requires_individual_decisions_for_every_blank(context,decisions,expected):
+    job,manifest,checks,auth,path=context
+    manifest={**manifest,'review_mode':'independent_reviewer','application_inventory':{'complete':True,
+        'fields':[{'ref':'optional','status':'blank'}]}}
+    result=review.review_application(job,manifest,checks,auth,book_path=path,
+        execute=fake_result({'verdict':'approved','issues':[],'summary':'Reviewed','blank_decisions':decisions}))
+    assert result['verdict']==expected
+
+
 def test_approval_binds_only_custom_answers_for_its_actual_context(context):
     from jhb.applications.approvals import _facts
     job, _, _, _, path = context
