@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 POLICY_ID = "exclude-incompatible-employment-requirements-v2"
 _CITIZEN = re.compile(r"\bcitizen(?:ship|s)?\b|\bnationality\b", re.I)
-_CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:active|current|secret|confidential|government|federal|dod)\s+clearance|clearance|top\s*secret|ts\s*/\s*sci|ts[- ]sci|sci\s+clearance)\b", re.I)
+_CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:secret|confidential|security)[-\s]+cleared|(?:active|current|secret|confidential|government|federal|dod)\s+clearance|clearance|top[-\s]*secret|ts\s*/\s*sci|ts[- ]sci|sci\s+clearance)\b", re.I)
 _POLYGRAPH = re.compile(r"\bpolygraph\b", re.I)
 _SPONSOR = r"(?:(?:any|employment|immigration|work|visa|h[- ]?1[- ]?b)\s+){0,3}sponsor(?:ship|ing)?\b"
 _SPONSORSHIP_DENIAL = re.compile(
@@ -69,8 +69,8 @@ _OPTIONAL_HEADING = re.compile(r"(?:desired(?: qualifications)?|preferred(?: qua
                                r"nice[- ]to[- ]have|nice to have)\s*:?", re.I)
 _BARE_QUALIFICATION = re.compile(
     r"(?:(?:US|United States|British|Canadian|UK)\s+citizenship|"
-    r"(?:(?:active|current)\s+)?(?:TS\s*/\s*SCI|TS[- ]SCI|top\s*secret|secret|confidential)"
-    r"(?:\s+(?:security\s+)?clearance)?(?:\s+with\s+(?:a\s+)?polygraph)?|"
+    r"(?:(?:active|current)\s+)?(?:TS\s*/\s*SCI|TS[- ]SCI|top[-\s]*secret|secret|confidential)"
+    r"(?:\s+(?:security\s+)?clearance|[-\s]+cleared)?(?:\s+with\s+(?:a\s+)?polygraph)?|"
     r"(?:active|current)\s+(?:security\s+)?clearance|polygraph(?:\s+examination)?)\s*", re.I)
 
 
@@ -146,10 +146,14 @@ def restrictions(text, *, title=False):
                 and not re.search(r"\b(?:experience|prior|previous)\b", clause, re.I)):
             hits.append({"category": "student_visa_restriction", "evidence": clause[:600]})
         for kind, pattern in [("citizenship", _CITIZEN), ("security_clearance", _CLEARANCE), ("polygraph", _POLYGRAPH)]:
-            match = pattern.search(clause)
+            # A customer's clearance is not a requirement on this applicant.
+            # Retain other conditions in the same clause for normal screening.
+            search_clause = re.sub(r"\b(?:top[-\s]*secret|secret|confidential|security)[-\s]+cleared(?=\s+(?:customers|clients)\b)",
+                                   "", clause, flags=re.I) if kind == "security_clearance" and not title else clause
+            match = pattern.search(search_clause)
             if not match:
                 continue
-            if kind == "security_clearance" and re.search(r"\b(?:medical|drug|health|credit)\s+clearance\b", clause, re.I) and not re.search(r"security\s+clearance|top\s*secret|ts\s*/\s*sci", clause, re.I):
+            if kind == "security_clearance" and re.search(r"\b(?:medical|drug|health|credit)\s+clearance\b", search_clause, re.I) and not re.search(r"security\s+clearance|(?:secret|confidential|security)[-\s]+cleared|top[-\s]*secret|ts\s*/\s*sci", search_clause, re.I):
                 continue
             if _NEGATED.search(clause):
                 continue

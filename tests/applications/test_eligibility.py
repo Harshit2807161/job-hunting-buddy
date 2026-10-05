@@ -30,6 +30,34 @@ def test_required_conditions_are_excluded(text):
     assert eligibility.restrictions(text)
 
 
+@pytest.mark.parametrize("title", [
+    "Data Scientist (Secret Cleared), Tampa, Florida",
+    "Top-Secret-Cleared Software Engineer", "Security Cleared Data Engineer",
+    "Confidential-cleared Analyst",
+])
+def test_cleared_role_titles_stop_before_source_resolution(title):
+    findings = eligibility.preliminary({"title": title})
+    assert {item["category"] for item in findings} == {"security_clearance"}
+
+
+@pytest.mark.parametrize("text", [
+    "Required qualifications:\nSecret Cleared",
+    "Must be Secret-cleared and complete medical clearance.",
+    "Must support security-cleared clients while holding an active security clearance.",
+])
+def test_classified_cleared_requirements_in_description(text):
+    assert {item["category"] for item in eligibility.restrictions(text)} == {"security_clearance"}
+
+
+@pytest.mark.parametrize("text", [
+    "Secret-cleared status is preferred.", "Secret-cleared status is not required.",
+    "Must pass medical clearance.", "Drug clearance is required.",
+    "Must support secret-cleared customers.", "Must work with security-cleared clients.",
+])
+def test_cleared_nonrequirements_remain_eligible(text):
+    assert eligibility.restrictions(text) == []
+
+
 @pytest.mark.parametrize("text", [
     "No security clearance is required.", "Security clearance is not required.",
     "Security clearance: None", "Citizenship optional.", "Citizenship disclosure required.",
