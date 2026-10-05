@@ -12,7 +12,7 @@
       "properties": {
         "input_id": {"enum": ["job_description", "role.experience", "role.projects", "role.skills"]},
         "unit_id": {"type": "string", "maxLength": 100},
-        "quote": {"type": "string", "maxLength": 3000}
+        "quote": {"type": "string", "maxLength": 24000}
       }
     }}
   }

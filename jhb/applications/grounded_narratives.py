@@ -25,6 +25,7 @@ from .review_inventory import candidate_wording_requested
 VERSION = 3
 TIMEOUT = 60
 FAILURE_TTL = 300
+CURATED_RESPONSE_MAX_BYTES = 256 * 1024
 FACT_KEYS = ("role.experience", "role.projects", "role.skills")
 _FACTUAL = re.compile(r"\b(?:fail\w*|mistake\w*|conflict\w*|obstacle\w*|fired|terminated|"
     r"owned|ownership|managed|supervised|challenge\w*|how many|years?|salary|compensation|sponsor\w*|visa\w*|"
@@ -121,6 +122,12 @@ def _inputs(field, job, answers, preferences, *, curated=False):
     if not facts or any(len(item["text"]) > 12000 for item in facts.values()) or len(description["text"]) > 24000:
         return None
     company_units = semantic_units(description['text'], 'job_description', 220 if curated else 25)
+    if curated and not company_units:
+        # JS pages often flatten a complete JD into one paragraph. Preserve the
+        # entire bounded official text rather than trimming context/conditions.
+        quote = description['text'].strip()
+        if quote:
+            company_units = [{'id': 'job_description:'+hashlib.sha256(quote.encode()).hexdigest()[:16], 'text': quote}]
     for key, item in facts.items():
         item['units'] = semantic_units(item['text'], key, 220 if curated else 35)
     if (kind != 'proud_work' and not company_units or kind == 'proud_work'
@@ -344,7 +351,7 @@ def _curated_model(prompt, schema, scratch, execute):
     env = {key: value for key, value in os.environ.items() if key in {
         "PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "SSL_CERT_FILE"}}
     result = (execute or _run)(command, input=prompt, capture_output=True, text=True, timeout=TIMEOUT, env=env)
-    if result.returncode or not output.is_file() or output.is_symlink() or output.stat().st_size > 32000:
+    if result.returncode or not output.is_file() or output.is_symlink() or output.stat().st_size > CURATED_RESPONSE_MAX_BYTES:
         raise ValueError("Narrative transport did not return a bounded structured response")
     for line in (result.stdout or "").splitlines():
         event = json.loads(line)
@@ -439,7 +446,7 @@ def curated_company_interest(field, job, answers, *, preferences=None, execute=N
             stack.enter_context(_locked(path))
             if path.is_symlink():
                 raise ValueError("Unsafe narrative cache")
-            if path.exists() and path.stat().st_size <= 32000:
+            if path.exists() and path.stat().st_size <= CURATED_RESPONSE_MAX_BYTES:
                 cached = json.loads(path.read_text())
                 if cached.get("fingerprint") == fingerprint:
                     if cached.get("recipe") and cached.get("review"):

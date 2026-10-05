@@ -274,11 +274,11 @@ def test_owned_writing_help_reaches_both_models_and_changes_cache(context):
     assert calls[3][3]['evidence']['observed_question']['description']==field['description']
 
 
-@pytest.mark.parametrize('failure',['oversized_unit','missing_jd','truncated_help'])
+@pytest.mark.parametrize('failure',['oversized_jd','missing_jd','truncated_help'])
 def test_unavailable_company_sources_are_agent_tasks_without_model_or_candidate_question(context,failure):
     field,job,answers=context;calls=[]
-    if failure=='oversized_unit':
-        text=' '.join(['Search']*221)+'.'
+    if failure=='oversized_jd':
+        text='Search quality. '*1601
         job['verified_job_description'].update(text=text,sha256=hashlib.sha256(text.encode()).hexdigest())
     elif failure=='missing_jd':
         job.pop('verified_job_description')
@@ -322,3 +322,25 @@ def test_same_run_changed_help_cannot_fill_a_previously_reviewed_proposal(contex
     result,_=asyncio.run(worker.prepare(None,job,answers,deterministic_plan,None,cli_actions=form))
     assert result['state']=='failed' and result['error_kind']=='narrative_generation'
     assert len(calls)==4 and not form.values and result['missing']==[]
+
+
+def test_flattened_long_official_jd_uses_whole_context_and_separate_review(context):
+    field,job,answers=context;calls=[]
+    description=job['verified_job_description']
+    text=(description['text']+' '+('The team builds search tools, evaluates quality, and supports customer feedback. '*170)).strip()
+    assert len(text.split())>1000 and 3000<len(text)<24000
+    description.update(text=text,sha256=hashlib.sha256(text.encode()).hexdigest())
+    result=invoke(context,calls)
+    assert result['state']=='proposed' and [c[0] for c in calls]==['draft','review']
+    assert calls[0][3]['job_description']['units']==[{'id':'job_description:'+hashlib.sha256(text.encode()).hexdigest()[:16],'text':text}]
+    assert result['record']['source']['support'][0]['quote']==text
+    assert calls[1][3]['evidence']['job_description']['text']==text
+    assert invoke(context,calls)['state']=='proposed' and len(calls)==2
+
+
+def test_whole_flattened_jd_support_cannot_trim_negation_or_conditions(context):
+    field,job,answers=context;calls=[]
+    text='This role does not involve weapons; the team builds search tools. '+('Work on retrieval evaluation. '*100)
+    job['verified_job_description'].update(text=text,sha256=hashlib.sha256(text.encode()).hexdigest())
+    result=invoke(context,calls,mutate=lambda p:p['support'][0].update(quote='the team builds search tools.'))
+    assert result['state']=='agent_task' and [c[0] for c in calls]==['draft']
