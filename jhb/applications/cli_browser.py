@@ -46,6 +46,8 @@ MECHANICAL_ERRORS = {
     "Autocomplete choice is absent", "Autocomplete choice is ambiguous",
     "Autocomplete did not retain the committed choice",
     "Calendar input did not retain the approved day",
+    "Owned uploaded-file container is unavailable or ambiguous",
+    "Owned upload input is unavailable or ambiguous",
 }
 
 

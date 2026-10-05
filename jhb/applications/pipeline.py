@@ -22,7 +22,7 @@ from . import booklet, boards, queue, source_queue
 
 TRANSIENT_KINDS = {"TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
                    "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError",
-                   "browser_transport", "browser_mechanics", "browser_capture", "planner_transport", "job_description_transport", "document_generation"}
+                   "browser_transport", "browser_mechanics", "browser_capture", "planner_transport", "job_description_transport", "document_generation", "narrative_generation"}
 
 
 def _exception_recovery(exc):

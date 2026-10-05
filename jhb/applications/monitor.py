@@ -33,6 +33,7 @@ TECHNICAL_KINDS = {
     "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError", "ImportError",
     "ModuleNotFoundError", "SyntaxError", "IndentationError", "NameError",
     "TypeError", "AttributeError", "browser_transport", "browser_mechanics", "planner_transport",
+    "document_generation", "narrative_generation",
 }
 OPERATIONS = {"open", "observe", "fill", "describe", "upload", "screenshot", "planner", "classification", "runtime"}
 LOGS = ("data/applications.log", "data/poll.log", "data/launchd.log")

@@ -333,6 +333,17 @@ class DashboardStore:
             approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
         from .applications.question_routing import route, CANDIDATE
         agent_tasks = []
+        if row["state"] not in {"submitted", "skipped", "submission_uncertain"}:
+            packet_tasks = packet.get("agent_tasks", [])
+            native_fields = manifest.get("fields", []) if isinstance(manifest, dict) else []
+            for task in packet_tasks if isinstance(packet_tasks, list) else []:
+                if (not isinstance(task, dict) or task.get("task_kind") not in
+                        {"document_generation", "narrative_generation", "known_answer_fill"}
+                        or not any(field.get("ref") == task.get("ref") and field.get("question") == task.get("question")
+                                   for field in native_fields if isinstance(field, dict))):
+                    continue
+                agent_tasks.append({"question": _text(task.get("question")), "ref": _text(task.get("ref")),
+                                    "task_kind": task["task_kind"], "required": task.get("required") is True})
         try:
             current_book = self.book()
         except (ValueError, OSError):
@@ -343,7 +354,8 @@ class DashboardStore:
                 if record.get("status") == "answered" and context.get("routing") not in {"known_answer_fill", "document_generation"}:
                     continue
                 kind = route(current_book, record, context)
-                if kind != CANDIDATE:
+                if (kind != CANDIDATE and row["state"] not in {"submitted", "skipped", "submission_uncertain"}
+                        and not any(task["ref"] == context.get("ref") for task in agent_tasks)):
                     agent_tasks.append({"question": _text(record.get("question")), "ref": _text(context.get("ref")),
                                         "task_kind": kind, "required": context.get("required") is True})
         if agent_tasks:

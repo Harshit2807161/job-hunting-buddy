@@ -51,6 +51,23 @@ def pending_question(job, book, label="Will you relocate?", ref="relocate", requ
     return questions.collect(job, {"missing": [{"question": label, "ref": ref, "required": required, "type": kind}]}, book)[0]
 
 
+def test_worker_drafting_tasks_are_visible_without_fabricating_candidate_questions(portal):
+    root, conn, book, client, headers = portal
+    job, folder, packet = add_job(conn, root, state='failed')
+    packet['review_inventory'] = {'complete': False, 'fields': [
+        {'ref': 'why', 'question': 'Why this employer?', 'type': 'textarea', 'required': True, 'status': 'blank'}]}
+    packet['agent_tasks'] = [
+        {'ref': 'why', 'question': 'Why this employer?', 'task_kind': 'narrative_generation', 'required': True,
+         'private_path': '/private/never-expose.json'},
+        {'ref': 'unobserved', 'question': 'Not on this form', 'task_kind': 'narrative_generation'}]
+    booklet.write_private(folder / 'packet.json', packet)
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert detail['questions'] == [] and detail['approval']['can_approve'] is False
+    assert detail['agent_tasks'] == [{'ref': 'why', 'question': 'Why this employer?',
+                                      'task_kind': 'narrative_generation', 'required': True}]
+    assert 'never-expose' not in json.dumps(detail)
+
+
 def test_daily_counts_use_confirmed_receipts_and_pacific_calendar_boundaries(portal):
     root, conn, book, client, headers = portal
     job, folder, packet = add_job(conn, root, state="submitted", packet_state="waiting_review")
