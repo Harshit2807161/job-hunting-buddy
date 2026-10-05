@@ -105,7 +105,7 @@ def test_worker_retains_actual_catalog_and_user_override_without_terminal_action
     assert result['review_inventory']['complete'] is True
 
 
-@pytest.mark.parametrize('change',[None,'choices','description','country','missing_override'])
+@pytest.mark.parametrize('change',[None,'choices','description','country','missing_override','unrelated_question'])
 def test_real_closed_native_catalog_reopened_for_final_audit_with_no_selection_or_submit(change):
     from playwright.sync_api import sync_playwright
     html='''<form id=application><div class=field-wrapper><div class=select><div class=select__container>
@@ -114,8 +114,8 @@ def test_real_closed_native_catalog_reopened_for_final_audit_with_no_selection_o
     onfocus="openOptions()" onkeydown="if(event.key==='ArrowDown')openOptions()"></div><div id=options role=listbox></div>
     <div id=question_101-description class=question-description>DESCRIPTION</div></div></div></div>
     <button type=submit>Submit application</button></form><script>
-    window.selections=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
-    function openOptions(){document.querySelector('input').setAttribute('aria-controls','options');document.querySelector('input').setAttribute('aria-expanded','true');
+    window.catalogOpens=0;window.selections=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
+    function openOptions(){window.catalogOpens++;document.querySelector('input').setAttribute('aria-controls','options');document.querySelector('input').setAttribute('aria-expanded','true');
     document.querySelector('#options').innerHTML='<div role=option onclick="window.selections++">Yes</div><div role=option onclick="window.selections++">No</div>'}
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelector('#options').innerHTML='';document.querySelector('input').setAttribute('aria-expanded','false')}})
     </script>'''.replace('DESCRIPTION',DESCRIPTION)
@@ -127,13 +127,16 @@ def test_real_closed_native_catalog_reopened_for_final_audit_with_no_selection_o
             'current_tab':lambda:{'targetId':'fixture'},'switch_tab':lambda target:None}
         try:
             dispatch({'operation':'open','url':URL},helpers)
+            if change=='unrelated_question':page.evaluate("document.querySelector('form').insertAdjacentHTML('beforeend','<label for=other>Other optional question</label><input id=other>')")
             snapshot=dispatch({'operation':'observe'},helpers);answers={'custom.history':record()}
             native.enrich_sync(snapshot,{'url':URL},answers,lambda f:dispatch({'operation':'describe','field':f},helpers))
             control=snapshot['fields'][0];item=answers['custom.history']
             row={'ref':control['ref'],'question':control['label'],'key':'custom.history','value':'No','source':item['source'],'user_override':True}
-            inventory=review_inventory.build([control],[row],answers,key_for_field,complete=True)
+            inventory=review_inventory.build(snapshot['fields'],[row],answers,key_for_field,complete=True)
             packet={'job':{'url':URL},'filled':[row],**inventory}
-            if change=='choices':page.evaluate("window.openOptions=()=>{document.querySelector('input').setAttribute('aria-controls','options');document.querySelector('#options').innerHTML='<div role=option>Yes</div><div role=option>No</div><div role=option>Other</div>'}")
+            page.evaluate('window.catalogOpens=0')
+            if change=='unrelated_question':page.locator('label[for=other]').evaluate("e=>e.textContent='A newly changed optional question'")
+            elif change=='choices':page.evaluate("window.openOptions=()=>{document.querySelector('input').setAttribute('aria-controls','options');document.querySelector('#options').innerHTML='<div role=option>Yes</div><div role=option>No</div><div role=option>Other</div>'}")
             elif change=='description':page.locator('#question_101-description').evaluate("e=>e.textContent='Have you previously been employed by Synthetic Company?'")
             elif change=='country':row['source']['public_question_metadata_proofs'][0]['country_context']='canada'
             elif change=='missing_override':row.pop('user_override')
@@ -141,8 +144,9 @@ def test_real_closed_native_catalog_reopened_for_final_audit_with_no_selection_o
                 'authorization_scope':'one exact application explicitly approved in the local review portal'})
             if change is None:assert len(result['retained'])==1 and result.get('state') is None
             else:assert result['state']=='waiting_review'
+            if change=='unrelated_question':assert page.evaluate('window.catalogOpens')==0
             assert page.locator('.select__single-value').inner_text()=='No'
-            assert page.locator('input').input_value()=='' and page.locator('#options').inner_text()==''
+            assert page.locator('#question_101').input_value()=='' and page.locator('#options').inner_text()==''
             assert page.evaluate('window.submissions')==page.evaluate('window.selections')==0
             assert page.evaluate('window.__jhbGuard') is True
         finally:browser.close()

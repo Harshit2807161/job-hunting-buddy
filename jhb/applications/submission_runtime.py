@@ -179,11 +179,6 @@ def _checks(request, helpers, packet, attempt):
                 approved[r["key"]]["user_override"] = True
             if r.get("country_context"):
                 approved[r["key"]]["country_context"] = r["country_context"]
-    from .native_question_context import enrich_sync
-    enrich_sync(snapshot, packet.get("job", {}), approved,
-                lambda field: _board_dispatch({"operation": "describe", "field": field,
-                    "target_id": request["target_id"], "expected_url": attempt["application_url"]},
-                    helpers, attempt["application_url"]))
     if attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal":
         inventory = packet.get("review_inventory", {}).get("fields", [])
         for field in snapshot["fields"]:
@@ -197,6 +192,11 @@ def _checks(request, helpers, packet, attempt):
             if len(matches) != 1:
                 return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
                         "click_started": False}
+    from .native_question_context import enrich_sync
+    enrich_sync(snapshot, packet.get("job", {}), approved,
+                lambda field: _board_dispatch({"operation": "describe", "field": field,
+                    "target_id": request["target_id"], "expected_url": attempt["application_url"]},
+                    helpers, attempt["application_url"]))
     if helpers["js"]("[...document.querySelectorAll('input[type=password]')].some(e=>e.getClientRects().length)"):
         return {"state": "waiting_login", "reason": "Website authentication is required", "click_started": False}
     documents = request.get("documents", {})
