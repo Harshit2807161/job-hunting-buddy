@@ -134,7 +134,8 @@ def test_hold_reaches_source_preparation_and_read_only_direct_worker_guard(audit
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize('source', ['https://www.linkedin.com/jobs/view/123456/', 'https://careers.example.test/jobs/123'])
+@pytest.mark.parametrize('source', ['https://www.linkedin.com/jobs/view/123456/', 'https://careers.example.test/jobs/123',
+                                   'http://www.indeed.com/job/synthetic-engineer-1234567890abcdef'])
 def test_source_only_hold_is_exact_and_can_follow_its_resolved_job(audited, source):
     conn, job, _, entry = audited
     source_job = {**job, 'url': source}
@@ -155,3 +156,28 @@ def test_changed_source_hash_cannot_silently_release_its_original_hold(audited):
     evidence['source_job_hash'] = 'c' * 64
     conn.execute('UPDATE audited_history_holds SET evidence_json=?', (json.dumps(evidence),)); conn.commit()
     assert historical.match(conn, job)['state'] == 'history_integrity_handoff'
+
+
+def test_http_audit_key_preserves_scheme_without_enabling_browser_navigation(audited):
+    from jhb.applications import boards
+    conn, job, _, entry = audited
+    url = 'http://www.indeed.com/job/synthetic-engineer-1234567890abcdef'
+    job = {**job, 'url': url}
+    held = historical.record_hold(conn, job, entry_key=entry, reason='Audited original HTTP job source')
+    assert held['scope_key'] == 'source:' + url
+    assert historical.match(conn, job)['hold_id'] == held['hold_id']
+    assert historical.match(conn, {**job, 'url': url.replace('http:', 'https:')}) is None
+    assert historical._url_key(url) is None and boards._parts(url) is None
+
+
+@pytest.mark.parametrize('url', [
+    'http://user:password@example.test/job/123', 'http://example.test:443/job/123',
+    'http://example.test:8080/job/123', 'http://example.test:invalid/job/123',
+    'http://example.test/job/../123', 'http://example.test/job/%2e%2e/123',
+    'http://example.test/job/123#other', 'http://example.test/job/123\n',
+    'http://example.test/', 'file:///job/123',
+])
+def test_invalid_http_source_cannot_acquire_an_audited_hold(audited, url):
+    conn, job, _, entry = audited
+    with pytest.raises(ValueError, match='exact job URL'):
+        historical.record_hold(conn, {**job, 'url': url}, entry_key=entry, reason='Rejected source syntax')

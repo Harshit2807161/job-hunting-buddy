@@ -16,7 +16,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .. import config
 from . import boards, booklet, tracking
@@ -138,9 +138,23 @@ def _locations_conflict(saved, current):
         for old in left for new in right))
 
 
-def _url_key(value):
+def _url_key(value, *, allow_http=False):
     """Compare unresolved links cautiously, retaining all meaningful parameters."""
     parsed = boards._parts(value)
+    scheme = "https"
+    # Audited history keys never navigate. Validate HTTP source syntax through
+    # the existing HTTPS parser without broadening any live-browser URL policy.
+    if (parsed is None and allow_http and isinstance(value, str)
+            and not any(ord(char) <= 32 or ord(char) == 127 for char in value)):
+        try:
+            original = urlsplit(value)
+            if (original.scheme == "http" and not original.username and not original.password
+                    and original.port in {None, 80}):
+                parsed = boards._parts(urlunsplit(("https", original.netloc.removesuffix(":80"),
+                    original.path, original.query, original.fragment)))
+                scheme = "http"
+        except ValueError:
+            pass
     if not parsed or parsed.fragment or not re.search(r"/(?:jobs?|careers?)/[^/]+", parsed.path, re.I):
         return None
     if re.search(r"/(?:search|login|signin|sign-in|jobs|careers)/?$", parsed.path, re.I):
@@ -151,7 +165,7 @@ def _url_key(value):
         return None
     tracking_keys = {"gh_src"}
     pairs = [(k, v) for k, v in pairs if not k.casefold().startswith("utm_") and k.casefold() not in tracking_keys]
-    return urlunsplit(("https", parsed.hostname, parsed.path.rstrip("/"), urlencode(sorted(pairs)), ""))
+    return urlunsplit((scheme, parsed.hostname, parsed.path.rstrip("/"), urlencode(sorted(pairs)), ""))
 
 
 def import_sheet(conn, *, config_path=None, executor=None, now=None, refresh_seconds=900):
@@ -253,7 +267,7 @@ def _hold_scope(url):
     identity = boards.job_identity(url)
     if identity:
         return "identity:"+_json(identity)
-    key = _url_key(url)
+    key = _url_key(url, allow_http=True)
     return "source:"+key if key else None
 
 
