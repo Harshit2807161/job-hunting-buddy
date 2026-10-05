@@ -17,6 +17,17 @@ def candidate(job):
     return {**job, "dedupe_hash": "synthetic-source", "source": "synthetic", "role_classes": "swe"}
 
 
+def synthetic_history(monkeypatch, executor):
+    # CI intentionally refuses implicit authenticated executors. Inject the
+    # fixture through the explicit seam instead of replacing its live factory.
+    original = historical.import_sheet
+    monkeypatch.setattr(historical, "import_sheet",
+        lambda conn, **kwargs: original(conn, **{**kwargs, "executor": executor}))
+    # The same cycle reconciles its tracker after history import; keep that
+    # separate synthetic executor too, so neither path can reach live tools.
+    monkeypatch.setattr(tracking, "ComposioSheets", lambda *a, **kw: executor)
+
+
 @pytest.mark.parametrize("exact", [True, False])
 def test_discovery_and_preparation_enqueue_persist_history_before_claim(setup, exact):
     conn, job, _, sheets, _ = setup
@@ -75,7 +86,7 @@ def test_imported_history_blocks_source_browser_and_runner_in_one_pipeline_cycle
     source_queue.enqueue(conn, [candidate(job)])
     queue.enqueue(conn, [candidate(job)])
     sheets.rows[2] = row(job)
-    monkeypatch.setattr(tracking, "ComposioSheets", lambda *a: sheets)
+    synthetic_history(monkeypatch, sheets)
     book = config.ROOT / "private" / "book.json"
     booklet.write_private(book, {"schema_version": 1, "answers": {}, "roles": {"sde": {}, "ml": {}}, "custom_answers": {}})
     async def forbidden(*a, **kw):
@@ -92,7 +103,7 @@ def test_missing_first_history_read_blocks_browser_but_preserves_discovered_jobs
     source_queue.enqueue(conn, [candidate(job)])
     def fail(*a):
         raise RuntimeError("Synthetic connector unavailable")
-    monkeypatch.setattr(tracking, "ComposioSheets", lambda *a: fail)
+    synthetic_history(monkeypatch, fail)
     async def forbidden(*a, **kw):
         pytest.fail("History unavailable; browser must not open")
     result = pipeline.run_cycle(conn, config.ROOT / "private" / "absent-book.json", resolver=forbidden, runner=forbidden)
@@ -108,7 +119,7 @@ def test_redirect_to_existing_ats_history_is_stopped_before_filler(setup, monkey
     # Different legacy labels mean only the exact redirect establishes identity.
     source_queue.enqueue(conn, [{**candidate(job), "company": "Unresolved", "title": "Unknown role", "url": "https://example.test/jobs/wrapper"}])
     sheets.rows[2] = row(job)
-    monkeypatch.setattr(tracking, "ComposioSheets", lambda *a: sheets)
+    synthetic_history(monkeypatch, sheets)
     book = config.ROOT / "private" / "book.json"
     booklet.write_private(book, {"schema_version": 1, "answers": {}, "roles": {"sde": {}, "ml": {}}, "custom_answers": {}})
     async def resolve(*a, **kw):
