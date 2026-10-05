@@ -39,7 +39,8 @@ def intent(field, company=None):
     label = booklet.normalize(field.get("label", ""))
     if (field.get("type") not in {"text", "textarea"} or not field.get("ref")
             or len(label) > 1500 or _FACTUAL.search(label) or _UNTRUSTED.search(label)
-            or candidate_wording_requested(label)
+            or field.get("description_truncated") is True
+            or candidate_wording_requested(label+"\n"+str(field.get("description", "")))
             or re.search(r"own (?:words|wording)|without (?:using )?ai|chatgpt|llm|ai[- ]generated|"
                          r"(?:do not|don't) use (?:ai|artificial intelligence)|human[- ]written|"
                          r"why.{0,60}(?:leave|left)|reason for leaving|tell.{0,30}(?:a |the )?time|"

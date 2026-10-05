@@ -117,3 +117,28 @@ def test_review_packet_preserves_both_education_rows():
                                   deterministic_plan, None, cli_actions=EducationForm()))
     assert result["state"] == "waiting_review"
     assert {r["value"] for r in result["filled"]} == {"Example Graduate School", "Example College"}
+
+
+
+def test_owned_no_ai_help_prevents_drafting_and_legacy_generated_fill(monkeypatch):
+    from jhb.applications import narratives
+    class Form:
+        blocked_requests = 0
+        calls = []
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {"fields": [{"ref": "why", "label": "Why this employer?", "type": "textarea", "required": False,
+                                "description": "Please do not use generative AI to write this response.",
+                                "description_truncated": False}], "buttons": [{"ref": "submit", "label": "Submit application"}]}
+        async def fill(self, field, value): self.calls.append(value)
+    def forbidden_draft(*args): raise AssertionError("Employer forbids generated wording")
+    monkeypatch.setattr(narratives, "proposal", forbidden_draft)
+    form = Form()
+    approved = {**booklet.answer("Legacy generated wording", "Synthetic template"),
+                "question": "Why this employer?", "field_ref": "why"}
+    result, _ = asyncio.run(prepare(None, {"url": "synthetic"}, {"custom.why": approved},
+                                   deterministic_plan, None, cli_actions=form))
+    assert form.calls == []
+    assert result["optional_questions"][0]["description"].startswith("Please do not use")
+    assert result["review_inventory"]["fields"][0]["candidate_wording_required"] is True

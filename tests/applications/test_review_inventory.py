@@ -114,3 +114,32 @@ def test_required_unknown_and_old_packets_cannot_claim_complete_inventory(tmp_pa
     legacy={'state':'waiting_review','reason':'Legacy packet','filled':[],'events':[]}
     asyncio.run(write_packet(None,tmp_path,{'company':'Example','title':'Engineer','url':'synthetic'},legacy))
     assert json.loads((tmp_path/'packet.json').read_text())['review_inventory']['complete'] is False
+
+
+
+def test_owned_help_no_ai_instruction_is_preserved_and_cannot_verify_model_wording():
+    from jhb.applications import booklet
+    from jhb.applications.planner import key_for_field
+    from jhb.applications.review_inventory import build
+    field = {"ref": "why", "label": "Why this employer?", "type": "textarea", "required": False,
+             "description": "Please do not use generative AI to write this response.", "description_truncated": False}
+    approved = {**booklet.answer("Synthetic generated company-focused wording", "Synthetic proposed template"),
+                "question": field["label"], "field_ref": "why"}
+    answers = {"custom.why": approved}
+    inventory = build([field], [{"ref": "why", "question": field["label"], "key": "custom.why",
+                               "value": approved["value"], "source": approved["source"]}], answers, key_for_field)
+    item = inventory["review_inventory"]["fields"][0]
+    assert item["question"] == field["label"] and item["description"] == field["description"]
+    assert item["candidate_wording_required"] is True and item["status"] == "blank"
+
+
+
+def test_standalone_narrative_entrypoints_respect_owned_no_ai_help():
+    from jhb.applications import grounded_narratives, narratives
+    field = {"ref": "why", "label": "Why this company?", "type": "textarea", "required": False,
+             "description": "Please do not use generative AI to write this response."}
+    assert grounded_narratives.intent(field, "Example") is None
+    assert narratives.proposal(field, {"company": "Example"}, {}) is None
+    clipped = {**field, "description": "Incomplete employer guidance", "description_truncated": True}
+    assert grounded_narratives.intent(clipped, "Example") is None
+    assert narratives.proposal(clipped, {"company": "Example"}, {}) is None

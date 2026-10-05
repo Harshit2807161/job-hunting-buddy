@@ -50,7 +50,11 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
         matches=[row for row in filled if row['ref']==field['ref'] and row.get('key')==key]
         retained=next((row for row in matches if approved.get('status')=='verified'
                        and row.get('value')==approved.get('value') and row.get('source')==approved.get('source')),None)
-        wording=candidate_wording_requested(field['label'])
+        description=field.get('description','')
+        description=description if isinstance(description,str) else ''
+        description_truncated=field.get('description_truncated') is True or len(description)>4096
+        description=description[:4096]
+        wording=candidate_wording_requested(field['label']+'\n'+description)
         if retained and wording and not candidate_authored(approved):
             retained=None
         status='answered' if retained else 'declined' if approved.get('status')=='declined' else 'blank'
@@ -60,7 +64,8 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
                         'proposed':bool(retained and (retained.get('proposed') or approved.get('proposed') or
                             isinstance(retained.get('source'),dict) and retained['source'].get('kind')=='grounded_narrative')),
                         'step':field.get('observed_step',0),'choices':[o['label'] for o in field.get('options',[])],
-                        'candidate_wording_required':wording})
+                        'candidate_wording_required':wording,'description':description,
+                        'description_truncated':description_truncated})
         if field.get('calendar_format'):
             records[-1]['calendar_format'] = field['calendar_format']
     # Workable's saved rows are independently reopened/read by its preparer.

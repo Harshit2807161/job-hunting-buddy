@@ -238,3 +238,23 @@ def test_open_review_fetches_updated_capture_by_digest_and_uses_detail_timestamp
         assert any(url.endswith("revision="+"a"*64) for url in state["screenshot_requests"])
         assert any(url.endswith("revision="+"b"*64) for url in state["screenshot_requests"])
         assert actions == [] and errors == []
+
+
+
+def test_owned_help_text_is_plain_and_changed_note_invalidates_unsaved_answer():
+    state = {}
+    def initial_help(question, detail):
+        question["contexts"][0]["description"] = "California applicants must select N/A."
+        detail["fields"][1]["description"] = "<script>window.__helpExecuted = true</script> Please use your own words."
+    with workspace(state=state, configure=initial_help) as (page, actions, errors):
+        page.get_by_text("California applicants must select N/A.", exact=True).wait_for()
+        page.get_by_label("Answer: May we contact your current employer?").select_option("false")
+        state["question"]["contexts"][0]["description"] = "Only current California residents should select N/A."
+        state["question"]["updated_at"] = "changed-help-text-revision"
+        page.get_by_text("Only current California residents should select N/A.", exact=True).wait_for(timeout=10000)
+        assert page.get_by_role("button", name="Save answer", exact=True).is_disabled()
+        assert page.get_by_label("Answer: May we contact your current employer?").input_value() == "false"
+        page.get_by_role("button", name="Review Synthetic Employer application").click()
+        page.get_by_text("<script>window.__helpExecuted = true</script> Please use your own words.", exact=True).wait_for()
+        assert page.evaluate("window.__helpExecuted === undefined") is True
+        assert actions == [] and errors == []

@@ -156,7 +156,10 @@ def _question(field, key, reason=""):
     return {"question": field["label"], "answer_key": key, "ref": field["ref"],
             "required": field["required"], "type": field["type"],
             "country_context": field.get("country_context"),
-            "choices": [o["label"] for o in field.get("options", [])], "reason": reason}
+            "choices": [o["label"] for o in field.get("options", [])], "reason": reason,
+            "description": field.get("description", "")[:4096] if isinstance(field.get("description", ""), str) else "",
+            "description_truncated": field.get("description_truncated") is True or
+                                     isinstance(field.get("description"), str) and len(field["description"]) > 4096}
 
 
 def role_for_job(job):
@@ -281,7 +284,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         from .review_inventory import candidate_wording_requested
         narrative_job = {**job, "observed_application_questions": [f["label"] for f in snapshot["fields"]]}
         for field in snapshot["fields"]:
-            if candidate_wording_requested(field["label"]):
+            if candidate_wording_requested(field["label"]+"\n"+str(field.get("description", ""))):
                 # Preserve exact text and surface the candidate-only prompt,
                 # including optional prompts, in the ledger and portal.
                 continue
@@ -313,6 +316,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             # Exact deterministic bindings remain usable if the planner omits one.
             key = bindings.get(field["ref"]) or key_for_field(field, answers)
             record = answers.get(key, {})
+            from .review_inventory import candidate_authored
+            if (record.get("status") == "verified" and
+                    candidate_wording_requested(field["label"]+"\n"+str(field.get("description", ""))) and not candidate_authored(record)):
+                record = {}  # Employer guidance may live below a short label.
             if record.get("status") != "verified":
                 if field["required"]:
                     missing.append(_question(field, key))

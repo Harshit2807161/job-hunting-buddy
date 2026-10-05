@@ -152,6 +152,9 @@ class DashboardStore:
                     "title": _text(context.get("title")), "url": boards.canonical_url(context.get("url")),
                     "required": context.get("required") is True, "type": _text(context.get("type"), 50),
                     "reason": _text(context.get("reason"), 500),
+                    "description": _text(context.get("description"), 4096),
+                    "description_truncated": context.get("description_truncated") is True or
+                        isinstance(context.get("description"), str) and len(context["description"]) > 4096,
                     "choices": [_text(option) for option in context.get("choices", []) if isinstance(option, str)][:100]})
             if not contexts:
                 continue
@@ -204,6 +207,9 @@ class DashboardStore:
                 value = None
             output.append({"ref": _text(field.get("ref")), "question": _text(field.get("question"), 3000),
                 "type": _text(field.get("type"), 50), "required": field.get("required"),
+                "description": _text(field.get("description"), 4096),
+                "description_truncated": field.get("description_truncated") is True or
+                    isinstance(field.get("description"), str) and len(field["description"]) > 4096,
                 "category": _text(field.get("category"), 100), "status": _text(field.get("status"), 100),
                 "candidate_wording_required": field.get("candidate_wording_required") is True,
                 "step": field.get("step") if isinstance(field.get("step"), (str, int)) else None,
@@ -645,12 +651,15 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                 if record.get("status") != "pending" or record.get("updated_at") != payload.revision:
                     raise HTTPException(409, "Question changed; refresh before answering")
                 with store.connection(write=True) as conn:
+                    queue_states = dict(conn.execute("SELECT job_hash,state FROM applications"))
+                    visible = next((q for q in store.pending(queue_states=queue_states) if q["id"] == question_id), {})
+                    context_job_hashes = [c["job_hash"] for c in visible.get("contexts", [])]
                     review_edits = []
                     affected = questions.answer(question_id, payload.value, store.book_path,
                                                 conn, decline=payload.decline, expected_revision=payload.revision,
                                                 before_save=lambda current, stamp: review_edits.extend(
                                                     _prepare_review_edit_intents(conn, current, store.book_path, stamp)),
-                                                after_save=saved_jobs.extend)
+                                                after_save=saved_jobs.extend, context_job_hashes=context_job_hashes)
                     # This transition is an explicit candidate edit, not a
                     # generic resume. Paused workers leave queued edits alone
                     # until the user resumes automation; the edit is durable.

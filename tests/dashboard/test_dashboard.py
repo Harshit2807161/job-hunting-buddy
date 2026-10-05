@@ -562,3 +562,52 @@ def test_unavailable_booklet_keeps_saved_review_readable_but_never_ready(portal)
     response = client.get(f"/api/v1/applications/{job['dedupe_hash']}")
     assert response.status_code == 200
     assert response.json()["fields"] and response.json()["approval"]["can_approve"] is False
+
+
+
+def test_help_text_change_keeps_question_identity_but_rejects_old_answer_version(portal):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    item = {"ref": "restriction", "question": "Any employment restrictions?", "type": "radio", "required": True,
+            "description": "California applicants must choose N/A.", "description_truncated": False}
+    before = questions.collect(job, {"missing": [item]}, book)[0]
+    updated = questions.collect(job, {"missing": [{**item, "description": "Only California residents should choose N/A."}]}, book)[0]
+    assert before["id"] == updated["id"] and before["updated_at"] != updated["updated_at"]
+    response = client.post(f"/api/v1/questions/{before['id']}/answer", headers=headers,
+        json={"value": "No", "revision": before["updated_at"]})
+    assert response.status_code == 409
+    pending = client.get("/api/v1/overview").json()["questions"][0]
+    assert pending["question"] == item["question"]
+    assert pending["contexts"][0]["description"] == "Only California residents should choose N/A."
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "waiting_input"
+
+
+def test_answer_description_proof_includes_only_displayed_active_contexts(portal):
+    root, conn, book, client, headers = portal
+    live, _, _ = add_job(conn, root, state="waiting_input")
+    closed, _, _ = add_job(conn, root, n=2, state="submitted")
+    label = "Any employment restrictions?"
+    questions.collect(closed, {"missing": [{"ref": "restriction", "question": label, "required": True,
+        "description": "Historical closed-job guidance."}]}, book)
+    q = questions.collect(live, {"missing": [{"ref": "restriction", "question": label, "required": True,
+        "description": "Current visible guidance."}]}, book)[0]
+    response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
+        json={"value": "N/A", "revision": q["updated_at"]})
+    assert response.status_code == 200
+    source = booklet.load(book)["custom_answers"]["custom."+q["id"][2:]]["source"]
+    proof = {"owned_description_sha256": hashlib.sha256(b"Current visible guidance.").hexdigest(),
+             "owned_description_truncated": False, "field_ref": "restriction", "country_context": ""}
+    assert source["owned_description_proofs"] == [proof]
+    assert source["owned_description_sha256"] == proof["owned_description_sha256"]
+
+
+def test_review_help_text_is_bounded_and_keeps_original_question_label(portal):
+    root, conn, _, client, _ = portal
+    job, folder, packet = add_job(conn, root, complete=True)
+    field = packet["review_inventory"]["fields"][1]
+    field["description"] = "<script>should remain literal text</script>"+"x"*5000
+    booklet.write_private(folder / "packet.json", packet)
+    view = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()["fields"][1]
+    assert view["question"] == field["question"]
+    assert view["description"].startswith("<script>") and len(view["description"]) == 4096
+    assert view["description_truncated"] is True

@@ -6,7 +6,7 @@ type Application = { id: string; company: string; title: string; location: strin
   state: string; pending_required_questions?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
   has_screenshot: boolean; has_incident: boolean; inventory_ready: boolean; screenshot_at: number | null; confirmed_at: string | null; confirmed_date: string | null; sheet_synced: boolean };
 type Question = { id: string; question: string; kind: string; updated_at: string; required: boolean; country_context: string | null;
-  contexts: { job_hash: string; company: string; title: string; url: string | null; required: boolean; type: string; choices: string[]; reason: string }[] };
+  contexts: { job_hash: string; company: string; title: string; url: string | null; required: boolean; type: string; choices: string[]; reason: string; description?: string; description_truncated?: boolean }[] };
 type Overview = { generated_at: string; selected_date: string; timezone: string; storage_available: boolean; booklet_available: boolean;
   automation_paused: boolean; summary: { confirmed_today: number; confirmed_total: number; prepared_today: number; ready: number; legacy_review: number; running: number; queued: number; questions: number; uncertain: number; sheet_synced: number };
   daily: { date: string; confirmed: number; prepared: number }[]; states: Record<string, number>; source_states: Record<string, number>;
@@ -63,6 +63,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
   const stale = revision !== question.updated_at;
   const context = question.contexts[0];
   const choices = question.kind === "role" ? ["sde", "ml"] : [...new Set(question.contexts.flatMap(c => c.choices))];
+  const descriptions = [...new Map(question.contexts.filter(c => c.description).map(c => [c.description, c])).values()];
   const multi = ["multiselect", "checkboxes"].includes(context.type);
   const checkbox = context.type === "checkbox";
   const validAnswer = multi ? selected.length > 0 && selected.every(choice => choices.includes(choice))
@@ -84,6 +85,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
   return <article className="question-card">
     <div className="question-top"><span className="eyebrow">{context.company || "Application"}{question.contexts.length > 1 ? ` · ${question.contexts.length} applications` : ""}</span><span className={question.required ? "required-label" : "optional-label"}>{question.required ? "Required" : "Optional"}</span></div>
     <h3>{question.question}</h3><p className="question-role">{context.title}{question.country_context ? ` · ${question.country_context}` : ""}</p>
+    {descriptions.map(c => <div className="question-description" key={c.description}><p>{descriptions.length > 1 && <b>{c.title}: </b>}{c.description}</p>{c.description_truncated && <p>Help text is clipped. Check the full instruction in the existing draft before answering.</p>}</div>)}
     {context.reason && <p className="question-reason">Why your input is needed: {context.reason}</p>}
     {multi ? <div className="choice-grid">{choices.map(choice => <label key={choice}><input type="checkbox" checked={selected.includes(choice)} onChange={e => setSelected(e.target.checked ? [...selected, choice] : selected.filter(v => v !== choice))}/>{choice}</label>)}</div> :
       choices.length || checkbox ? <select aria-label={`Answer: ${question.question}`} value={value} onChange={e => setValue(e.target.value)}><option value="">Choose your answer</option>{(checkbox ? ["true", "false"] : choices).map(choice => <option key={choice} value={choice}>{checkbox ? choice === "true" ? "Yes — select checkbox" : "No — leave unchecked" : question.kind === "role" ? choice === "sde" ? "SDE resume" : "AI / ML resume" : choice}</option>)}</select> :
@@ -103,7 +105,7 @@ type ReviewDetail = { job_hash: string; state: string; inventory_complete: boole
   role_fit_notes?: string[]; questions?: Question[];
   screenshot?: { available: boolean; revision: string | null; captured_at: string | number | null };
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
-    answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean }[];
+    answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean; description?: string; description_truncated?: boolean }[];
   incident: { state: string; summary: string; blank_questions: { ref: string; question: string }[] } | null;
   approval: { can_approve: boolean; revision?: string; reason?: string; blank_questions: { ref: string; question: string; required: boolean; type: string }[];
     approval?: { state: string } } };
@@ -172,7 +174,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
       <h3 className="review-section-title">Every application question <span>{detail?.fields.length ?? "—"}</span></h3>
       {!detail && !error && <div className="table-empty">Loading the saved field inventory…</div>}
-      <div className="review-field-list">{detail?.fields.map((field, i) => <div key={`${field.ref}-${i}`} className={field.answer === null ? "review-field blank" : "review-field"}><div className="review-field-title"><b>{field.question}</b><span>{field.required === null ? "Requirement unknown" : field.required ? "Required" : "Optional"}</span></div>{field.proposed && <div className="candidate-wording">Proposed wording · Check this grounded draft before approving.</div>}<p>{displayAnswer(field.answer)}</p>{field.candidate_wording_required && <div className="candidate-wording">The employer requests your own wording. The agent must not write this answer.</div>}</div>)}</div>
+      <div className="review-field-list">{detail?.fields.map((field, i) => <div key={`${field.ref}-${i}`} className={field.answer === null ? "review-field blank" : "review-field"}><div className="review-field-title"><b>{field.question}</b><span>{field.required === null ? "Requirement unknown" : field.required ? "Required" : "Optional"}</span></div>{field.description && <div className="question-description"><p>{field.description}</p>{field.description_truncated && <p>Help text is clipped. Check the full instruction in the existing draft.</p>}</div>}{field.proposed && <div className="candidate-wording">Proposed wording · Check this grounded draft before approving.</div>}<p>{displayAnswer(field.answer)}</p>{field.candidate_wording_required && <div className="candidate-wording">The employer requests your own wording. The agent must not write this answer.</div>}</div>)}</div>
       {detail?.role_fit_notes?.length ? <div className="notice warning"><b>Role-fit considerations</b><ul>{detail.role_fit_notes.map((note, i) => <li key={i}>{note}</li>)}</ul><p>Review these potential gaps before approving. Factual application answers must remain accurate.</p></div> : null}
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
       {detail?.approval.approval && <div className="notice success">Your approval status: {detail.approval.approval.state.replaceAll("_", " ")}. A pending approval is specific to this saved draft.</div>}

@@ -113,6 +113,10 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
             text = item.get("question", "")
             if not isinstance(text, str) or not text.strip():
                 continue
+            description = item.get("description", "")
+            description = description if isinstance(description, str) else ""
+            truncated = item.get("description_truncated") is True or len(description) > 4096
+            description = description[:4096]
             key, ref = item.get("answer_key"), item.get("ref")
             if _SECRET.search(" ".join(str(part or "") for part in (text, key, ref))):
                 continue
@@ -141,9 +145,12 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
                     earlier.get("status") != "answered" or _answer_revision(earlier) != _answer_revision(record))
                 incompatible = bool(item.get("reason")) and key is not None and (
                     key == record.get("custom_answer_key") or key == record.get("answer_key"))
-                reopen = not newer_answer and (record["status"] == "resolved" or incompatible or (
+                old_context = record.get("contexts", {}).get(job_hash, {})
+                changed_description = (old_context.get("description", "") != description or
+                                       (old_context.get("description_truncated") is True) != truncated)
+                reopen = not newer_answer and (changed_description or record["status"] == "resolved" or incompatible or (
                     stored and stored.get("status") == "declined" and required))
-                if reopen and (not stored or stored["status"] != "declined" or required):
+                if reopen and (changed_description or not stored or stored["status"] != "declined" or required):
                     record["history"].append({"event": "reopened", "at": stamp,
                                               "reason": item.get("reason", "Approved answer did not fill this form")})
                     record["status"] = "pending"
@@ -157,7 +164,8 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
                        "company": job.get("company", ""), "title": job.get("title", ""),
                        "required": required or record["contexts"].get(job_hash, {}).get("required", False),
                        "ref": ref, "answer_key": key, "reason": item.get("reason", ""),
-                       "type": item.get("type", "text"), "choices": item.get("choices", [])}
+                       "type": item.get("type", "text"), "choices": item.get("choices", []),
+                       "description": description, "description_truncated": truncated}
             if record["contexts"].get(job_hash) != context:
                 record["contexts"][job_hash] = context
                 record["updated_at"] = stamp
@@ -285,7 +293,7 @@ def _validate_value(value):
 
 
 def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=None,
-           *, promote=False, decline=False, expected_revision=None, before_save=None, after_save=None) -> list[str]:
+           *, promote=False, decline=False, expected_revision=None, before_save=None, after_save=None, context_job_hashes=None) -> list[str]:
     """Persist a user's answer and optionally resume unblocked waiting_input jobs.
 
     ``promote=True`` requires deliberate user choice and an ordinary known
@@ -327,6 +335,22 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
         source = {"provider": "explicit user question response", "question_id": question_id,
                   "scope": record["scope"], "answered_at": stamp,
                   "contexts": list(record["contexts"])}
+        proofs = []
+        for job_hash, context in record["contexts"].items():
+            if context.get("resolved") or (context_job_hashes is not None and job_hash not in context_job_hashes):
+                continue
+            description = context.get("description", "")
+            if isinstance(description, str) and description:
+                proof = {"owned_description_sha256": hashlib.sha256(description.encode()).hexdigest(),
+                         "owned_description_truncated": context.get("description_truncated") is True,
+                         "field_ref": context.get("ref") if isinstance(context.get("ref"), str) else "",
+                         "country_context": record.get("country_context") or ""}
+                if proof not in proofs:
+                    proofs.append(proof)
+        if proofs:
+            source["owned_description_proofs"] = proofs
+            if len(proofs) == 1:
+                source.update(proofs[0])
         item = {**booklet.answer(None if decline else value, source,
                                 "declined" if decline else "verified"), "user_override": True}
         if record["kind"] == "role":

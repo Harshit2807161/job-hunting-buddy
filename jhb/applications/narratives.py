@@ -129,7 +129,7 @@ def proposal(field, job, answers):
     if field.get("type") not in {"text", "textarea"} or not isinstance(field.get("label"), str):
         return None
     from .review_inventory import candidate_wording_requested
-    if candidate_wording_requested(field["label"]):
+    if field.get("description_truncated") is True or candidate_wording_requested(field["label"]+"\n"+str(field.get("description", ""))):
         return None
     return (_accomplishment(field, job, answers) or _company_interest(field, job)
             or _proud_work(field, job, answers)
