@@ -191,10 +191,20 @@ def _scoped_custom_answers(book, job, scope):
 
 
 def role_for_job(job):
+    """Choose a resume variant; the independent fit check still decides suitability."""
     value = job.get("role_classes", "")
-    classes = set(value if isinstance(value, list) else str(value).split(","))
+    classes = {str(item).strip() for item in (value if isinstance(value, list) else str(value).split(","))}
     if classes == {"swe"}: return "sde"
     if classes == {"ml"}: return "ml"
+    # Discovery can tag ML platform engineers as both software and ML. An
+    # explicit specialization in the job title resolves the document choice
+    # without asking the candidate a question about information already known.
+    # Generic AI-company names and description keywords do not establish it.
+    if classes == {"swe", "ml"} and re.search(
+        r"\b(?:machine[\s-]+learning|AI\s*/\s*ML|ML\s+(?:platform|engineer|scientist)|data\s+scientist|applied\s+scientist)\b",
+        str(job.get("title", "")), re.I,
+    ):
+        return "ml"
     return None
 
 

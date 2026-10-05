@@ -11,6 +11,28 @@ def test_role_routing_requires_explicit_choice_for_mixed_roles():
     assert role_for_job({"role_classes": "swe,ml"}) is None
 
 
+@pytest.mark.parametrize("title", [
+    "Software Engineer New Grad, Machine Learning Platform (Remote)",
+    "Machine-Learning Engineer", "AI/ML Engineer", "ML Platform Engineer",
+    "Data Scientist I", "Applied Scientist, New Grad",
+])
+@pytest.mark.parametrize("classes", ["swe,ml", ["swe", "ml"]])
+def test_explicit_ml_specialization_resolves_mixed_resume_routing(title, classes):
+    assert role_for_job({"role_classes": classes, "title": title}) == "ml"
+
+
+@pytest.mark.parametrize("title", ["Software Engineer", "AI Product Engineer", "HTML Engineer", "Software Engineer, AIML Labs"])
+def test_company_and_description_keywords_do_not_resolve_ambiguous_resume(title):
+    assert role_for_job({"role_classes": "swe,ml", "title": title,
+                         "company": "Machine Learning Company",
+                         "description": "We build machine learning products."}) is None
+
+
+def test_title_choice_does_not_override_unambiguous_class_or_accept_unknown_classes():
+    assert role_for_job({"role_classes": "swe", "title": "Machine Learning Platform Engineer"}) == "sde"
+    assert role_for_job({"role_classes": "swe,ml,other", "title": "Machine Learning Engineer"}) is None
+
+
 def test_application_city_and_mailing_city_use_separate_answers():
     snapshot = {"fields": [
         {"ref": "candidate-location", "label": "Location (City)*", "type": "combobox"},
