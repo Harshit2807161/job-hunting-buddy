@@ -1,6 +1,7 @@
 import asyncio
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +23,7 @@ def test_worker_wires_os_store_only_for_explicit_verified_broadridge_exception(t
     monkeypatch.setattr(role_fit, "assess", lambda *args: {"state": "eligible", "reason": "Isolated wiring fixture"})
     monkeypatch.setitem(boards.ADAPTERS["workday"], "prep_enabled", True)
     url = URL.replace(workday.BROADDRIDGE_ORIGIN, origin)
-    monkeypatch.setattr(workday, "WorkdayCLI", lambda *args, **kwargs: object())
+    monkeypatch.setattr(workday, "WorkdayCLI", lambda *args, **kwargs: SimpleNamespace())
     stores = []
     class Vault:
         def __init__(self, demo_path=None):
@@ -32,6 +33,7 @@ def test_worker_wires_os_store_only_for_explicit_verified_broadridge_exception(t
             pytest.fail("Wiring must not read a password outside observed login")
     monkeypatch.setattr(credentials, "CredentialStore", Vault)
     async def prepare(page, job, answers, planner, vault, **kwargs):
+        assert kwargs["cli_actions"].job_hash == job["dedupe_hash"]
         assert (vault is not None) is expected
         return {"state": "waiting_login", "reason": "Synthetic guarded login handoff", "filled": [], "events": []}, None
     monkeypatch.setattr(worker, "prepare", prepare)

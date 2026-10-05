@@ -1,5 +1,6 @@
 """Approved reusable preferences must stay factual and bounded by context."""
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,7 +177,7 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
     monkeypatch.setattr(worker, "prepare", fake_prepare)
     monkeypatch.setattr(worker, "write_packet", fake_packet)
     from jhb.applications import cli_browser
-    monkeypatch.setattr(cli_browser, "BrowserUseCLI", lambda: object())
+    monkeypatch.setattr(cli_browser, "BrowserUseCLI", SimpleNamespace)
     asyncio.run(worker.run_job(job, book, planner_name="deterministic", artifacts=tmp_path))
     assert not any(key.startswith("standing.") for key in captured)
 
@@ -221,7 +222,7 @@ def test_school_attendance_uses_original_verified_catalog_not_dropdown_other_map
     monkeypatch.setattr(worker, "prepare", fake_prepare)
     monkeypatch.setattr(worker, "write_packet", fake_packet)
     from jhb.applications import cli_browser
-    monkeypatch.setattr(cli_browser, "BrowserUseCLI", lambda: object())
+    monkeypatch.setattr(cli_browser, "BrowserUseCLI", SimpleNamespace)
     result, _ = asyncio.run(worker.run_job(job, book, planner_name="deterministic", artifacts=tmp_path))
     assert result["state"] == "waiting_review"
     assert captured["education.0.school"]["value"] == "Other"
