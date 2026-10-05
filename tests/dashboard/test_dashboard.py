@@ -701,3 +701,39 @@ def test_public_question_descriptor_is_visible_and_changes_answer_revision_witho
     assert detail['inventory_complete'] is False and detail['approval']['can_approve'] is False
     response=client.post(f"/api/v1/questions/{q['id']}/answer",json={'value':'Option A','revision':q['updated_at']},headers=headers)
     assert response.status_code==409 and booklet.load(book)['question_handoffs'][q['id']]['status']=='pending'
+
+
+def test_known_booklet_fields_and_document_work_never_ask_candidate_again(portal):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    data = booklet.load(book)
+    data["answers"]["disclosure.gender"] = booklet.answer("Female", "synthetic user answer")
+    booklet.write_private(book, data)
+    known = questions.collect(job, {"missing": [{"question": "Gender", "ref": "gender", "type": "combobox",
+        "answer_key": "disclosure.gender", "reason": "Stored answer unavailable or incompatible with field", "choices": ["Female", "Male"]},
+        {"question": "Cover Letter", "ref": "cover_letter", "type": "file", "answer_key": "documents.cover_letter"}]}, book)
+    assert client.get("/api/v1/overview").json()["questions"] == []
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert detail["questions"] == [] and not detail["approval"]["can_approve"]
+    assert {task["task_kind"] for task in detail["agent_tasks"]} == {"known_answer_fill", "document_generation"}
+    before = book.read_bytes()
+    for q in known:
+        response = client.post(f"/api/v1/questions/{q['id']}/answer", json={"value": "Wrong replacement", "revision": q["updated_at"]}, headers=headers)
+        assert response.status_code == 409
+    assert book.read_bytes() == before
+    assert conn.execute("SELECT state FROM applications WHERE job_hash=?", (job["dedupe_hash"],)).fetchone()[0] == "waiting_input"
+
+
+def test_answer_to_genuine_unknown_queues_despite_other_known_agent_work(portal):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    data = booklet.load(book); data["answers"]["disclosure.gender"] = booklet.answer("Female", "synthetic user answer")
+    booklet.write_private(book, data)
+    questions.collect(job, {"missing": [{"question": "Gender", "ref": "gender", "type": "combobox", "choices": []}]}, book)
+    q = pending_question(job, book, "Can you start in January?", "start")
+    response = client.post(f"/api/v1/questions/{q['id']}/answer", json={"value": False, "revision": q["updated_at"]}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["resumed_jobs"] == [job["dedupe_hash"]]
+    assert response.json()["applications"][0]["remaining_required_questions"] == 0
+    assert response.json()["automation_paused"] is False
+    assert conn.execute("SELECT state FROM applications WHERE job_hash=?", (job["dedupe_hash"],)).fetchone()[0] == "queued"

@@ -103,7 +103,7 @@ function QuestionForm({ question, onSaved }: { question: Question; onSaved: (res
 type ReviewDetail = { job_hash: string; state: string; inventory_complete: boolean; resume_role: string | null;
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
-  role_fit_notes?: string[]; questions?: Question[];
+  role_fit_notes?: string[]; questions?: Question[]; agent_tasks?: {question: string; ref: string; task_kind: string; required: boolean}[];
   packet_revision?: string; draft_focus_available?: boolean;
   screenshot?: { available: boolean; revision: string | null; captured_at: string | number | null };
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
@@ -187,6 +187,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {detail?.automation_paused && <div className="notice warning">Automation is paused. Saving an answer or approval does not restart the agent.</div>}
       <div className="document-strip"><Icon name="briefcase" size={17}/><div><b>{detail?.resume_role ? `${detail.resume_role.toUpperCase()} document variant` : "Document variant not recorded"}</b><p>{detail?.documents.map(d => `${d.kind.replaceAll("_", " ")}: ${d.filename}`).join(" · ") || "No document manifest available"}</p></div></div>
       {answerFeedback && <AnswerFeedback result={answerFeedback} paused={detail?.automation_paused}/>}
+      {!!detail?.agent_tasks?.length && <div className="notice"><b>Agent work remaining</b><p>You do not need to re-enter these answers. The draft needs verified filling or document preparation before approval.</p><ul>{detail.agent_tasks.map(task => <li key={task.ref}>{task.question}: {task.task_kind === "document_generation" ? "prepare the application document" : "fill the saved booklet answer"}</li>)}</ul></div>}
       {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
       <h3 className="review-section-title">Every application question <span>{detail?.fields.length ?? "—"}</span></h3>
       {!detail && !error && <div className="table-empty">Loading the saved field inventory…</div>}

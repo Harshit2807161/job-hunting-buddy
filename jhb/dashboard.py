@@ -144,8 +144,10 @@ class DashboardStore:
             if record.get("status") != "pending" or questions._SECRET.search(record.get("question", "")):
                 continue
             contexts = []
+            from .applications.question_routing import candidate_contexts
+            routed_contexts = candidate_contexts(book, record)
             for key, context in record.get("contexts", {}).items():
-                if context.get("resolved") or (queue_states is not None and queue_states.get(key) in
+                if key not in routed_contexts or context.get("resolved") or (queue_states is not None and queue_states.get(key) in
                                                {"submitted", "submission_uncertain", "skipped"}) or manual_states.get(key) in {
                                                    "submitted", "submission_uncertain", "skipped", "declined"} or booklet.job_excluded(book, {"dedupe_hash": key}):
                     continue
@@ -293,6 +295,23 @@ class DashboardStore:
             approval = {**approval, "can_approve": False, "reason": "Answer booklet unavailable; refresh before approval"}
         if any(any(c["job_hash"] == job_hash and c["required"] for c in q["contexts"]) for q in pending_questions):
             approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
+        from .applications.question_routing import route, CANDIDATE
+        agent_tasks = []
+        try:
+            current_book = self.book()
+        except (ValueError, OSError):
+            current_book = {}
+        for record in current_book.get("question_handoffs", {}).values():
+            context = record.get("contexts", {}).get(job_hash)
+            if record.get("status") in {"pending", "answered"} and context and not context.get("resolved"):
+                if record.get("status") == "answered" and context.get("routing") not in {"known_answer_fill", "document_generation"}:
+                    continue
+                kind = route(current_book, record, context)
+                if kind != CANDIDATE:
+                    agent_tasks.append({"question": _text(record.get("question")), "ref": _text(context.get("ref")),
+                                        "task_kind": kind, "required": context.get("required") is True})
+        if agent_tasks:
+            approval = {**approval, "can_approve": False, "reason": "Agent work must be verified before approval"}
         fit = packet.get("role_fit", {})
         fit_notes = [_text(note if isinstance(note, str) else note.get("reason") or note.get("message"), 1500)
                      for note in fit.get("review_notes", []) if isinstance(note, (dict, str))] if isinstance(fit, dict) else []
@@ -309,7 +328,7 @@ class DashboardStore:
         return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
             "screenshot": screenshot, "packet_revision": displayed_packet_sha,
             "draft_focus_available": screenshot["available"] and self._focusable(row, packet),
-            "questions": pending_questions,
+            "questions": pending_questions, "agent_tasks": agent_tasks,
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
@@ -467,15 +486,22 @@ class DashboardStore:
         except (sqlite3.Error, FileNotFoundError):
             storage_available = False
         try:
-            pending = self.pending(queue_states=queue_states)
+            current_book = self.book()
+            pending = self.pending(book=current_book, queue_states=queue_states)
+            from .applications.question_routing import agent_contexts
+            agent_blockers = Counter(key for record in current_book.get("question_handoffs", {}).values()
+                                    if record.get("status") in {"pending", "answered"}
+                                    for key in agent_contexts(current_book, record)
+                                    if queue_states.get(key) not in {"submitted", "submission_uncertain", "skipped"})
             booklet_available = True
         except (ValueError, OSError, KeyError, TypeError):
-            pending, booklet_available = [], False
+            pending, booklet_available, agent_blockers = [], False, Counter()
         blockers = Counter(context["job_hash"] for q in pending for context in q["contexts"] if context["required"])
         for application in applications:
             application["inventory_verified"] = application["inventory_ready"]
             application["pending_required_questions"] = blockers[application["id"]]
-            if application["pending_required_questions"] or not booklet_available:
+            application["pending_agent_tasks"] = agent_blockers[application["id"]]
+            if application["pending_required_questions"] or application["pending_agent_tasks"] or not booklet_available:
                 application["inventory_ready"] = False
         return {"generated_at": now.isoformat(), "timezone": str(ZONE), "selected_date": selected.isoformat(),
             "storage_available": storage_available, "booklet_available": booklet_available, "automation_paused": self.paused(),
@@ -727,8 +753,10 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     states = []
                     for key in affected:
                         row = conn.execute("SELECT state FROM applications WHERE job_hash=?", (key,)).fetchone()
+                        from .applications.question_routing import candidate_contexts
+                        current_book = store.book()
                         remaining = sum(1 for q in pending if q.get("status") == "pending"
-                            and (context := q.get("contexts", {}).get(key))
+                            and (context := candidate_contexts(current_book, q).get(key))
                             and context.get("required") and not context.get("resolved"))
                         states.append({"job_hash": key, "state": row[0] if row else "untracked",
                                        "remaining_required_questions": remaining})

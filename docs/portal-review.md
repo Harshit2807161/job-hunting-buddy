@@ -108,3 +108,22 @@ invalidates a previous fresh submission audit and requires renewed review.
 Synthetic tests cover owned versus nested/hidden notes, conditional choice
 retention, context-bound candidate answers and zero-click stale-context handoffs.
 These tests do not claim live application or submission validation.
+
+Known booklet facts and document work are separate from candidate questions.
+The portal routes a failed control with an exactly bound verified answer to
+agent filling work. A missing cover-letter upload routes to document preparation;
+an existing verified document needs upload verification. These tasks remain
+visible in the application review and block approval until verified. A nonempty
+catalog that cannot uniquely represent the saved fact remains a candidate question.
+For example, a current disability answer does not establish lifetime medical
+history. Published employer metadata can identify an already-known exact US
+work-authorization question for routing, but the worker must still inspect its
+owned native help and choices before using the answer.
+
+Legacy pending cards can be reconciled explicitly with
+`jhb.applications.question_routing.reconcile(bookpath)`. This bounded operation
+updates per-context routing and history under the private booklet lock, preserves
+candidate answers, and returns `agent_tasks`. It does not modify application
+states, receipts, approvals or browser fields. Preparation scheduling remains a
+separate guarded step. Candidate lists and emails also route contexts dynamically,
+so stale cards cannot overwrite known facts while reconciliation is pending.

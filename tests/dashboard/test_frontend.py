@@ -303,3 +303,20 @@ def test_public_descriptor_refresh_shows_context_and_requires_answer_version_ref
         assert page.get_by_text('Published by the employer. The agent will verify these details in your application before using your answer.').is_visible()
         assert page.get_by_role('button',name='Save answer',exact=True).is_disabled()
         assert not actions and not errors
+
+
+def test_review_agent_work_is_separate_from_candidate_questions_and_blocks_approval():
+    def known_tasks(question, detail):
+        detail['questions'] = []
+        detail['agent_tasks'] = [
+            {'question': 'Gender', 'ref': 'gender', 'task_kind': 'known_answer_fill', 'required': False},
+            {'question': 'Cover Letter', 'ref': 'cover_letter', 'task_kind': 'document_generation', 'required': False}]
+        detail['approval']['can_approve'] = False
+        detail['approval']['reason'] = 'Agent work must be verified before approval'
+    with workspace(f'#review/{KEY}', configure=known_tasks) as (page, actions, errors):
+        page.get_by_text('Agent work remaining', exact=True).wait_for()
+        assert page.get_by_text('Gender: fill the saved booklet answer', exact=True).is_visible()
+        assert page.get_by_text('Cover Letter: prepare the application document', exact=True).is_visible()
+        assert page.get_by_role('button', name='Approve and submit this application').is_disabled()
+        assert page.get_by_label('Answer: Gender').count() == 0
+        assert not actions and not errors

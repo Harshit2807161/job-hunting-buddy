@@ -179,6 +179,10 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
                        "ref": ref, "answer_key": key, "reason": item.get("reason", ""),
                        "type": item.get("type", "text"), "choices": item.get("choices", []),
                        "description": description, "description_truncated": truncated}
+            if result.get("selected_role") in {"sde", "ml"}:
+                context["selected_role"] = result["selected_role"]
+            from .question_routing import route
+            context["routing"] = route(book, record, context)
             if record["contexts"].get(job_hash) != context:
                 record["contexts"][job_hash] = context
                 record["updated_at"] = stamp
@@ -200,7 +204,8 @@ def reconcile(job, result, bookpath=booklet.DEFAULT_PATH):
         book = booklet.load(bookpath)
         for record in book.get("question_handoffs", {}).values():
             context = record["contexts"].get(job_hash)
-            if record["status"] != "pending" or not context or not context.get("ref"):
+            if not context or not context.get("ref") or (record["status"] != "pending" and
+                    not (record["status"] == "answered" and context.get("routing") in {"known_answer_fill", "document_generation"})):
                 continue
             ref = context["ref"]
             corrected_label = ref in current and current[ref] != record["normalized_question"]
@@ -210,15 +215,18 @@ def reconcile(job, result, bookpath=booklet.DEFAULT_PATH):
                 context["resolution"] = ("Verified field filled" if ref in filled_refs else
                                          "Optional field explicitly declined or inapplicable" if ref in declined_refs else
                                          "Corrected field label has its own question")
-                if all(item.get("resolved") for item in record["contexts"].values()):
+                if record["status"] == "pending" and all(item.get("resolved") for item in record["contexts"].values()):
                     record["status"] = "resolved"
                     record["history"].append({"event": "resolved", "at": _now(), "reason": context["resolution"]})
         booklet.write_private(Path(bookpath), book)
 
 
 def pending(bookpath=booklet.DEFAULT_PATH, *, unnotified=False) -> list[dict]:
-    return sorted((q for q in booklet.load(bookpath).get("question_handoffs", {}).values()
-                   if q["status"] == "pending" and (not unnotified or not q.get("notified_at"))),
+    from .question_routing import candidate_contexts
+    book = booklet.load(bookpath)
+    return sorted(({**q, "contexts": contexts} for q in book.get("question_handoffs", {}).values()
+                   if q["status"] == "pending" and (not unnotified or not q.get("notified_at"))
+                   and (contexts := candidate_contexts(book, q))),
                   key=lambda q: (q["created_at"], q["id"]))
 
 
@@ -334,6 +342,11 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
             raise ValueError("Only optional field questions can be declined")
         if record["kind"] == "role" and (not isinstance(value, str) or value not in {"sde", "ml"}):
             raise ValueError("Choose sde or ml")
+        if context_job_hashes is not None:
+            from .question_routing import candidate_contexts
+            allowed = candidate_contexts(book, record)
+            if not allowed or any(key not in allowed for key in context_job_hashes):
+                raise QuestionChanged("This field is agent work; refresh before answering")
         key = record.get("answer_key")
         if promote and (record["kind"] != "field" or key not in book["answers"]
                         or not any(key.startswith(prefix) for prefix in _SAFE_SHARED)
@@ -347,7 +360,7 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
             before_save(record, stamp)
         source = {"provider": "explicit user question response", "question_id": question_id,
                   "scope": record["scope"], "answered_at": stamp,
-                  "contexts": list(record["contexts"])}
+                  "contexts": list(record["contexts"]) if context_job_hashes is None else list(context_job_hashes)}
         proofs = []
         for job_hash, context in record["contexts"].items():
             if context.get("resolved") or (context_job_hashes is not None and job_hash not in context_job_hashes):
@@ -404,6 +417,8 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
                 book.setdefault("answer_history", {}).setdefault(custom_key, []).append(old)
             book["custom_answers"][custom_key] = {**item, "question": record["question"],
                                                   "scope": record["scope"]}
+            if context_job_hashes:
+                book["custom_answers"][custom_key]["job_hashes"] = sorted(context_job_hashes)
             if record.get("field_ref"):
                 book["custom_answers"][custom_key]["field_ref"] = record["field_ref"]
             if record.get("country_context"):
@@ -412,9 +427,10 @@ def answer(question_id: str, value, bookpath=booklet.DEFAULT_PATH, connection=No
         record["status"], record["updated_at"] = "answered", stamp
         record["answer_revision"] = stamp
         record["history"].append({"event": "answered", "at": stamp, "promoted": promote})
-        affected = sorted(record["contexts"])
+        affected = sorted(record["contexts"] if context_job_hashes is None or not context_job_hashes else context_job_hashes)
+        from .question_routing import candidate_contexts
         blocked = {job_hash for q in book["question_handoffs"].values() if q["status"] == "pending"
-                   for job_hash, context in q["contexts"].items() if context["required"] and not context.get("resolved")}
+                   for job_hash, context in candidate_contexts(book, q).items() if context["required"]}
         booklet.write_private(Path(bookpath), book)
     if after_save is not None:
         after_save(affected)
