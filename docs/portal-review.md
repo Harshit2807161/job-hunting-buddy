@@ -43,6 +43,11 @@ durable approval queues behind the current submission. Ready, queued, submitting
 needs-review and confirmed-submitted states remain distinct in the dashboard.
 Old consumed approvals are never silently replayed after this feature is enabled.
 
+Failed requests show their recorded outcome and expiry in the portal. An explicit
+no-click result is distinguished from an unknown terminal outcome. Pipeline pause
+and repair holds disable approval before current-form capture and before creating
+an authorization, so maintenance cannot consume a candidate's approval click.
+
 `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects legacy broad overnight authority even if
 its old environment flag is accidentally enabled. The separate
 `JHB_PORTAL_SUBMISSIONS_ENABLED=1` enables draining candidate-approved records;

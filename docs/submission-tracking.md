@@ -106,6 +106,22 @@ exclusion or submission confirmation is inferred. An unresolved matching company
 job URL also produces a hold rather than an invented ATS identity. Damaged
 matching evidence blocks reapplication until reconciled.
 
+Location comparison distinguishes country, region and city scope. Country aliases
+such as US/United States and NYC/New York do not create different applications;
+remote or unspecified geography cannot prove a mismatch. A multi-location job
+conflicts only when every pair has an explicit incompatible component. Role
+word order and Roman level I–V formatting are normalized while preserving every
+level, cohort and specialty token. These rules create cautious holds, never
+confirmed submissions.
+
+An independent audit can retain a specific near-match with
+`historical.record_hold(conn, job, entry_key=..., reason=...)`. It binds an exact
+source/job identity to a verified imported row and preserves its evidence.
+Employer aliases require a separate explicit reason for that one pairing.
+Rediscovery, sheet refreshes and renamed titles cannot clear the hold. Only
+`historical.release_hold(..., reason=...)` resolves it; other independent history
+checks still apply. Different explicit ATS identities cannot be joined this way.
+
 The existing ordinal-day/month application date is retained verbatim; the importer
 does not infer a year, timezone, confirmation timestamp, browser receipt or new
 submission count. Undated/planned/formula rows are not imported. Previously seen
