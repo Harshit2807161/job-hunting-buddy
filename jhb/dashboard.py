@@ -171,6 +171,34 @@ class DashboardStore:
                 continue
         return (None, {}, None) if with_digest else (None, {})
 
+    def tab_ledger(self):
+        """Read existing reconciliation evidence; GET never probes Chrome."""
+        try:
+            value = _json(self.private_bytes(self.root / "private" / "browser-tab-ledger.json"))
+            return value.get("tabs", {}) if value.get("schema_version") == 1 and isinstance(value.get("tabs"), dict) else {}
+        except (ValueError, OSError, TypeError):
+            return {}
+
+    @staticmethod
+    def draft_target_state(packet, tabs):
+        capture = packet.get("capture", {})
+        job = packet.get("job", {})
+        if not isinstance(capture, dict) or capture.get("verified") is not True or capture.get("method") != "browser_use_cli":
+            return "unknown"
+        target = capture.get("target_id")
+        row = tabs.get(target, {}) if isinstance(target, str) else {}
+        identity = boards.job_identity(job.get("url"))
+        if (not isinstance(row, dict) or not identity or row.get("job_identity") != list(identity)
+                or boards.job_identity(row.get("requested_url")) != identity
+                or row.get("creation_proof") not in {"official_new_tab_returned_new_target", "native_linkedin_apply_opener"}):
+            return "unknown"
+        state = row.get("state")
+        if state in {"closed", "departed"}:
+            observed, captured = _stamp(row.get(state+"_at")), _stamp(capture.get("captured_at"))
+            if observed and captured and observed >= captured:
+                return "unavailable"
+        return "retained" if state == "active" else "unknown"
+
     def screenshot(self, job_hash):
         if not HASH.fullmatch(job_hash):
             raise ValueError("Invalid job identity")
@@ -241,6 +269,7 @@ class DashboardStore:
             related = _related_submissions(conn, job)
             presentation = _application_presentation(conn, job_hash, row["state"])
         path, packet, displayed_packet_sha = self.packet(row, job, with_digest=True)
+        draft_target = self.draft_target_state(packet, self.tab_ledger())
         manifest = packet.get("review_inventory", {})
         inventory = manifest.get("fields", packet.get("review_questions", [])) if isinstance(manifest, dict) else []
         complete_inventory = isinstance(inventory, list) and bool(inventory) and manifest.get("complete") is True
@@ -401,11 +430,17 @@ class DashboardStore:
             except (ValueError, OSError, TypeError, AttributeError):
                 pass
         from .applications.application_discard import status as discard_status
+        if row["state"] == "waiting_review" and draft_target == "unavailable":
+            if presentation["display_state"] in {"waiting_review", "needs_review"}:
+                presentation["display_state"] = "needs_review"
+            approval = {**approval, "can_approve": False,
+                        "reason": "The saved browser tab is closed. The retained review is available, but the draft needs recovery before submission."}
         return {"job_hash": job_hash, "state": row["state"], **presentation, "location": _location(job),
             "discard": discard_status(self.root, job_hash),
             "related_submissions": related, "fields": output, "role_fit_notes": fit_notes[:20],
             "screenshot": screenshot, "packet_revision": displayed_packet_sha,
-            "draft_focus_available": screenshot["available"] and self._focusable(row, packet),
+            "draft_target_state": draft_target,
+            "draft_focus_available": draft_target != "unavailable" and screenshot["available"] and self._focusable(row, packet),
             "questions": pending_questions, "agent_tasks": agent_tasks,
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
@@ -434,6 +469,8 @@ class DashboardStore:
         path, packet, current_revision = self.packet(row, job, with_digest=True)
         if current_revision != revision or path is None or not self._focusable(row, packet):
             raise ValueError("Saved draft changed or is no longer available for review")
+        if self.draft_target_state(packet, self.tab_ledger()) == "unavailable":
+            raise ValueError("Saved draft tab is closed; the retained review needs draft recovery")
         from .applications.capture import valid
         if not valid(packet, self.private_bytes(path.with_name("browser.png"), limit=15*1024*1024)):
             raise ValueError("Saved draft capture is unavailable; no new form was opened")
@@ -493,6 +530,7 @@ class DashboardStore:
                 where + " ORDER BY first_seen DESC,dedupe_hash LIMIT ?", [*params, limit+1]).fetchall()
             total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
             items = []
+            tabs = self.tab_ledger()
             for row in rows[:limit]:
                 source = conn.execute("SELECT state,board,application_url,updated_at,job_json FROM application_sources WHERE source_job_hash=?",
                     (row["dedupe_hash"],)).fetchone() if "application_sources" in tables else None
@@ -501,6 +539,11 @@ class DashboardStore:
                 # identity can be joined to a real Phase 2 application.
                 app_hash = boards.application_hash(destination or row["url"])
                 application = conn.execute("SELECT * FROM applications WHERE job_hash=?", (app_hash,)).fetchone() if app_hash and "applications" in tables else None
+                application_stage = _application_presentation(conn, app_hash, application["state"])["display_state"] if application else None
+                if application and application["state"] == "waiting_review" and application_stage in {"waiting_review", "needs_review"}:
+                    _, draft = self.packet(application, _json(application["job_json"]))
+                    if self.draft_target_state(draft, tabs) == "unavailable":
+                        application_stage = "needs_review"
                 try:
                     locations = json.loads(row["locations"] or "[]")
                 except (ValueError, TypeError):
@@ -524,7 +567,7 @@ class DashboardStore:
                     "application_url": boards.canonical_url(destination) if destination else None,
                     "application_id": app_hash if application else None,
                     "application_state": application["state"] if application else None,
-                    "application_display_state": _application_presentation(conn, app_hash, application["state"])["display_state"] if application else None})
+                    "application_display_state": application_stage})
             last = rows[limit-1] if len(rows) > limit else None
             return {"items": items, "total": total, "next_cursor":
                     {"before_time": last["first_seen"], "before_id": last["dedupe_hash"]} if last else None}
@@ -538,6 +581,7 @@ class DashboardStore:
                  "confirmed": 0, "prepared": 0} for i in range(14)}
         state_counts, source_counts, queue_states = Counter(), Counter(), {}
         confirmed, applications, events = {}, [], []
+        tabs = self.tab_ledger()
         synced = set()
         storage_available = True
         try:
@@ -566,8 +610,6 @@ class DashboardStore:
                             continue
                         packet_path, packet = self.packet(row, job)
                         prepared_day = _day(packet.get("created_at"))
-                        if packet.get("state") == "waiting_review" and prepared_day in daily:
-                            daily[prepared_day]["prepared"] += 1
                         proof = confirmed.get(row["job_hash"])
                         incident = False
                         try:
@@ -588,23 +630,34 @@ class DashboardStore:
                         inventory = inventory if isinstance(inventory, dict) else {}
                         fields = inventory.get("fields", [])
                         filled_refs = {record.get("ref") for record in packet.get("filled", [])}
-                        inventory_ready = bool(row["state"] == "waiting_review" and inventory.get("complete") is True and fields
+                        inventory_verified = bool(inventory.get("complete") is True and fields
                             and not packet.get("missing") and not packet.get("verification") and shot
                             and all(isinstance(field, dict) and field.get("ref") and field.get("question")
                                 and field.get("status") in {"answered", "blank", "declined"}
                                 and (not field.get("required") or field.get("status") == "answered")
                                 and (field.get("status") != "answered" or field.get("ref") in filled_refs) for field in fields)
                             and len({field.get("ref") for field in fields}) == len(fields))
+                        capture = packet.get("capture", {})
+                        if (packet.get("state") == "waiting_review" and inventory_verified
+                                and isinstance(capture, dict) and capture.get("verified") is True and prepared_day in daily):
+                            daily[prepared_day]["prepared"] += 1
+                        draft_target = self.draft_target_state(packet, tabs)
+                        inventory_ready = row["state"] == "waiting_review" and inventory_verified
+                        presentation = _application_presentation(conn, row["job_hash"], row["state"])
+                        if (row["state"] == "waiting_review" and draft_target == "unavailable"
+                                and presentation["display_state"] in {"waiting_review", "needs_review"}):
+                            presentation["display_state"] = "needs_review"
                         location = job.get("location") or (", ".join(v for v in job.get("locations", []) if isinstance(v, str))
                                     if isinstance(job.get("locations"), list) else "")
                         application = {"id": row["job_hash"], "company": _text(job.get("company")),
                             "title": _text(job.get("title")), "location": _text(location),
                             "url": boards.canonical_url(job.get("url")), "board": boards.board_type(job.get("url")),
-                            "state": row["state"], **_application_presentation(conn, row["job_hash"], row["state"]),
+                            "state": row["state"], **presentation,
                             "updated_at": row["updated_at"], "date": _day(row["updated_at"]),
                             "attempts": row["attempts"], "filled_count": len(packet.get("filled", [])),
                             "missing_count": len(packet.get("missing", [])), "has_screenshot": shot,
                             "inventory_ready": inventory_ready,
+                            "draft_target_state": draft_target,
                             "has_incident": incident,
                             "screenshot_at": packet.get("created_at") if shot else None,
                             "confirmed_at": proof["confirmed_at"] if proof else None,
@@ -637,7 +690,8 @@ class DashboardStore:
             application["inventory_verified"] = application["inventory_ready"]
             application["pending_required_questions"] = blockers[application["id"]]
             application["pending_agent_tasks"] = agent_blockers[application["id"]]
-            if application["pending_required_questions"] or application["pending_agent_tasks"] or not booklet_available:
+            if (application["pending_required_questions"] or application["pending_agent_tasks"] or not booklet_available
+                    or application["draft_target_state"] == "unavailable"):
                 application["inventory_ready"] = False
         return {"generated_at": now.isoformat(), "timezone": str(ZONE), "selected_date": selected.isoformat(),
             "storage_available": storage_available, "booklet_available": booklet_available, "automation_paused": self.paused(),
