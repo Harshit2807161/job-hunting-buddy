@@ -15,6 +15,7 @@ class ManualATSCLI(BrowserUseCLI):
         self.foreground = foreground
         self._residence_query = None
         self._location_query = None
+        self._school_query = None
         from .boards import board_type, job_identity
         if board_type(approved_url) != board or job_identity(approved_url) is None:
             raise ValueError(f"Manual scope requires an exact {board.title()} application URL")
@@ -85,6 +86,15 @@ class ManualATSCLI(BrowserUseCLI):
                         from .cli_browser import BrowserOperationError
                         raise BrowserOperationError("Autocomplete location catalog is unavailable", retryable=True)
                     field["options"] = [{"label": v, "value": v} for v in catalog["choices"]]
+        if self._scope["board"] == "ashby" and self._school_query and not snapshot.get("handoff"):
+            from .ashby_education import school_control
+            for field in snapshot.get("fields", []):
+                if school_control(field):
+                    catalog = await self.invoke("describe", field=field, query=self._school_query)
+                    if not catalog.get("choices") or catalog.get("truncated"):
+                        from .cli_browser import BrowserOperationError
+                        raise BrowserOperationError("Autocomplete school catalog is unavailable", retryable=True)
+                    field["options"] = [{"label": v, "value": v} for v in catalog["choices"]]
         return snapshot
 
     async def ensure_profile(self, answers):
@@ -93,6 +103,9 @@ class ManualATSCLI(BrowserUseCLI):
         from .known_answers import contact_location_basis
         basis = contact_location_basis(answers)
         self._location_query = basis[0] if self._scope["board"] == "ashby" and basis else None
+        from .ashby_education import school_basis
+        current = school_basis(answers)
+        self._school_query = current["value"] if self._scope["board"] == "ashby" and current else None
         state = answers.get("identity.state", {})
         if (self._scope["board"] == "ashby" and state.get("status") == "verified" and state.get("source")
                 and isinstance(state.get("value"), str) and state["value"].strip()):

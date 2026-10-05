@@ -65,6 +65,8 @@ function choose(){window.commits++;document.querySelector('input[role=combobox]'
                 assert key_for_field(changed, answers) is None
                 with pytest.raises(ValueError, match='outside its approved scope'):
                     call('describe', field=field, query='San Diego')
+                with pytest.raises(ValueError, match='Observed manual field has changed'):
+                    call('fill', field=field, value=answers[key]['value'])
                 assert page.evaluate('window.commits') == 1
             else:
                 assert key is None

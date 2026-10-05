@@ -180,6 +180,14 @@ commit, final retained-answer audit, and changed-context rejection. Live validat
 of this contact-field extension remains pending; the residence retry above does
 not establish it.
 
+The observed current-or-in-progress education group has its own native school
+catalog. A scoped projection uses one verified current record for institution,
+degree and major, and the candidate's explicitly sourced exact expected graduation
+day. It requires the observed instruction accepting study in progress and does
+not infer a completed qualification. Synthetic fixtures cover owned catalog
+commit, absent/ambiguous schools, changed instructions, original record validation
+and date consistency. Its live validation also remains pending.
+
 The Browser Use transport currently counts waiting for the shared browser lane
 inside its operation timeout. An explicit interactive batch can allow more
 bounded queue time while retaining the same lock, exact-tab scope and process

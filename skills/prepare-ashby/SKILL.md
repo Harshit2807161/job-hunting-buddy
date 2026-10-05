@@ -48,6 +48,15 @@ to the standard system field with no help or the observed “City, State, and Co
 hint. Custom office questions
 or changed help text need their own answer binding.
 
+For School Name, Degree, Discipline/Field of Study and Graduation Date or
+Anticipated Graduation Date with the exact “For most recent or in progress
+degree.” note, use one verified current education record. Native school search
+must commit the unique original institution from its owned catalog; a scalar
+school name is insufficient. The exact expected graduation day must be explicitly
+sourced and fall within that same record's end month. This does not represent
+the current degree as already completed. Changed or clipped instructions require
+a new binding.
+
 For a blank residence autocomplete, the adapter can temporarily search using
 the verified state, inspect only its owned result list, and restore the blank
 before planning. Match both state and country to distinguish similarly named

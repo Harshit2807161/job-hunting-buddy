@@ -253,7 +253,13 @@ def dispatch(request, helpers):
         field = current[0]
         residence = scope["board"] == "ashby" and normalize(field["label"]) == "state/country of residence" and field["type"] == "combobox"
         from .known_answers import plain_contact_location
-        catalog_control = residence or (scope["board"] == "ashby" and plain_contact_location(field))
+        from .ashby_education import school_control
+        catalog_control = residence or (scope["board"] == "ashby" and (plain_contact_location(field) or school_control(field)))
+        if (operation == "fill" and scope["board"] == "ashby"
+                and (plain_contact_location(requested) or school_control(requested))
+                and ((field.get("description") or "") != (requested.get("description") or "")
+                     or bool(field.get("description_truncated")) != bool(requested.get("description_truncated")))):
+            raise ValueError("Observed manual field has changed")
         def residence_catalog(expr):
             proof = js("(()=>{const e="+expr+";return e?.__jhbResidenceCatalog||null})()")
             retained = state(expr)
