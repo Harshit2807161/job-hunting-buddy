@@ -68,11 +68,16 @@ Repeated education records retain their original institutions, dates and
 expected/completed status. A past-tense completed-graduation trio must use one
 consistent completed record; explain a current higher degree in review notes.
 
-For subjective prompts, follow the approved style preferences: brief first-
-person prose grounded mainly in the company's concrete product or work. Add an
-experience connection when useful or requested, using verified relevant facts;
-when both fit, discuss AWS before AnyFeast. Research company claims in official
-sources. Do not turn assistant suggestions into profile facts. Cover letters
+Match subjective prose to the question. For why-company prompts, focus on the
+company's concrete product or work using official sources. For proud-work or
+experience prompts, write a short natural first-person paragraph around one
+relevant verified achievement, preserving technical tools and metric qualifiers;
+do not paste a resume bullet list or invent motivations, failures, or feelings.
+When both experiences fit equally, discuss AWS before AnyFeast. Exact numbered
+accomplishment prompts may retain the approved source bullets and their format.
+Generated prose remains a proposed answer visible in the portal; candidate-only
+or no-AI wording needs the candidate's own response. Do not turn assistant
+suggestions into profile facts. Cover letters
 follow [the cover-letter skill](../tailor-cover-letter/SKILL.md) and the
 candidate's local source skill; retain reference files and deliver the validated
 PDF beside the selected role resume when requested.

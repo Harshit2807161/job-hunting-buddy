@@ -136,6 +136,49 @@ def proposal(field, job, answers):
             or _motivation(field, job, answers))
 
 
+
+# These verbs allow a mechanical subject change without guessing what a
+# fragment means. Unsupported fragments need a grounded drafting review.
+_PAST_ACTION = re.compile(
+    r"^(?:Built|Developed|Engineered|Deployed|Designed|Implemented|Automated|"
+    r"Improved|Optimized|Created|Integrated|Evaluated|Reduced|Migrated|Presented|"
+    r"Delivered|Shipped|Added|Led|Worked|Collaborated|Contributed|Trained|"
+    r"Analyzed|Tested|Launched|Co-developed|Co-authored)\b")
+
+
+def _achievement_paragraph(section, key, relevance):
+    """Render at most two complete source claims, without new causal context."""
+    candidates = []
+    for index, bullet in enumerate(section['bullets']):
+        text = bullet.lstrip('• ').strip()
+        if not text or len(text.split()) > 80:
+            continue
+        if text.startswith('I '):
+            predicate = text[2:]
+        elif _PAST_ACTION.match(text):
+            predicate = text[0].lower() + text[1:]
+        else:
+            continue
+        candidates.append((index, predicate, bullet))
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda item: (relevance(item[2]), bool(_METRIC.search(item[2]))), reverse=True)
+    selected = sorted(ranked[:2], key=lambda item: item[0])
+    lead = f"At {section['section']}, I " if key == 'role.experience' else f"For {section['section']}, I "
+    sentences, evidence = [], []
+    for _, predicate, bullet in selected:
+        sentence = (lead if not sentences else 'I also ') + predicate
+        if sentence[-1] not in '.!?':
+            sentence += '.'
+        if len((' '.join(sentences + [sentence])).split()) > 120:
+            continue  # Keep complete facts and metric qualifiers; never clip a claim.
+        sentences.append(sentence)
+        evidence.append(bullet)
+    if not sentences:
+        return None
+    return ' '.join(sentences), evidence
+
+
 def _proud_work(field, job, answers):
     if normalize(field['label']) not in {"what's something you worked on that you were proud of?",
                                          "what is something you worked on that you were proud of?",
@@ -163,8 +206,12 @@ def _proud_work(field, job, answers):
     if not candidates:
         return None
     _,_,section,key,record = max(candidates,key=lambda item:(item[0],item[1]))
-    value = f"At {section['section']}, I worked on:\n" + '\n'.join(section['bullets'])
+    rendered = _achievement_paragraph(section, key, lambda bullet: len(tokens(bullet) & desired))
+    if not rendered:
+        return None
+    value, evidence = rendered
     return {**answer(value,{'kind':'grounded_narrative','method':'verified_resume_achievement',
+                          'rendering':'brief_first_person_paragraph','evidence_bullets':evidence,
                           'review_status':'proposed','section':section['section'],
                           'description_sha256':description['sha256'],
                           'selected_role_facts':{'key':key,'source':record['source'],
