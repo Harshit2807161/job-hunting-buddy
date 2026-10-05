@@ -36,6 +36,11 @@ explicit acknowledgment. Changed fields or answers invalidate that approval.
 If a prompt prohibits AI-written responses, use only the candidate's explicitly
 provided, scoped wording. Do not draft or adapt prose for that question.
 
+For owned question legends, year-only education dates, hierarchical sources,
+selected skill chips, asynchronous steps, and safe draft preservation, read
+[the observed wizard mechanics](../../docs/workday-observed-mechanics.md) when
+those widgets appear. These live observations do not enable registry capabilities.
+
 Observed mechanics retained in `workday_runtime.py`:
 
 - Bind repeated education and employment controls by their observed record
@@ -47,7 +52,8 @@ Observed mechanics retained in `workday_runtime.py`:
   query is not a committed selection. Choose one exact approved visible option
   and verify the retained chip/selection within the owned popup.
 - Dates can be separate month/year/day inputs. Type native digit keys and
-  verify each segment after blur. A verified YYYY-MM date supplies month/year,
+  verify the whole retained date after all segment edits and blur, then after
+  saving or inspecting the native review. A later year edit can change a month. A verified YYYY-MM date supplies month/year,
   and does not authorize an invented day. Preserve expected education dates
   and avoid declaring an expected degree completed.
 - Resume inputs may have no ID. Verify the observed Resume/CV upload container
