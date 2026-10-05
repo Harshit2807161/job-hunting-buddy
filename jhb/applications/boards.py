@@ -160,9 +160,11 @@ def job_identity(url):
         m = re.fullmatch(r"/jobs/view/(?:[A-Za-z0-9_-]+-)?(\d+)/?", p.path)
         return (board, m[1]) if m else None
     if board == "workday":
-        m = re.fullmatch(r"/(?:[a-z]{2}-[A-Z]{2}/)?(" + _SLUG + r")/job/([^/]+)/([^/]+)(?:/apply)?/?", p.path)
+        # The observed manual-entry wizard stays on the same exact posting.
+        # Other wizard suffixes are unregistered, rather than stripped blindly.
+        m = re.fullmatch(r"/(?:[a-z]{2}-[A-Z]{2}/)?(" + _SLUG + r")/job/([^/]+)/([^/]+)(?:/apply(?:/applyManually)?)?/?", p.path)
         if p.hostname == "jobs.myworkdaysite.com":
-            m = re.fullmatch(r"/recruiting/(" + _SLUG + r")/(" + _SLUG + r")/job/([^/]+)/([^/]+)(?:/apply)?/?", p.path)
+            m = re.fullmatch(r"/recruiting/(" + _SLUG + r")/(" + _SLUG + r")/job/([^/]+)/([^/]+)(?:/apply(?:/applyManually)?)?/?", p.path)
             if not m:
                 return None
             tenant, site, slug = m[1].lower(), m[2].lower(), m[4]
@@ -193,6 +195,9 @@ def canonical_url(url):
     if item[0] == "successfactors":
         query = urlencode({"jobId": item[3], "company": item[2]})
         return urlunsplit(("https", item[1], "/sfcareer/jobreqcareer", query, ""))
+    if item[0] == "workday":
+        path = re.sub(r"/apply(?:/applyManually)?/?$", "", p.path).rstrip("/")
+        return urlunsplit(("https", p.hostname, path, "", ""))
     # Keep observed slugs and locale paths; those may be required by the ATS.
     path = re.sub(r"/(?:application|apply)/?$", "", p.path).rstrip("/")
     return urlunsplit(("https", p.hostname, path, "", ""))
