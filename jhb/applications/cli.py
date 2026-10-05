@@ -198,7 +198,7 @@ def main(argv=None):
                 print(f"Already submitted; saved review packet: {row['packet']}")
                 return 0
             result, packet = asyncio.run(run_job(json.loads(row[0]), booklet.load(args.booklet),
-                     planner_name=args.planner, interactive=True, role=args.role))
+                     planner_name=args.planner, interactive=True, role=args.role, book_path=args.booklet))
             print(f"{result['state']}: {packet}")
         elif args.command == "worker":
             from .worker import drain_once, notify_pending

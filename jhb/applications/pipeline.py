@@ -22,7 +22,7 @@ from . import booklet, boards, queue, source_queue
 
 TRANSIENT_KINDS = {"TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
                    "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError",
-                   "browser_transport", "browser_mechanics", "browser_capture", "planner_transport", "job_description_transport"}
+                   "browser_transport", "browser_mechanics", "browser_capture", "planner_transport", "job_description_transport", "document_generation"}
 
 
 def _exception_recovery(exc):
@@ -402,7 +402,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
             job = {**job, "work_country": context.get("country_context"),
                    "advertised_salary_ranges": context.get("advertised_salary_ranges", []),
                    "verified_job_description": context["verified_job_description"]}
-            return await run_job(job, book, **kwargs)
+            return await run_job(job, book, book_path=book_path, **kwargs)
     from .worker import notify_pending
 
     queue.initialize(conn)

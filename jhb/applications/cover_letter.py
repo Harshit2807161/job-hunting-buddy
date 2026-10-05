@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -70,7 +71,15 @@ def compile_letter(template: Path, replacements: dict, output: Path):
     tex.chmod(0o600)
     diff = "".join(difflib.unified_diff(original.splitlines(True), tailored.splitlines(True), fromfile="reference", tofile="tailored"))
     (scratch / "changes.diff").write_text(diff)
-    result = subprocess.run(["xelatex", "-interaction=nonstopmode", "letter.tex"], cwd=scratch,
+    # The local launch agent has a minimal PATH; reuse the installed TinyTeX
+    # executable rather than downloading tools or changing the reference.
+    executable = shutil.which("xelatex")
+    installed = Path.home() / "Library" / "TinyTeX" / "bin" / "universal-darwin" / "xelatex"
+    if not executable and installed.is_file() and os.access(installed, os.X_OK):
+        executable = str(installed)
+    if not executable:
+        raise FileNotFoundError("Installed XeLaTeX is unavailable")
+    result = subprocess.run([executable, "-interaction=nonstopmode", "letter.tex"], cwd=scratch,
                             capture_output=True, timeout=90)
     (scratch / "build-output.log").write_bytes(result.stdout + result.stderr)
     pdf = scratch / "letter.pdf"

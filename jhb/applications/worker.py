@@ -178,7 +178,7 @@ def role_for_job(job):
     return None
 
 
-async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_steps=8, cli_actions=None, narrative_preferences=None):
+async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_steps=8, cli_actions=None, narrative_preferences=None, document_runner=None):
     if not demo_origin and cli_actions is None:
         raise ValueError("Live preparation requires the Browser Use CLI")
     located = _located_us_from_country(answers)
@@ -191,11 +191,14 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
     # job/run checkpoint into a failure before this preparation observes it.
     actions._preparation_progress = None
     observed_fields = {}
+    document_tasks = {}
+    generated_documents = {}
     narrative_calls = 0
     observed_step = 0
     def outcome(result, *, stable=False):
         from .review_inventory import build
-        return {**result, **build(list(observed_fields.values()), result.get("filled", []), answers,
+        return {**result, "agent_tasks": list(document_tasks.values()), "generated_documents": generated_documents,
+                **build(list(observed_fields.values()), result.get("filled", []), answers,
                                  key_for_field, complete=stable, step_count=observed_step+1 if observed_fields else 0)}
     if not cli_actions:
         await actions.install()
@@ -236,6 +239,27 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             await enrich_async(snapshot, job, answers, actions.describe)
             for field in snapshot.get("fields", []):
                 observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
+        if document_runner and not snapshot.get("handoff"):
+            from .cover_letter_runner import cover_field, document_available
+            for field in snapshot.get("fields", []):
+                if not cover_field(field) or field["ref"] in document_tasks:
+                    continue
+                scoped = answers.get(key_for_field(field, answers), {})
+                if scoped.get("status") == "declined" or document_available(scoped):
+                    continue
+                record = answers.setdefault("documents.cover_letter", booklet.answer(source="Cover letter awaits skill-based generation"))
+                if record.get("status") == "declined" or document_available(record):
+                    continue
+                if record.get("status") == "verified":
+                    answers["documents.cover_letter"] = booklet.answer(source="Existing cover-letter document unavailable; regenerate from the preserved skill")
+                prepared = await asyncio.to_thread(document_runner.generate, field)
+                if prepared.get("state") == "verified":
+                    answers["documents.cover_letter"] = prepared["record"]
+                    generated_documents["documents.cover_letter"] = prepared["record"]
+                elif prepared.get("state") == "agent_task":
+                    document_tasks[field["ref"]] = {**_question(field, "documents.cover_letter"),
+                        "task_kind": "document_generation", "reason_code": prepared["reason_code"],
+                        "retryable": prepared.get("retryable") is True}
         return snapshot
     events = [{"event": "verified_saved_records"}] if profile_result.get("filled") else []
     filled = {(row["question"], row["ref"]): row for row in profile_result.get("filled", [])}
@@ -329,6 +353,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             # Exact deterministic bindings remain usable if the planner omits one.
             key = bindings.get(field["ref"]) or key_for_field(field, answers)
             record = answers.get(key, {})
+            if field["ref"] in document_tasks:
+                # Preserve the document task separately; the candidate never
+                # needs to supply generated text or a filesystem path.
+                continue
             from .review_inventory import candidate_authored
             if (record.get("status") == "verified" and
                     candidate_wording_requested(field["label"]+"\n"+str(field.get("description", ""))) and not candidate_authored(record)):
@@ -405,6 +433,11 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         updated = await observe()
         if updated.get("handoff"):
             return outcome({"state": updated["handoff"], "reason": updated["reason"], "events": events, "filled": list(filled.values())}), actions
+        if document_tasks:
+            return outcome({"state": "failed", "reason": "Cover-letter generation or validation needs an agent task",
+                "retryable": all(task.get("retryable") is True for task in document_tasks.values()),
+                "error_kind": "document_generation", "missing": [],
+                "events": events, "filled": list(filled.values()), "optional_questions": list(optional_questions.values())}), actions
         if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country"), f.get("calendar_format"), f.get("description") or "", bool(f.get("description_truncated"))) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country"), f.get("calendar_format"), f.get("description") or "", bool(f.get("description_truncated"))) for f in snapshot["fields"]}:
             events.append({"step": step, "event": "fields_revealed"})
             previous = None
@@ -518,7 +551,7 @@ def _recorded_discovery(job):
 
 
 async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
-                  interactive=False, review_seconds=0, role=None, artifacts=None):
+                  interactive=False, review_seconds=0, role=None, artifacts=None, book_path=None):
     choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
     explicit_role = choice.get("value") if choice.get("status") == "verified" and choice.get("value") in {"sde", "ml"} else None
     selected_role = role or explicit_role or role_for_job(job)
@@ -635,6 +668,10 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
                   "missing": [], "events": [], "filled": [], "board": board}
         return result, await persist(None, directory, job, result)
     planner = CodexPlanner(directory, board=board if not demo_origin else "greenhouse") if planner_name == "codex" else deterministic_plan
+    document_runner = None
+    if not demo_origin:
+        from .cover_letter_runner import CoverLetterRunner
+        document_runner = CoverLetterRunner(job, book, selected_role, directory, book_path=book_path)
     if not demo_origin:
         from .cli_browser import BrowserUseCLI
         if board == "greenhouse":
@@ -654,7 +691,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
                 from .workday import approved_credential_store
                 vault = approved_credential_store(job["url"], answers)
             result, actions = await prepare(None, job, answers, planner, vault, cli_actions=actions,
-                                            narrative_preferences=policy.get("narrative_style", {}))
+                                            narrative_preferences=policy.get("narrative_style", {}), document_runner=document_runner)
         except Exception as exc:
             result = failure_result(exc, actions, job=job)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
@@ -714,7 +751,7 @@ def drain_once(conn, book_path, **kwargs):
         if not item: return None
         try:
             observed_book = booklet.load(book_path)
-            result, packet = asyncio.run(run_job(item["job"], observed_book, **kwargs))
+            result, packet = asyncio.run(run_job(item["job"], observed_book, book_path=book_path, **kwargs))
             from .questions import collect, reconcile
             collect(item["job"], result, book_path, observed_book=observed_book)
             reconcile(item["job"], result, book_path)

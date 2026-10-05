@@ -335,7 +335,7 @@ def key_for_field(field, answers):
     if field["type"] == "file":
         if re.fullmatch(r"(?:upload |attach )?resume(?:/cv| \(pdf\))?", label):
             return "documents.resume"
-        if re.fullmatch(r"(?:upload |attach )?cover letter", label):
+        if re.fullmatch(r"(?:upload |attach )?(?:cover letter|portfolio or cover letter|cover letter or portfolio)", label):
             return "documents.cover_letter"
     return None
 
