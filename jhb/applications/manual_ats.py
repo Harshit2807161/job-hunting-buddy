@@ -16,6 +16,8 @@ class ManualATSCLI(BrowserUseCLI):
         self._residence_query = None
         self._location_query = None
         self._school_query = None
+        self._foreground_target = None
+        self.last_recovery = None
         from .boards import board_type, job_identity
         if board_type(approved_url) != board or job_identity(approved_url) is None:
             raise ValueError(f"Manual scope requires an exact {board.title()} application URL")
@@ -29,12 +31,52 @@ class ManualATSCLI(BrowserUseCLI):
         self._identity = job_identity(self.application_url)
 
     def call(self, operation, *, _cancelled=None, **payload):
+        from .cli_browser import BrowserOperationError
+        original_target = (self.target_id, self.expected_url)
         payload["scope"] = dict(self._scope)
-        payload["foreground"] = self.foreground
+        payload["foreground"] = self.foreground or (
+            bool(self.target_id) and self._foreground_target == original_target)
         try:
             return super().call(operation, _cancelled=_cancelled, **payload)
         except ValueError as exc:
-            from .cli_browser import BrowserOperationError
+            kind = payload.get("field", {}).get("type")
+            retention_errors = {
+                "radio": "Manual choices did not retain the approved answer",
+                "multiselect": "Manual choices did not retain the approved answer",
+                "checkbox": "Checkbox did not retain the approved answer",
+                "select": "Native select did not retain the approved answer",
+                "combobox": "Autocomplete did not retain the committed choice",
+            }
+            if (operation == "fill" and isinstance(exc, BrowserOperationError)
+                    and str(exc) == retention_errors.get(kind) and not payload["foreground"]
+                    and original_target[0] and original_target[1]
+                    and original_target == (self.target_id, self.expected_url)
+                    and matches_scope(self.expected_url, self._scope)
+                    and not (_cancelled and _cancelled.is_set())):
+                # A demonstrated native retention failure permits one bounded
+                # foreground recovery. The dispatcher revalidates the exact
+                # field, target and guard under the same browser-lane lock.
+                retry = {**payload, "foreground": True, "recover_background_choice": True}
+                previous_check = payload.get("_before_run")
+                def check_recovery_target():
+                    if original_target != (self.target_id, self.expected_url):
+                        raise BrowserOperationError("Foreground recovery target changed", retryable=True)
+                    if previous_check is not None:
+                        previous_check()
+                retry["_before_run"] = check_recovery_target
+                self.last_recovery = {"operation": "fill", "kind": "foreground_native_choice",
+                                      "target_id": self.target_id, "recovered": False}
+                try:
+                    response = super().call(operation, _cancelled=_cancelled, **retry)
+                except ValueError as retry_exc:
+                    exc = retry_exc
+                else:
+                    if response.get("verified") is not True:
+                        raise BrowserOperationError("Foreground native choice recovery was not verified", retryable=True)
+                    self._foreground_target = original_target
+                    self.last_recovery["recovered"] = True
+                    self.last_failure = None
+                    return response
             mechanical = {"Manual input did not retain the approved answer",
                           "Residence catalog could not recommit the original selection",
                           "Existing residence differs from the approved state and country",
@@ -42,12 +84,14 @@ class ManualATSCLI(BrowserUseCLI):
                           "Approved file was not retained", "Observed manual control is unavailable",
                           "Observed manual input did not receive focus",
                           "Observed manual field has changed", "Autocomplete did not retain the committed choice",
+                          "Foreground recovery field, target or guard changed",
+                          "Foreground recovery requires an authentication or verification handoff",
                           "Lever location choice is absent or ambiguous", "Observed Lever location choice changed",
                           "Lever location did not retain a committed catalog choice"}
             if isinstance(exc, BrowserOperationError) and str(exc) in mechanical:
                 self.last_failure = {"operation": operation, "kind": "browser_mechanics"}
                 raise BrowserOperationError(str(exc), retryable=True) from None
-            raise
+            raise exc
 
     def allowed_url(self, url):
         from .boards import job_identity

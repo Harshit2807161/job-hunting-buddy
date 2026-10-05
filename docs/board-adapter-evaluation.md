@@ -195,6 +195,16 @@ cleanup. A timeout before inspection does not establish an authentication or
 candidate-answer problem. Do not respond by opening duplicate tabs, bypassing
 the browser lock or changing final-submission deadlines.
 
+Demonstrated native-choice retention failures can now receive one automatic
+foreground retry on the same already-owned target. Fresh question/option,
+URL, target and submission-guard checks run inside the CLI transport lane before
+activation and again before filling. Synthetic fixtures exercise native hidden
+radios and grouped Yes/No buttons, lock ownership, successful recovery, a second
+failure, changed questions/targets/guards, and visible verification challenges.
+Generic transport failures, missing catalog choices and terminal actions remain
+outside this repair. Prior interactive foreground recoveries motivated this
+change; they do not establish live validation of the new automatic path.
+
 ### Read-only source tabs and application capacity
 
 A local classification run exposed six retained LinkedIn source listings using

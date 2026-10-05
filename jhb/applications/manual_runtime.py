@@ -107,7 +107,8 @@ def dispatch(request, helpers):
                 "guarded": True, "reused_tab": bool(tabs)}
     if not matches_scope(js("location.href"), scope):
         raise ValueError("Current page differs from approved manual job")
-    if request.get("foreground") is True and operation in {"fill", "describe", "prepare_residence"}:
+    if (request.get("foreground") is True and operation in {"fill", "describe", "prepare_residence"}
+            and not request.get("recover_background_choice")):
         # An opt-in response to demonstrated background-input failure. Reuse
         # this client's attached, scope-checked target inside the browser lane.
         helpers["activate_tab"](helpers["current_tab"]()["targetId"])
@@ -251,6 +252,32 @@ def dispatch(request, helpers):
         if len(current) != 1 or any(current[0][k] != requested[k] for k in ("label", "type")):
             raise ValueError("Observed manual field has changed")
         field = current[0]
+        if request.get("recover_background_choice"):
+            def recovery_binding(value):
+                return {
+                    **{key: value.get(key) for key in ("ref", "label", "type", "required", "widget", "calendar_format")},
+                    "description": value.get("description") or "",
+                    "description_truncated": bool(value.get("description_truncated")),
+                    "options": [] if value.get("type") == "combobox" else [
+                        {key: option.get(key) for key in ("label", "value", "id", "disabled")}
+                        for option in value.get("options", [])],
+                }
+            if (operation != "fill" or field["type"] not in {"radio", "multiselect", "checkbox", "select", "combobox"}
+                    or not request.get("target_id") or helpers["current_tab"]()["targetId"] != request["target_id"]
+                    or not request.get("expected_url") or not matches_scope(request["expected_url"], scope)
+                    or request.get("foreground") is not True or recovery_binding(field) != recovery_binding(requested)
+                    or js("window.__jhbGuard===true") is not True):
+                raise ValueError("Foreground recovery field, target or guard changed")
+            if js("[...document.querySelectorAll('input[type=password],iframe')].some(e=>e.getClientRects().length&&(e.type==='password'||/recaptcha|hcaptcha|challenge/i.test(e.src)&&e.getBoundingClientRect().height>90))"):
+                raise ValueError("Foreground recovery requires an authentication or verification handoff")
+            helpers["activate_tab"](request["target_id"])
+            wait(0.1)
+            refreshed = [f for f in fields() if f["ref"] == requested["ref"]]
+            if (len(refreshed) != 1 or recovery_binding(refreshed[0]) != recovery_binding(requested)
+                    or helpers["current_tab"]()["targetId"] != request["target_id"]
+                    or not matches_scope(js("location.href"), scope) or js("window.__jhbGuard===true") is not True):
+                raise ValueError("Foreground recovery field, target or guard changed")
+            field = refreshed[0]
         residence = scope["board"] == "ashby" and normalize(field["label"]) == "state/country of residence" and field["type"] == "combobox"
         from .known_answers import plain_contact_location
         from .ashby_education import school_control

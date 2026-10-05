@@ -74,6 +74,13 @@ the same browser lane and retry once. This is a shared browser mechanic, not
 evidence that the board needs a separate adapter. Never navigate another job's
 tab to repair focus.
 
+The adapter performs that one foreground retry automatically only after an exact
+native choice retention error during fill. It rechecks the same attached target,
+submission guard, question context and stable options before and after activation.
+Transport failures, absent choices, verification challenges and terminal actions
+do not trigger this recovery. A successful recovery may retain the foreground
+preference for that exact target; it does not carry to a different draft.
+
 Select the resume variant using the actual responsibilities, then preserve its
 source path and hash. An AI team name alone does not decide SDE versus ML.
 Identical PDF filenames do not establish variant identity. Match skills to the
