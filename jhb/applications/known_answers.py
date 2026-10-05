@@ -57,7 +57,8 @@ def contact_location(field):
 
 def plain_contact_location(field):
     """Only the observed standard contact question has this standing mapping."""
-    return (contact_location(field) and not field.get("description")
+    return (contact_location(field)
+            and normalize(field.get("description") or "") in {"", "city, state, and country"}
             and not field.get("description_truncated"))
 
 

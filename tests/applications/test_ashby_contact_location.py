@@ -14,6 +14,7 @@ def test_native_contact_city_queries_restores_commits_and_fresh_audits(available
     from playwright.sync_api import sync_playwright
     html = '''<form class=ashby-application-form-container><div data-field-path=_systemfield_location>
 <label class=ashby-application-form-question-title for=_systemfield_location>Location</label>
+<div class=ashby-application-form-question-description>City, State, and Country</div>
 <input role=combobox aria-expanded=false oninput="window.inputEvents++;menu(this)" onkeydown="if(event.key==='ArrowDown')menu(this)"><div id=options role=listbox></div>
 </div><button type=submit>Submit application</button></form><script>
 window.inputEvents=0;window.commits=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
@@ -57,6 +58,7 @@ function choose(){window.commits++;document.querySelector('input[role=combobox]'
                 page.evaluate("""(()=>{const note=document.createElement('div');
                   note.className='ashby-application-form-question-description';
                   note.textContent='Choose your preferred office, not residence.';
+                  document.querySelector('.ashby-application-form-question-description').remove();
                   document.querySelector('[data-field-path=_systemfield_location]').append(note)})()""")
                 changed = call('observe')['fields'][0]
                 assert known_answers.enrich(changed, {}, answers) is None
@@ -90,6 +92,18 @@ def test_contact_location_projection_rejects_partial_wrong_region_or_ambiguous_c
 
 def test_custom_employer_location_not_treated_as_standard_contact_field():
     assert not known_answers.contact_location({'ref':'custom-office','label':'Location','type':'combobox'})
+
+
+@pytest.mark.parametrize('description,truncated,allowed', [
+    ('', False, True), ('City, State, and Country', False, True),
+    ('City, State, and Country', True, False),
+    ('Choose your preferred office, not residence.', False, False),
+    ('City, State, and Country where you hold citizenship', False, False),
+])
+def test_contact_instruction_allowlist_is_exact(description, truncated, allowed):
+    field = {'ref': 'ashby:_systemfield_location:control:0', 'label': 'Location',
+             'type': 'combobox', 'description': description, 'description_truncated': truncated}
+    assert known_answers.plain_contact_location(field) is allowed
 
 
 def test_unverified_or_contradictory_application_city_cannot_query_catalog():
