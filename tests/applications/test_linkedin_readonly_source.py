@@ -342,17 +342,41 @@ def test_existing_user_source_never_receives_disposable_observation(fixture_brow
 
 def test_source_budget_reserves_application_slots_and_reuses_existing(fixture_browser):
     fixture, root = fixture_browser
-    resolve(fixture)
+    result = resolve(fixture)
     owner = OwnedTabs(fixture.helpers(), root)
-    second = owner.new_tab(SOURCE.replace('1234567890', '2222222222'), purpose='source_readonly')
     before = list(fixture.new_calls)
     with pytest.raises(TabCapacityReached):
         owner.new_tab(SOURCE.replace('1234567890', '3333333333'), purpose='source_readonly')
     assert fixture.new_calls == before
-    assert owner.new_tab(SOURCE.replace('1234567890', '2222222222'), purpose='source_readonly') == second
-    # A distinct application's target still has capacity despite two sources.
+    assert owner.new_tab(SOURCE, purpose='source_readonly') == result['source_target_id']
+    # A distinct application's target still has capacity with the one source.
     app = owner.new_tab(DEST.replace('11111111', '33333333'), purpose='application')
     assert owner.tabs[app]['purpose'] == 'application'
+
+
+def test_native_capacity_releases_only_previously_observed_readonly_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'ROOT', tmp_path)
+    from jhb.applications.cli_browser import BrowserCapacityError
+    witness = {'operation': 'resolve_link', 'native_apply_clicked': False, 'target_id': 'owned-source',
+               'observed_url': SOURCE, 'source_url': SOURCE, 'recorded_at': time.time()}
+    class CapacityClient:
+        def __init__(self): self.calls = []
+        async def invoke(self, operation, **values):
+            self.calls.append(operation)
+            if operation == 'resolve_link':
+                return {'native_apply_required': True, 'state': 'ambiguous', 'readonly_observation': witness}
+            if operation == 'resolve':
+                raise BrowserCapacityError('Worker-owned browser tab capacity reached')
+            assert operation == 'cleanup_source_terminal'
+            from pathlib import Path
+            proof = json.loads(Path(values['evidence_path']).read_text())
+            assert proof['readonly_observation'] == witness and proof['native_apply_clicked'] is False
+            assert proof['classification']['state'] == 'blocked'
+            return {'closed_targets': ['owned-source']}
+    client = CapacityClient()
+    with pytest.raises(BrowserCapacityError):
+        asyncio.run(linkedin.resolve_source({'url': SOURCE}, client=client))
+    assert client.calls == ['resolve_link', 'resolve', 'cleanup_source_terminal']
 
 
 def test_terminal_classifier_attempts_cleanup_for_readonly_login_handoff(tmp_path, monkeypatch):
@@ -369,8 +393,15 @@ def test_terminal_classifier_attempts_cleanup_for_readonly_login_handoff(tmp_pat
 def test_native_route_invalidates_previous_readonly_cleanup_authority(fixture_browser):
     fixture, root = fixture_browser
     result = resolve(fixture); path = terminal_proof(root, result)
+    # Model the native Apply boundary itself. A dispatcher which only reads
+    # without reaching this boundary must retain its read-only witness.
+    fixture.pages.pop('unclaimed').close()
+    def native_route(request, helpers):
+        helpers['jhb_before_apply_click']()
+        helpers['jhb_after_apply_click']()
+        return {'state': 'ambiguous'}
     dispatch_owned({'operation': 'resolve', 'approved_url': SOURCE}, fixture.helpers(),
-                   lambda request, helpers: {'state': 'ambiguous'}, dispatcher_name=MODULE)
+                   native_route, dispatcher_name=MODULE)
     assert terminal_cleanup(fixture, path)['closed_targets'] == [] and fixture.closed == []
     row = OwnedTabs(fixture.helpers(), root).tabs[result['readonly_observation']['target_id']]
     assert row['purpose'] == 'source' and 'readonly_observation' not in row

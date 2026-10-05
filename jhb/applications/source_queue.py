@@ -28,6 +28,17 @@ CREATE INDEX IF NOT EXISTS idx_application_sources_ready
 STATES = {"queued", "running", "retry", "resolved", "waiting_login", "waiting_captcha", "unknown", "failed", "filtered", "history_hold"}
 
 
+def _direct_ats_priority(job_json):
+    """Prefer exact reviewed ATS jobs over wrappers without altering age/history."""
+    from . import boards
+    try:
+        row = json.loads(job_json)
+        identity = boards.job_identity(row.get("url"))
+        return 0 if identity and identity[0] in {"ashby", "greenhouse"} and boards.preparation_supported(identity[0]) else 1
+    except (ValueError, TypeError, AttributeError):
+        return 1
+
+
 def _eligibility(row):
     from ..eligibility import preliminary, POLICY_ID
     findings = preliminary(row)
@@ -115,6 +126,7 @@ def claim(conn, *, lease_seconds=300, max_attempts=3):
     filter_ineligible(conn)
     filter_history(conn)
     now = int(time.time())
+    conn.create_function("jhb_direct_ats_priority", 1, _direct_ats_priority, deterministic=True)
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE application_sources SET state='failed',lease_until=NULL,updated_at=? "
@@ -123,7 +135,8 @@ def claim(conn, *, lease_seconds=300, max_attempts=3):
             row = conn.execute(
                 "SELECT * FROM application_sources WHERE attempts < ? AND "
                 "((state IN ('queued','retry') AND available_at <= ?) OR "
-                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) ORDER BY updated_at,source_job_hash LIMIT 1",
+                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) "
+                "ORDER BY jhb_direct_ats_priority(job_json),updated_at,source_job_hash LIMIT 1",
                 (max_attempts, now, now),
             ).fetchone()
             if row is None:

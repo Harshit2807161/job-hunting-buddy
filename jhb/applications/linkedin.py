@@ -7,7 +7,7 @@ import uuid
 from .. import config
 from . import boards, booklet, job_context
 
-from .cli_browser import BrowserUseCLI
+from .cli_browser import BrowserCapacityError, BrowserUseCLI
 from .linkedin_runtime import linkedin_id
 
 
@@ -39,7 +39,14 @@ async def resolve_source(job, *, isolated_outcome=None, timeout=90, client=None)
     result = await cli.invoke("resolve_link", approved_url=job["url"])
     if result.get("native_apply_required"):
         # Button-only controls retain the existing native-click/capacity guard.
-        result = await cli.invoke("resolve", approved_url=job["url"])
+        try:
+            result = await cli.invoke("resolve", approved_url=job["url"])
+        except BrowserCapacityError:
+            # No Apply click occurred. Preserve the native capacity outcome,
+            # but do not let this safe source occupy the one discovery slot.
+            await _cleanup_terminal_source(job, result, {"state": "blocked", "board_type": "linkedin",
+                "reason": "Native destination needs available application capacity"}, cli)
+            raise
     if result.get("state") not in {"destination", "observed_link"}:
         return await _cleanup_terminal_source(job, result, result, cli)
     from .greenhouse_source import resolve_job

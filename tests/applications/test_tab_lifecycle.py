@@ -179,6 +179,48 @@ def test_capacity_stops_before_new_target_but_allows_existing_reuse(owned,monkey
     assert owner.new_tab(OTHER)=='user' and 'user' not in owner.tabs
 
 
+def test_default_pool_preserves_five_drafts_and_one_readonly_source_slot(owned):
+    owner, browser, _ = owned
+    drafts = [owner.new_tab(f'https://job-boards.greenhouse.io/synthetic/jobs/{n}') for n in range(1, 6)]
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab('https://job-boards.greenhouse.io/synthetic/jobs/6')
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    assert owner._count(owner.refresh()) == 6
+    assert all(target in browser.tabs for target in drafts)
+    assert owner.new_tab(SOURCE, purpose='source_readonly') == source
+    assert owner.new_tab('https://job-boards.greenhouse.io/synthetic/jobs/1') == drafts[0]
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab(SOURCE.replace('1234567890', '9876543210'), purpose='source_readonly')
+    assert not browser.closed
+
+
+def test_capacity_before_native_apply_preserves_readonly_cleanup_witness(owned):
+    owner, browser, _ = owned
+    for n in range(1, 6):
+        owner.new_tab(f'https://job-boards.greenhouse.io/synthetic/jobs/{n}')
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    owner.record_readonly_observation({'approved_url': SOURCE}, {'state': 'ambiguous', 'native_apply_required': True})
+    before = dict(owner.tabs[source])
+    with pytest.raises(TabCapacityReached):
+        owner.before_apply_click()
+    assert owner.tabs[source] == before
+    assert owner.tabs[source]['readonly_observation']['native_apply_clicked'] is False
+    assert not browser.closed
+
+
+def test_absent_unconfirmed_source_frees_reserved_slot_without_another_close(owned):
+    owner, browser, _ = owned
+    for n in range(1, 6):
+        owner.new_tab(f'https://job-boards.greenhouse.io/synthetic/jobs/{n}')
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    owner.tabs[source]['state'] = 'close_unconfirmed'; owner.save()
+    browser.tabs.pop(source); browser.switch('user')
+    replacement = owner.new_tab(SOURCE.replace('1234567890', '9876543210'), purpose='source_readonly')
+    assert owner.tabs[source]['state'] == 'departed'
+    assert replacement != source and owner._count(owner.refresh()) == 6
+    assert not browser.closed
+
+
 @pytest.mark.parametrize('value',['0','13','invalid'])
 def test_tab_cap_is_bounded_configuration_not_candidate_input(owned,monkeypatch,value):
     owner,_,_=owned

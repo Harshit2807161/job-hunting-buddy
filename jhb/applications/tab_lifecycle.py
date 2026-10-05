@@ -129,6 +129,14 @@ class OwnedTabs:
         if self._count(live) >= _cap() or any(row.get("state") == "active" and target in live
                                              for target, row in self.unclaimed.items()):
             raise TabCapacityReached(CAPACITY_MESSAGE)
+        # Invalidate the read-only witness only after the no-mutation capacity
+        # guard succeeds. A blocked native route can still release its harmless
+        # source through the existing terminal-source evidence path.
+        row = self.tabs.get(self._apply_source, {})
+        if row.get("state") == "active" and row.get("purpose") == "source_readonly":
+            row.pop("readonly_observation", None)
+            row["purpose"] = "source"
+            self.save()
 
     def after_apply_click(self):
         self._apply_clicked = True
@@ -184,7 +192,14 @@ class OwnedTabs:
                                for target, row in self.tabs.items())
             # Source classification must not occupy every application slot.
             # Exact existing-tab reuse above needs no additional budget.
-            if source_count >= min(2, max(0, _cap()-1)):
+            if source_count >= min(1, max(0, _cap()-1)):
+                raise TabCapacityReached(CAPACITY_MESSAGE)
+        if purpose == "application":
+            draft_count = sum(target in before and row.get("state") in {"active", "close_unconfirmed"}
+                              and row.get("purpose") == "application" for target, row in self.tabs.items())
+            # Reserve one of the existing slots for authenticated read-only
+            # source routing. Existing drafts and exact-tab reuse stay intact.
+            if draft_count >= max(1, _cap()-1) and not (current.get("targetId") and _blank(current.get("url"))):
                 raise TabCapacityReached(CAPACITY_MESSAGE)
         reserve = 2 if purpose == "source" else 1
         if count + reserve > _cap() and not (current.get("targetId") and _blank(current.get("url"))):
@@ -560,15 +575,6 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     scoped["new_tab"] = lambda url="about:blank": owner.new_tab(url, purpose=purpose)
     scoped["jhb_before_apply_click"] = owner.before_apply_click
     scoped["jhb_after_apply_click"] = owner.after_apply_click
-    if dispatcher_name == "jhb.applications.linkedin_runtime" and operation == "resolve":
-        # A subsequent native Apply route invalidates earlier read-only evidence.
-        identity = list(boards.job_identity(request.get("approved_url")) or ())
-        for row in owner.tabs.values():
-            if row.get("state") == "active" and row.get("job_identity") == identity:
-                row.pop("readonly_observation", None)
-                if row.get("purpose") == "source_readonly":
-                    row["purpose"] = "source"
-        owner.save()
     try:
         result = dispatcher(request, scoped)
     except BaseException:
