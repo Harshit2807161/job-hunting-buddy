@@ -47,6 +47,17 @@ Avoid a `KeepAlive` restart loop. Launchd does not start another copy of the
 same job while it is running, and the service lock also excludes other copies.
 Keep the supervised preparation watch finite during the five-hour test.
 
+For the candidate's ongoing pipeline after that supervised window, a separate
+operator activation may replace the preparation watch with `--prepare-once`,
+`StartInterval` of 60 seconds, and `RunAtLoad` enabled. This keeps dashboard
+answers moving through bounded preparation batches while Phase 1 retains its
+15-minute discovery cadence. Use the existing preparation label, retain its
+logs and environment guards, and replace it only while both worker locks prove
+idle. Do not run a second preparation watch or enable `KeepAlive`. The same
+pause, local-browser health, tab-capacity, question and per-draft approval gates
+continue to apply. This schedule grants no submission permission and does not
+extend the finite hourly-email window.
+
 Preparation defaults to eight source checks, three applications, two concurrent
 planners, and twenty active drafts. Existing bounded environment settings override
 these defaults: `JHB_SOURCE_BATCH_SIZE`, `JHB_APPLICATION_BATCH_SIZE`,
