@@ -134,3 +134,23 @@ identity parsing and routing, not a live SuccessFactors form fill. SAP's own
 identifies the hosting family, and its
 [job-posting URL documentation](https://userapps.support.sap.com/sap/support/knowledge/en/2852775)
 describes the tenant/requisition URL shape.
+
+UKG currently has identity-only support for the observed
+`wbdus.rec.pro.ukg.net` host. Exact tenant, JobBoard UUID, and opportunity UUID
+are part of the durable identity. The observed `OpportunityDetail` and
+`OpportunityApply` routes share that identity; canonical links point to the
+detail route. Only one exact `opportunityId` query parameter is accepted;
+malformed, duplicate, case-variant and additional parameters are rejected.
+Tenant case is preserved, while UUIDs normalize to lowercase. Other UKG hosts,
+login pages and board listings are not individual application identities.
+
+The evaluated UKG form exposes resume upload, contact fields, optional
+experience/education/skills sections, employer screening questions and voluntary
+disclosures. Public HTTP provides an exact opportunity object and complete JD
+inside the detail page, even when its visible HTML is a JavaScript shell.
+Interactive preparation uses the existing guarded Browser Use CLI tab.
+Identity support allows a private manual packet to appear in the portal; it
+neither validates a reusable UKG preparation adapter nor enables final
+submission. Both registry capabilities remain disabled. Synthetic tests verify
+identity parsing, draft visibility and rejection by the submission capability
+gate; they are not live UKG filling or submission validation.
