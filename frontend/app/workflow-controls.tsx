@@ -54,10 +54,10 @@ export function WorkflowControl({ onChange }: { onChange: (policy: WorkflowPolic
 }
 
 type Opening = { id: string; company: string; title: string; location: string; source: string; url: string | null;
-  first_seen: number; date: string; classification_state: string; board: string; application_id: string | null; application_state: string | null; filter_reasons: { category: string; evidence: string }[] };
+  first_seen: number; date: string; classification_state: string; board: string; application_id: string | null; application_state: string | null; application_display_state?: string | null; filter_reasons: { category: string; evidence: string }[] };
 type Page = { items: Opening[]; total: number; next_cursor: { before_time: number; before_id: string } | null };
 const sourceLabel: Record<string, string> = { filtered: "Filtered out", discovered: "Discovered", queued: "Board check queued", running: "Checking destination", retry: "Board check retry", resolved: "Board identified", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", unknown: "Destination unresolved", failed: "Board check needs repair" };
-const applicationLabel: Record<string, string> = { queued: "Queued for filling", running: "Preparing", waiting_review: "Draft ready", waiting_input: "Needs answer", submitted: "Submitted", skipped: "Filtered out", retry: "Fill retry", unsupported: "Adapter needed", failed: "Needs repair", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome unverified" };
+const applicationLabel: Record<string, string> = { queued: "Queued for filling", running: "Preparing", waiting_review: "Draft ready", waiting_input: "Needs answer", submitted: "Submitted", skipped: "Filtered out", retry: "Fill retry", unsupported: "Adapter needed", failed: "Needs repair", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome unverified", approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded" };
 
 export function Openings() {
   const [page, setPage] = useState<Page | null>(null);
@@ -98,7 +98,7 @@ export function Openings() {
     <div className="table-scroll"><table><thead><tr><th>COMPANY & ROLE</th><th>DISCOVERED</th><th>DESTINATION CHECK</th><th>APPLICATION</th></tr></thead><tbody>{items.map(row => <tr key={row.id}>
       <td><div className="company-cell"><div><a href={row.url || undefined} target="_blank" rel="noreferrer">{row.company}</a><p>{row.title}</p><span>{row.location || row.source}</span></div></div></td>
       <td>{row.date}</td><td>{sourceLabel[row.classification_state] || row.classification_state}{row.board && row.board !== "unknown" && <span className="receipt-note">{row.board}</span>}{row.filter_reasons?.map((reason, i) => <span className="receipt-note" key={i}>{reason.evidence}</span>)}</td>
-      <td>{row.application_id ? <a href={`#review/${row.application_id}`}>{applicationLabel[row.application_state!] || row.application_state}</a> : "Not started"}</td></tr>)}</tbody></table>
+      <td>{row.application_id ? <a href={`#review/${row.application_id}`}>{applicationLabel[(row.application_display_state || row.application_state)!] || row.application_display_state || row.application_state}</a> : "Not started"}</td></tr>)}</tbody></table>
       {!items.length && <div className="table-empty">{page ? "No Phase 1 openings recorded yet." : "Loading Phase 1 openings…"}</div>}</div>
     <div className="table-footer">Showing {items.length} of {page?.total ?? "—"} openings{hasMore && items.length < 500 && <button className="text-button" disabled={busy} onClick={more}>{busy ? "Loading…" : "Load older openings"}</button>}<span>Newest 25 refresh every 5 seconds</span></div>
   </section>;

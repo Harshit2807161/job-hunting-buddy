@@ -127,3 +127,7 @@ td{font-size:15px;line-height:1.6;padding-top:22px;padding-bottom:22px;vertical-
   .workflow-panel>p{font-size:15px}.workflow-toggle{font-size:14px}
 }
 @media(prefers-reduced-motion:reduce){.workflow-toggle input,.workflow-toggle input::before{transition:none}}
+
+.status.approval_queued,.status.submitting{background:#edf0fb;color:#42568d}.status.needs_review{background:#fff1dc;color:#885617}.status.discarded{background:#eef0ee;color:#566258}.discard-actions{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}.discard-actions p{font-size:14px;color:#68736b;margin-top:6px}.danger-button{color:#984c39;min-height:44px}
+
+.review-current-note{font-size:15px;line-height:1.5;color:#68736b;margin:0 0 16px}

@@ -5,7 +5,7 @@ import { Openings, WorkflowControl, type WorkflowPolicy } from "./workflow-contr
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Application = { id: string; company: string; title: string; location: string; url: string | null; board: string;
-  state: string; pending_required_questions?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
+  state: string; display_state?: string; approval_state?: string | null; pending_required_questions?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
   has_screenshot: boolean; has_incident: boolean; inventory_ready: boolean; screenshot_at: number | null; confirmed_at: string | null; confirmed_date: string | null; sheet_synced: boolean };
 type Question = { id: string; question: string; kind: string; updated_at: string; required: boolean; country_context: string | null;
   contexts: { job_hash: string; company: string; title: string; url: string | null; required: boolean; type: string; choices: string[]; reason: string; description?: string; description_truncated?: boolean; public_metadata_description?: string }[] };
@@ -20,8 +20,12 @@ type Tab = "all" | "submitted" | "waiting_review" | "attention";
 
 const stateNames: Record<string, string> = { queued: "Queued", running: "Preparing", retry: "Retry scheduled", waiting_review: "Ready for review",
   waiting_input: "Needs your answer", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome to verify",
-  submitted: "Submitted", skipped: "Filtered out", unsupported: "Adapter needed", failed: "Technical review" };
-const applicationLabel = (a: Application) => a.state === "waiting_review" && !!a.pending_required_questions ? "Needs your answer" : a.state === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[a.state] || a.state;
+  submitted: "Submitted", skipped: "Filtered out", unsupported: "Adapter needed", failed: "Technical review",
+  approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded" };
+const approvalStages: Record<string, string> = { approved: "approval_queued", submitting: "submitting", needs_review: "needs_review", expired: "needs_review" };
+const displayState = (a: { state: string; display_state?: string; approval_state?: string | null }) => a.display_state ||
+  (a.state === "waiting_review" ? (approvalStages[a.approval_state || ""] || a.state) : a.state);
+const applicationLabel = (a: Application) => displayState(a) === "waiting_review" && !!a.pending_required_questions ? "Needs your answer" : displayState(a) === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[displayState(a)] || displayState(a);
 const initials = (s: string) => s.trim().split(/\s+/).slice(0, 2).map(v => v[0]).join("").toUpperCase() || "?";
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const dateLabel = (day: string, short = false) => day ? new Date(day + "T12:00:00").toLocaleDateString("en-US", { month: short ? "short" : "long", day: "numeric", ...(short ? {} : { year: "numeric" }) }) : "—";
@@ -103,7 +107,8 @@ function QuestionForm({ question, onSaved, autonomous = false }: { question: Que
 }
 
 type ReviewDetail = { location?: string; related_submissions?: { job_hash: string; url: string; company: string; title: string; location: string; confirmed_date: string | null }[];
-  job_hash: string; state: string; inventory_complete: boolean; resume_role: string | null;
+  job_hash: string; state: string; display_state?: string; approval_state?: string | null; inventory_complete: boolean; resume_role: string | null;
+  discard?: { state: string; tab_close: { state: string }; worker_stop: { state: string } };
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
   role_fit_notes?: string[]; questions?: Question[]; agent_tasks?: {question: string; ref: string; task_kind: string; required: boolean}[];
@@ -115,6 +120,17 @@ type ReviewDetail = { location?: string; related_submissions?: { job_hash: strin
   approval: { can_approve: boolean; revision?: string; reason?: string; blank_questions: { ref: string; question: string; required: boolean; type: string }[];
     approval?: { state: string } } };
 
+function discardMessage(result: ReviewDetail["discard"]) {
+  const tab = result?.tab_close?.state;
+  const closing = tab === "closed" || tab === "already_closed" ? "Its application tab is closed." :
+    tab === "preserved" ? "The tab changed pages and was preserved." :
+    tab === "no_captured_tab" ? "No owned application tab was available to close." :
+    tab === "close_unconfirmed" ? "Tab closure needs verification; it will not be repeated blindly." :
+    "Tab closure is waiting for the browser to be available.";
+  const worker = result?.worker_stop?.state === "stopping" ? "Its worker is stopping safely." : "Its worker is stopped.";
+  return `Application discarded. ${worker} ${closing} History is preserved.`;
+}
+
 function ReviewModal({ application: app, close, onChanged, autonomous = false }: { application: Application; close: () => void; onChanged: () => void; autonomous?: boolean }) {
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
   const [error, setError] = useState("");
@@ -123,7 +139,10 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
   const [saved, setSaved] = useState("");
   const [answerFeedback, setAnswerFeedback] = useState<AnswerResult | null>(null);
   const [focusError, setFocusError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [actionState, setActionState] = useState<string | null>(null);
   const busyRef = useRef(false);
+  const lastActionRef = useRef<string | null>(null);
   const revisionRef = useRef<string | undefined>(undefined);
   const [detailRefresh, setDetailRefresh] = useState(0);
   useEffect(() => {
@@ -136,7 +155,10 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
         const value: ReviewDetail = await response.json();
         if (active && !busyRef.current) {
           if (revisionRef.current !== value.approval.revision) setAcknowledged([]);
-          revisionRef.current = value.approval.revision; setDetail(value); setError("");
+          revisionRef.current = value.approval.revision; setDetail(value); setActionState(null); setError("");
+          if (lastActionRef.current === "approve" && value.state === "submitted")
+            setSaved("Application submitted. Confirmation is recorded; spreadsheet status will update below.");
+          if (lastActionRef.current === "discard" && value.discard) setSaved(discardMessage(value.discard));
         }
       } catch (e) { if (active) { setError(e instanceof Error ? e.message : "Detailed review is unavailable"); setDetail(null); setAcknowledged([]); } }
       finally { inFlight = false; }
@@ -146,24 +168,51 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
   }, [app.id, detailRefresh]);
   const blanks = detail?.approval.blank_questions || [];
   const optionalBlanks = blanks.filter(q => !q.required);
-  const canApprove = !autonomous && detail?.submission_supported === true && detail?.state === "waiting_review" && detail.inventory_complete &&
-    !blanks.some(q => q.required) && !detail.questions?.some(q => q.required) &&
-    !!detail?.approval.can_approve && !!detail.approval.revision &&
-    optionalBlanks.every(q => acknowledged.includes(q.ref));
+  const currentApp: Application = detail ? { ...app, state: detail.state, display_state: detail.display_state,
+    approval_state: detail.approval_state || detail.approval.approval?.state,
+    filled_count: detail.fields.filter(f => f.status === "answered").length } : app;
+  const stage = actionState || displayState(currentApp);
+  const canApprove = !autonomous && detail?.submission_supported === true && detail?.state === "waiting_review" &&
+    !!detail.approval.can_approve && !!detail.approval.revision && !["approval_queued", "submitting"].includes(stage);
+  const canDiscard = !!detail && !["submitted", "submission_uncertain", "submitting", "discarded"].includes(stage);
   async function changeApproval(action: "approve" | "revoke") {
-    busyRef.current = true; setBusy(true); setError("");
+    lastActionRef.current = action;
+    busyRef.current = true; setBusy(true); setActionError(""); setSaved("");
+    if (action === "approve") setActionState("submitting");
     try {
       const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json());
       const response = await fetch(`/api/v1/applications/${app.id}/${action}`, { method: "POST",
         headers: { "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token },
         body: JSON.stringify(action === "approve" ? { revision: detail?.approval.revision, acknowledged_blank_refs: acknowledged } : {}) });
-      if (!response.ok) { const message = await response.json(); throw Error(message.detail || "Approval could not be saved"); }
-      setSaved(action === "approve" ? "Approval saved for this exact draft. Changes to answers or documents invalidate it." : "Approval revoked. This draft cannot be submitted.");
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || "Submission request could not be completed");
+      setActionState(action === "approve" ? (result.state === "approved" ? "approval_queued" : result.state) : null);
+      setSaved(action === "revoke" ? "Approval revoked. This draft cannot be submitted." :
+        result.state === "submitted" ? "Application submitted. Confirmation is recorded; spreadsheet status will update below." :
+        result.state === "needs_review" || result.state === "waiting_review" ? (result.reason || "Submission paused for review. Your browser edits are preserved.") :
+        result.state === "submitting" ? "Submitting the current browser form. Your manual edits are preserved." :
+        result.state === "approved" ? "Submission queued for the current browser form. Your manual edits are preserved." :
+        result.reason || "Submission request recorded. Check the live status below.");
       onChanged();
       const updated = await fetch(`/api/v1/applications/${app.id}`, { cache: "no-store" }).then(r => r.json());
       setDetail(updated); setAcknowledged([]);
-    } catch (e) { setError(e instanceof Error ? e.message : "Approval could not be saved"); }
+    } catch (e) { setActionState(null); setActionError(e instanceof Error ? e.message : "Submission request could not be completed"); }
     finally { busyRef.current = false; setBusy(false); setDetailRefresh(v => v + 1); }
+  }
+  async function discardApplication() {
+    lastActionRef.current = "discard";
+    busyRef.current = true; setBusy(true); setActionError(""); setSaved("");
+    try {
+      const session = await fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json());
+      const response = await fetch(`/api/v1/applications/${app.id}/discard`, { method: "POST",
+        headers: { "Content-Type": "application/json", "X-JHB-CSRF": session.csrf_token }, body: JSON.stringify({}) });
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || "Application could not be discarded");
+      setActionState("discarded");
+      setSaved(discardMessage(result));
+      onChanged(); setDetailRefresh(v => v + 1);
+    } catch (e) { setActionError(e instanceof Error ? e.message : "Application could not be discarded"); }
+    finally { busyRef.current = false; setBusy(false); }
   }
   async function focusDraft() {
     busyRef.current = true; setBusy(true); setFocusError(""); setSaved("");
@@ -181,30 +230,34 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
     answer === null ? "Left blank" : typeof answer === "boolean" ? answer ? "Yes" : "No" : Array.isArray(answer) ? answer.join(", ") : String(answer);
   return <div className="modal-backdrop" onClick={close}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title" onClick={e => e.stopPropagation()}>
     <div className="review-heading"><div><div className="eyebrow">YOUR APPLICATION REVIEW</div><h2 id="review-title">{app.company}</h2><p>{app.title}</p><p>{detail?.location || app.location || "Location not recorded"}</p></div><button className="icon-button" aria-label="Close review" onClick={close}><Icon name="close"/></button></div>
-    <div className="review-facts"><span className={`status ${app.state}`}><i/>{applicationLabel(app)}</span><span>{app.filled_count} recorded filled fields</span><button className="text-button" disabled={busy || !detail?.draft_focus_available || !detail.packet_revision} onClick={focusDraft}>Open saved draft<Icon name="link" size={13}/></button>{app.url && <a href={app.url} target="_blank" rel="noreferrer">Original posting<Icon name="link" size={13}/></a>}</div>
+    <div className="review-facts"><span className={`status ${stage}`} aria-live="polite"><i/>{actionState ? stateNames[actionState] || actionState : applicationLabel(currentApp)}</span><span>{currentApp.filled_count} recorded filled fields</span><button className="text-button" disabled={busy || !detail?.draft_focus_available || !detail.packet_revision} onClick={focusDraft}>Open saved draft<Icon name="link" size={13}/></button>{app.url && <a href={app.url} target="_blank" rel="noreferrer">Original posting<Icon name="link" size={13}/></a>}</div>
     <div className="review-body">
       {error && <div className="notice warning" role="alert">{error}</div>}
+      {actionError && <div className="notice warning" role="alert">{actionError}</div>}
       {focusError && <div className="notice warning" role="alert">{focusError}</div>}
+      {detail?.discard && <div className="notice" aria-live="polite">{discardMessage(detail.discard)}</div>}
       {!!detail?.related_submissions?.length && <div className="notice warning"><b>A similar role was already submitted</b><p>These are different posting IDs. They may be separate openings or a repost of the same role; this is not a confirmed duplicate. Review the previous application before approving.</p><ul>{detail.related_submissions.map(previous => <li key={previous.job_hash}><b>{previous.company} · {previous.title}</b><p>{previous.location || "Location not recorded"} · Recorded submission {previous.confirmed_date || "date unavailable"}</p><a href={`/#review/${previous.job_hash}`} target="_blank" rel="noreferrer">View confirmed application</a> · <a href={previous.url} target="_blank" rel="noreferrer">Previous posting</a></li>)}</ul></div>}
       {autonomous && <div className="notice"><b>Full autonomy is enabled</b><p>A separate reviewer must verify the complete draft, answers, documents and screenshot before submission. Required unknown facts still need your input.</p></div>}
       {detail?.incident && <div className="notice incident"><b>Submission quality incident</b><p>{detail.incident.summary}</p><ul>{detail.incident.blank_questions.map(q => <li key={q.ref}>{q.question}</li>)}</ul><p>The submission receipt remains recorded. This flag concerns unanswered questions.</p></div>}
-      {detail && !detail.inventory_complete && <div className="notice warning">Full form inventory is unverified. Listed answers do not establish that every application question was reviewed. Approval is disabled.</div>}
+      {detail && !detail.inventory_complete && <div className="notice warning">The saved field inventory is incomplete. Submission checks the current browser form and preserves your edits.</div>}
       {detail?.automation_paused && <div className="notice warning">Automation is paused. Saving an answer or approval does not restart the agent.</div>}
       <div className="document-strip"><Icon name="briefcase" size={17}/><div><b>{detail?.resume_role ? `${detail.resume_role.toUpperCase()} document variant` : "Document variant not recorded"}</b><p>{detail?.documents.map(d => `${d.kind.replaceAll("_", " ")}: ${d.filename}`).join(" · ") || "No document manifest available"}</p></div></div>
       {answerFeedback && <AnswerFeedback result={answerFeedback} paused={detail?.automation_paused} autonomous={autonomous}/>}
-      {!!detail?.agent_tasks?.length && <div className="notice"><b>Agent work remaining</b><p>The worker needs to finish and verify these fields before approval.</p><ul>{detail.agent_tasks.map(task => <li key={task.ref}>{task.question}: {task.task_kind === "document_generation" ? "prepare the application document" : task.task_kind === "narrative_generation" ? "draft and check a response" : "fill the saved booklet answer"}</li>)}</ul></div>}
+      {!!detail?.agent_tasks?.length && <div className="notice"><b>Agent work remaining</b><p>The last preparation left these items unfinished. Your current browser form is checked when you submit.</p><ul>{detail.agent_tasks.map(task => <li key={task.ref}>{task.question}: {task.task_kind === "document_generation" ? "prepare the application document" : task.task_kind === "narrative_generation" ? "draft and check a response" : "fill the saved booklet answer"}</li>)}</ul></div>}
       {!!detail?.questions?.length && <section><h3 className="review-section-title">Your input for this application</h3>{detail.questions.map(question => <QuestionForm key={question.id} question={question} autonomous={autonomous} onSaved={result => { setAnswerFeedback(result); setAcknowledged([]); setDetail(null); setDetailRefresh(v => v + 1); onChanged(); }}/>)}</section>}
       <h3 className="review-section-title">Every application question <span>{detail?.fields.length ?? "—"}</span></h3>
+      {detail && detail.state !== "submitted" && <p className="review-current-note">These are the last saved answers. Edits you make in Chrome will be used when you submit the current browser form.</p>}
       {!detail && !error && <div className="table-empty">Loading the saved field inventory…</div>}
       <div className="review-field-list">{detail?.fields.map((field, i) => <div key={`${field.ref}-${i}`} className={field.answer === null ? "review-field blank" : "review-field"}><div className="review-field-title"><b>{field.question}</b><span>{field.required === null ? "Requirement unknown" : field.required ? "Required" : "Optional"}</span></div>{field.description && <div className="question-description"><p>{field.description}</p>{field.description_truncated && <p>Help text is clipped. Check the full instruction in the existing draft.</p>}</div>}{field.proposed && <div className="candidate-wording">Proposed wording · Check this grounded draft before approving.</div>}<p>{displayAnswer(field.answer)}</p>{field.candidate_wording_required && <div className="candidate-wording">The employer requests your own wording. The agent must not write this answer.</div>}</div>)}</div>
       {detail?.role_fit_notes?.length ? <div className="notice warning"><b>Role-fit considerations</b><ul>{detail.role_fit_notes.map((note, i) => <li key={i}>{note}</li>)}</ul><p>Review these potential gaps before approving. Factual application answers must remain accurate.</p></div> : null}
       {detail?.reviewer_issues.length ? <div className="notice warning"><b>Latest recorded reviewer / final-check notes</b><ul>{detail.reviewer_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>{detail.reviewer_reviewed_at && <p>Review recorded at {timeLabel(detail.reviewer_reviewed_at)} PT. Fresh checks still run before submission.</p>}</div> : null}
-      {detail?.approval.approval && <div className="notice success">Your approval status: {detail.approval.approval.state.replaceAll("_", " ")}. A pending approval is specific to this saved draft.</div>}
-      {!autonomous && optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>Check each item only if you deliberately want to submit without an answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
+      {detail?.approval.approval && <div className="notice">Submission status: {stateNames[stage] || stage}. Your current browser answers are preserved.</div>}
+      {!autonomous && optionalBlanks.length > 0 && <section className="blank-acknowledgments"><h3>Choose what stays blank</h3><p>For items still blank in Chrome, check each one you want to leave unanswered. Fields you filled in Chrome will use your current answer.</p>{optionalBlanks.map(q => <label key={q.ref}><input type="checkbox" checked={acknowledged.includes(q.ref)} onChange={e => setAcknowledged(e.target.checked ? [...acknowledged, q.ref] : acknowledged.filter(ref => ref !== q.ref))}/><span>Leave blank: {q.question}</span></label>)}</section>}
       {detail?.state === "waiting_review" && (detail.submission_supported === true ? autonomous ? <div className="notice"><p>The independent reviewer decides when this draft is ready. Turn off Full autonomy to use per-application approval.</p></div> :
-        <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div> :
+        <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Please wait…" : "Submit current browser form"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>Uses the answers and attachments currently in your Chrome tab. Your manual edits are preserved.</p>{!detail.approval.can_approve && detail.approval.reason && <p>{detail.approval.reason}</p>}</div> :
         <div className="notice warning"><b>{detail.submission_supported === false ? "Prepared for review. Automatic submission is not available for this board yet." : "Submission capability is unavailable. Refresh this review before approving."}</b><p>{detail.approval.reason || "You can inspect the saved answers and existing draft. No submission approval is available."}</p>{detail.approval.approval && <button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button>}</div>)}
-      {saved && <div className="notice success" role="status">{saved}</div>}
+      {canDiscard && <div className="discard-actions"><button className="text-button danger-button" disabled={busy} onClick={discardApplication}>Discard application</button><p>Stops this application and closes its matching tab. Your history stays available.</p></div>}
+      {saved && <div className={`notice ${["needs_review", "waiting_review", "submission_uncertain"].includes(stage) ? "warning" : "success"}`} role="status">{saved}</div>}
     </div>
     {(detail?.screenshot?.available ?? app.has_screenshot) ? <><p className="screenshot-caption">Saved at the preparation handoff{(detail?.screenshot?.captured_at ?? app.screenshot_at) ? ` · ${timeLabel((detail?.screenshot?.captured_at ?? app.screenshot_at)!)} PT` : ""}. Use Open saved draft to inspect its current state in the existing tab.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot${detail?.screenshot?.revision ? `?revision=${encodeURIComponent(detail.screenshot.revision)}` : ""}`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
     {app.confirmed_at && <div className="receipt-banner"><Icon name="check" size={16}/>Submission confirmed {dateLabel(app.confirmed_date!, true)} at {timeLabel(app.confirmed_at)} PT{app.sheet_synced ? " · Sheets synced" : ""}.</div>}
@@ -265,7 +318,7 @@ export default function Dashboard() {
   const apps = useMemo(() => (data?.applications || []).filter(a => {
     const text = `${a.company} ${a.title} ${a.location}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (board === "all" || a.board === board) &&
-      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed"].includes(a.state) || a.state === "waiting_review" && !a.inventory_ready : a.state === tab && (tab !== "waiting_review" || a.inventory_ready));
+      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed", "needs_review"].includes(displayState(a)) || displayState(a) === "waiting_review" && !a.inventory_ready : displayState(a) === tab && (tab !== "waiting_review" || a.inventory_ready));
   }), [data, query, board, tab]);
   const summary = data?.summary;
   const questionCount = data?.questions.length || 0;
@@ -311,11 +364,11 @@ export default function Dashboard() {
       </section>
       <section id="applications" className="panel applications-panel"><div className="panel-heading"><div><h2>Applications</h2><p>A clear view of every stage.</p></div><span className="muted-tag">{data?.applications.length ?? "—"} tracked</span></div>
         <div className="table-toolbar"><div className="tabs">{[["all", "All"], ["submitted", "Submitted"], ["waiting_review", "Ready"], ["attention", "Needs attention"]].map(([id, label]) => <button key={id} className={tab === id ? "selected" : ""} onClick={() => setTab(id as Tab)}>{label}</button>)}</div><div className="table-filters"><label className="search"><Icon name="search" size={15}/><input aria-label="Search applications" placeholder="Search applications…" value={query} onChange={e => setQuery(e.target.value)}/></label><select value={board} onChange={e => setBoard(e.target.value)} aria-label="Filter job board"><option value="all">All boards</option>{[...new Set(data?.applications.map(a => a.board))].sort().map(b => <option key={b}>{b}</option>)}</select></div></div>
-        <div className="table-scroll"><table><thead><tr><th>COMPANY & ROLE</th><th>BOARD</th><th>STATUS</th><th>LAST ACTIVITY</th><th>REVIEW</th></tr></thead><tbody>{apps.slice(0, 100).map(a => <tr key={a.id}><td><div className="company-cell"><div className="company-logo" style={{ background: `hsl(${parseInt(a.id.slice(0, 4), 16)%360} 35% 94%)` }}>{initials(a.company)}</div><div><a href={a.url || undefined} target="_blank" rel="noreferrer">{a.company}<Icon name="link" size={11}/></a><p>{a.title}</p><span>{a.location || "Location not recorded"}</span></div></div></td><td><span className="board-label">{a.board}</span></td><td><span className={`status ${a.state}`}><i/>{applicationLabel(a)}</span>{a.confirmed_at && <span className="receipt-note"><Icon name="check" size={11}/>{a.sheet_synced ? "Receipt + sheet synced" : "Receipt verified"}</span>}</td><td><span className="activity-date">{dateLabel(a.date, true)}</span><span className="activity-time">{timeLabel(a.updated_at)} PT</span></td><td><button className="review-button" onClick={() => openReview(a)} aria-label={`Review ${a.company} application`}><Icon name="image" size={16}/>View</button></td></tr>)}</tbody></table>{!apps.length && <div className="table-empty">{data ? "No applications match these filters." : "Connecting to your local workspace…"}</div>}</div>
+        <div className="table-scroll"><table><thead><tr><th>COMPANY & ROLE</th><th>BOARD</th><th>STATUS</th><th>LAST ACTIVITY</th><th>REVIEW</th></tr></thead><tbody>{apps.slice(0, 100).map(a => <tr key={a.id}><td><div className="company-cell"><div className="company-logo" style={{ background: `hsl(${parseInt(a.id.slice(0, 4), 16)%360} 35% 94%)` }}>{initials(a.company)}</div><div><a href={a.url || undefined} target="_blank" rel="noreferrer">{a.company}<Icon name="link" size={11}/></a><p>{a.title}</p><span>{a.location || "Location not recorded"}</span></div></div></td><td><span className="board-label">{a.board}</span></td><td><span className={`status ${displayState(a)}`}><i/>{applicationLabel(a)}</span>{a.confirmed_at && <span className="receipt-note"><Icon name="check" size={11}/>{a.sheet_synced ? "Receipt + sheet synced" : "Receipt verified"}</span>}</td><td><span className="activity-date">{dateLabel(a.date, true)}</span><span className="activity-time">{timeLabel(a.updated_at)} PT</span></td><td><button className="review-button" onClick={() => openReview(a)} aria-label={`Review ${a.company} application`}><Icon name="image" size={16}/>View</button></td></tr>)}</tbody></table>{!apps.length && <div className="table-empty">{data ? "No applications match these filters." : "Connecting to your local workspace…"}</div>}</div>
         <div className="table-footer">Showing {Math.min(apps.length, 100)} of {apps.length} matching applications{data?.applications_truncated ? " · API list limited to 5,000" : ""}<span>Live data · no simulated progress</span></div>
       </section><Openings/><footer className="page-footer"><span><Icon name="shield" size={13}/>Local workspace. Candidate data stays private.</span><span>{data ? `Last updated ${timeLabel(data.generated_at)} PT` : "Waiting for local API"}</span></footer>
       </div>
     </main>
-    {preview && <ReviewModal key={preview.id} application={preview} close={closeReview} onChanged={reload} autonomous={autonomous}/>}
+    {preview && <ReviewModal key={preview.id} application={data?.applications.find(item => item.id === preview.id) || preview} close={closeReview} onChanged={reload} autonomous={autonomous}/>}
   </div>;
 }

@@ -74,8 +74,22 @@ def workspace(fragment="", state=None, configure=None, browser_now=None):
             if path.endswith("/answer"):
                 overview["questions"] = []; overview["summary"]["questions"] = 0
             elif path.endswith("/approve"):
+                if state and state.get("approve_error"):
+                    route.fulfill(status=409, content_type="application/json", body=json.dumps({"detail":state["approve_error"]}))
+                    return
                 detail["approval"]["can_approve"] = False
                 detail["approval"]["approval"] = {"state": "approved"}
+                if state and state.get("approve_result"):
+                    response = state["approve_result"]
+                    detail.update(state=response.get("application_state", "waiting_review"), display_state=response["state"])
+                    route.fulfill(status=200, content_type="application/json", body=json.dumps(response))
+                    return
+            if path.endswith("/discard"):
+                detail.update(state="skipped", display_state="discarded")
+                app.update(state="skipped", display_state="discarded", inventory_ready=False)
+                overview["summary"]["ready"] = 0
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"state":"discarded", "reason":"Application discarded. Its worker is stopped. Its application tab is closed. History is preserved.", "tab_close":{"state":"closed"}, "worker_stop":{"state":"stopped"}}))
+                return
             if path.endswith("/focus"):
                 if state is not None and state.get("focus_unavailable"):
                     route.fulfill(status=409, content_type="application/json", body=json.dumps({"detail": "Saved draft tab is unavailable. No new form was opened."}))
@@ -142,12 +156,12 @@ def test_review_shows_all_fields_and_never_prechecks_optional_blank_or_autoappro
         assert page.get_by_text("Role-fit considerations", exact=True).is_visible()
         assert page.get_by_text("This posting prefers another year of experience.", exact=True).is_visible()
         assert page.get_by_text("The employer requests your own wording. The agent must not write this answer.", exact=True).is_visible()
-        button = page.get_by_role("button", name="Approve and submit this application", exact=True)
+        button = page.get_by_role("button", name="Submit current browser form", exact=True)
         ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")
-        assert not ack.is_checked() and button.is_disabled() and actions == []
+        assert not ack.is_checked() and button.is_enabled() and actions == []
         ack.check(); assert button.is_enabled()
         button.click()
-        page.get_by_text("Your approval status: approved. A pending approval is specific to this saved draft.", exact=True).wait_for()
+        page.get_by_text("Submission status: Submission queued. Your current browser answers are preserved.", exact=True).wait_for()
         assert actions == [(f"/api/v1/applications/{KEY}/approve", {"revision": "exact-draft-revision", "acknowledged_blank_refs": ["why"]})]
         assert button.is_disabled() and errors == []
 
@@ -156,7 +170,7 @@ def test_review_deep_link_opens_only_requested_draft_without_approval():
     with workspace(f"#review/{KEY}") as (page, actions, errors):
         page.get_by_text("Synthetic Candidate", exact=True).wait_for()
         assert page.get_by_role("dialog").is_visible() and actions == []
-        assert page.get_by_role("button", name="Approve and submit this application").is_disabled()
+        assert page.get_by_role("button", name="Submit current browser form").is_enabled()
         page.get_by_role("button", name="Close review").click()
         assert page.get_by_role("dialog").count() == 0 and "#review/" not in page.url
         page.get_by_role("button", name="Review Synthetic Employer application").click()
@@ -181,12 +195,12 @@ def test_open_review_refreshes_and_clears_blank_ack_when_draft_changes():
     with workspace(f"#review/{KEY}", state=state) as (page, actions, errors):
         ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")
         ack.wait_for(); ack.check()
-        button = page.get_by_role("button", name="Approve and submit this application", exact=True)
+        button = page.get_by_role("button", name="Submit current browser form", exact=True)
         assert button.is_enabled()
         state["detail"]["approval"]["revision"] = "new-draft-revision"
         state["detail"]["fields"][0]["answer"] = "Updated Synthetic Candidate"
         page.get_by_text("Updated Synthetic Candidate", exact=True).wait_for(timeout=10000)
-        assert not ack.is_checked() and button.is_disabled()
+        assert not ack.is_checked() and button.is_enabled()
         assert actions == [] and errors == []
 
 
@@ -219,14 +233,14 @@ def test_exact_review_question_can_be_answered_inline_without_approving():
         assert len(actions) == 1 and actions[0][0].endswith("/answer") and errors == []
 
 
-def test_required_pending_question_disables_approval_despite_stale_approve_hint():
+def test_current_form_action_uses_server_capability_instead_of_stale_saved_required_blank():
     state = {}
     with workspace(f"#review/{KEY}", state=state) as (page, actions, errors):
         ack = page.get_by_label("Leave blank: Why this company? Please, no AI text.")
         ack.wait_for(); ack.check()
         state["detail"]["questions"] = [state["question"]]
         page.get_by_role("dialog").get_by_text("Your input for this application", exact=True).wait_for(timeout=10000)
-        assert page.get_by_role("button", name="Approve and submit this application", exact=True).is_disabled()
+        assert page.get_by_role("button", name="Submit current browser form", exact=True).is_enabled()
         assert actions == [] and errors == []
 
 
@@ -338,7 +352,7 @@ def test_review_agent_work_is_separate_from_candidate_questions_and_blocks_appro
         page.get_by_text('Agent work remaining', exact=True).wait_for()
         assert page.get_by_text('Gender: fill the saved booklet answer', exact=True).is_visible()
         assert page.get_by_text('Cover Letter: prepare the application document', exact=True).is_visible()
-        assert page.get_by_role('button', name='Approve and submit this application').is_disabled()
+        assert page.get_by_role('button', name='Submit current browser form').is_disabled()
         assert page.get_by_label('Answer: Gender').count() == 0
         assert not actions and not errors
 
@@ -376,7 +390,7 @@ def test_unsupported_or_missing_submission_capability_keeps_review_without_appro
                     else 'Submission capability is unavailable. Refresh this review before approving.')
         assert page.get_by_text(expected, exact=True).is_visible()
         assert page.get_by_text("This board's final submission adapter still needs validation", exact=True).is_visible()
-        assert page.get_by_role('button', name='Approve and submit this application').count() == 0
+        assert page.get_by_role('button', name='Submit current browser form').count() == 0
         assert page.get_by_role('button', name='Open saved draft').is_enabled()
         assert page.get_by_alt_text('Saved review screenshot for Synthetic Employer').is_visible()
         assert not actions and not errors
@@ -388,7 +402,7 @@ def test_unsupported_submission_board_preserves_explicit_revoke_action():
         detail['approval']['approval'] = {'state': 'approved'}
     with workspace(f'#review/{KEY}', configure=approved_unsupported) as (page, actions, errors):
         page.get_by_text('Synthetic Candidate', exact=True).wait_for()
-        assert page.get_by_role('button', name='Approve and submit this application').count() == 0
+        assert page.get_by_role('button', name='Submit current browser form').count() == 0
         page.get_by_role('button', name='Revoke approval', exact=True).click()
         page.get_by_text('Approval revoked. This draft cannot be submitted.', exact=True).wait_for()
         assert actions == [(f'/api/v1/applications/{KEY}/revoke', {})] and not errors
@@ -430,7 +444,7 @@ def test_autonomy_review_does_not_offer_misleading_per_job_approval_or_revoke():
         page.get_by_role('button', name='Review Synthetic Employer application').click()
         page.get_by_text('Full autonomy is enabled', exact=True).wait_for()
         page.get_by_text('Why this company? Please, no AI text.', exact=True).wait_for()
-        assert not page.get_by_role('button', name='Approve and submit this application', exact=True).count()
+        assert not page.get_by_role('button', name='Submit current browser form', exact=True).count()
         assert not page.get_by_role('button', name='Revoke approval', exact=True).count()
         assert not page.get_by_role('checkbox', name='Leave blank: Why this company? Please, no AI text.', exact=True).count()
         assert page.get_by_text('Why this company? Please, no AI text.', exact=True).is_visible()
@@ -456,3 +470,84 @@ def test_readable_mobile_layout_preserves_status_and_review_without_page_overflo
         assert page.locator('.review-modal').evaluate('e => e.scrollWidth <= e.clientWidth')
         assert float(page.locator('.review-field p').first.evaluate('e => getComputedStyle(e).fontSize').removesuffix('px')) >= 16
         assert not actions and not errors
+
+
+@pytest.mark.parametrize('result,expected', [
+    ({'state':'submitted','application_state':'submitted'}, 'Application submitted. Confirmation is recorded; spreadsheet status will update below.'),
+    ({'state':'needs_review','reason':'A required browser field is empty. Your edits were preserved.'}, 'A required browser field is empty. Your edits were preserved.'),
+    ({'state':'submitting'}, 'Submitting the current browser form. Your manual edits are preserved.')])
+def test_current_form_submit_reports_actual_result_without_claiming_saved_draft_approval(result, expected):
+    state = {'approve_result': result}
+    with workspace(f'#review/{KEY}', state=state) as (page, actions, errors):
+        button = page.get_by_role('button', name='Submit current browser form', exact=True)
+        button.wait_for()
+        assert button.is_enabled() and not actions
+        page.get_by_text('Uses the answers and attachments currently in your Chrome tab. Your manual edits are preserved.', exact=True).wait_for()
+        button.click()
+        page.get_by_role('status').get_by_text(expected, exact=True).wait_for()
+        assert actions == [(f'/api/v1/applications/{KEY}/approve', {'revision':'exact-draft-revision','acknowledged_blank_refs':[]})]
+        expected_status = {'submitted':'Submitted','submitting':'Submitting','needs_review':'Needs review'}[result['state']]
+        assert page.locator('.review-facts .status').inner_text() == expected_status
+        assert not errors
+
+
+def test_review_status_polls_durable_progress_instead_of_stale_overview_snapshot():
+    state = {}
+    with workspace(f'#review/{KEY}', state=state) as (page, actions, errors):
+        page.get_by_text('Synthetic Candidate', exact=True).wait_for()
+        state['detail'].update(display_state='submitting', approval_state='submitting')
+        page.locator('.review-facts .status').get_by_text('Submitting', exact=True).wait_for(timeout=10000)
+        assert state['overview']['applications'][0]['state'] == 'waiting_review'
+        assert page.get_by_role('button',name='Submit current browser form',exact=True).is_disabled()
+        state['detail'].update(state='submitted', display_state='submitted', approval_state='submitted')
+        page.locator('.review-facts .status').get_by_text('Submitted',exact=True).wait_for(timeout=10000)
+        assert not page.get_by_role('button',name='Submit current browser form',exact=True).count()
+        assert not actions and not errors
+
+
+def test_discard_is_an_explicit_scoped_csrf_action_and_keeps_review_history():
+    with workspace(f'#review/{KEY}') as (page, actions, errors):
+        button=page.get_by_role('button',name='Discard application',exact=True)
+        button.wait_for(); assert not actions
+        button.click()
+        page.get_by_role('status').get_by_text('Application discarded. Its worker is stopped. Its application tab is closed. History is preserved.',exact=True).wait_for()
+        assert actions == [(f'/api/v1/applications/{KEY}/discard',{})]
+        assert page.locator('.review-facts .status').inner_text() == 'Discarded'
+        assert page.get_by_text('Synthetic Candidate',exact=True).is_visible()
+        assert not page.get_by_role('button',name='Discard application',exact=True).count()
+        assert not page.get_by_role('button',name='Submit current browser form',exact=True).count()
+        assert not errors
+
+
+@pytest.mark.parametrize('stage',['submitted','submitting','submission_uncertain','discarded'])
+def test_terminal_or_active_submission_never_offers_unsafe_discard(stage):
+    def configure(question,detail):
+        detail['display_state']=stage
+        if stage in {'submitted','submission_uncertain'}:detail['state']=stage
+    with workspace(f'#review/{KEY}',configure=configure) as (page,actions,errors):
+        page.get_by_text('Synthetic Candidate',exact=True).wait_for()
+        assert not page.get_by_role('button',name='Discard application',exact=True).count()
+        assert not actions and not errors
+
+
+def test_open_review_receives_updated_receipt_and_sheet_status_without_reopening():
+    state={}
+    with workspace(f'#review/{KEY}',state=state) as (page,actions,errors):
+        page.get_by_text('Synthetic Candidate',exact=True).wait_for()
+        state['overview']['applications'][0].update(state='submitted',display_state='submitted',confirmed_at='2026-10-04T21:10:00Z',confirmed_date='2026-10-04',sheet_synced=True)
+        state['detail'].update(state='submitted',display_state='submitted')
+        page.locator('.receipt-banner').get_by_text('Sheets synced',exact=False).wait_for(timeout=10000)
+        assert page.locator('.review-facts .status').inner_text() == 'Submitted'
+        assert not actions and not errors
+
+
+def test_failed_current_form_submission_explanation_survives_automatic_detail_refresh():
+    message = 'Current browser form has a required unanswered question. Your edits are preserved.'
+    state={'approve_error':message}
+    with workspace(f'#review/{KEY}',state=state) as (page,actions,errors):
+        page.get_by_role('button',name='Submit current browser form',exact=True).click()
+        page.get_by_role('alert').get_by_text(message,exact=True).wait_for()
+        page.wait_for_timeout(5300)
+        assert page.get_by_role('alert').get_by_text(message,exact=True).is_visible()
+        assert len(actions)==1 and actions[0][0].endswith('/approve')
+        assert not errors

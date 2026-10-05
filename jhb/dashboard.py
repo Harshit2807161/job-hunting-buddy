@@ -99,6 +99,23 @@ def _text(value, length=300):
     return value[:length] if isinstance(value, str) else ""
 
 
+def _application_presentation(conn, job_hash, state):
+    """Expose durable approval progress without changing queue authority."""
+    stage, approval_state = state, None
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone():
+        row = conn.execute("SELECT state,expires_at FROM application_approvals WHERE job_hash=? "
+                           "ORDER BY approved_at DESC,rowid DESC LIMIT 1", (job_hash,)).fetchone()
+        if row:
+            approval_state = row["state"]
+            if approval_state == "approved" and row["expires_at"] <= datetime.now(timezone.utc).timestamp():
+                approval_state = "expired"
+    if state == "waiting_review":
+        stage = {"approved": "approval_queued", "submitting": "submitting",
+                 "needs_review": "needs_review", "failed": "needs_review", "expired": "needs_review",
+                 "uncertain": "submission_uncertain"}.get(approval_state, state)
+    return {"display_state": stage, "approval_state": approval_state}
+
+
 class DashboardStore:
     def __init__(self, root, db_path, book_path):
         self.root, self.db_path, self.book_path = Path(root), Path(db_path), Path(book_path)
@@ -222,6 +239,7 @@ class DashboardStore:
             raise ValueError("Application identity mismatch")
         with self.connection() as conn:
             related = _related_submissions(conn, job)
+            presentation = _application_presentation(conn, job_hash, row["state"])
         path, packet, displayed_packet_sha = self.packet(row, job, with_digest=True)
         manifest = packet.get("review_inventory", {})
         inventory = manifest.get("fields", packet.get("review_questions", [])) if isinstance(manifest, dict) else []
@@ -383,7 +401,7 @@ class DashboardStore:
             except (ValueError, OSError, TypeError, AttributeError):
                 pass
         from .applications.application_discard import status as discard_status
-        return {"job_hash": job_hash, "state": row["state"], "location": _location(job),
+        return {"job_hash": job_hash, "state": row["state"], **presentation, "location": _location(job),
             "discard": discard_status(self.root, job_hash),
             "related_submissions": related, "fields": output, "role_fit_notes": fit_notes[:20],
             "screenshot": screenshot, "packet_revision": displayed_packet_sha,
@@ -505,7 +523,8 @@ class DashboardStore:
                     "board": _text(source["board"]) if source else "unknown",
                     "application_url": boards.canonical_url(destination) if destination else None,
                     "application_id": app_hash if application else None,
-                    "application_state": application["state"] if application else None})
+                    "application_state": application["state"] if application else None,
+                    "application_display_state": _application_presentation(conn, app_hash, application["state"])["display_state"] if application else None})
             last = rows[limit-1] if len(rows) > limit else None
             return {"items": items, "total": total, "next_cursor":
                     {"before_time": last["first_seen"], "before_id": last["dedupe_hash"]} if last else None}
@@ -581,7 +600,8 @@ class DashboardStore:
                         application = {"id": row["job_hash"], "company": _text(job.get("company")),
                             "title": _text(job.get("title")), "location": _text(location),
                             "url": boards.canonical_url(job.get("url")), "board": boards.board_type(job.get("url")),
-                            "state": row["state"], "updated_at": row["updated_at"], "date": _day(row["updated_at"]),
+                            "state": row["state"], **_application_presentation(conn, row["job_hash"], row["state"]),
+                            "updated_at": row["updated_at"], "date": _day(row["updated_at"]),
                             "attempts": row["attempts"], "filled_count": len(packet.get("filled", [])),
                             "missing_count": len(packet.get("missing", [])), "has_screenshot": shot,
                             "inventory_ready": inventory_ready,
@@ -592,7 +612,7 @@ class DashboardStore:
                             "sheet_synced": bool(proof and proof["submission_key"] in synced)}
                         applications.append(application)
                         events.append({"job_hash": application["id"], "company": application["company"],
-                            "title": application["title"], "state": application["state"], "at": application["updated_at"]})
+                            "title": application["title"], "state": application["display_state"], "at": application["updated_at"]})
                 if "manual_applications" in tables:
                     columns = {r[1] for r in conn.execute("PRAGMA table_info(manual_applications)")}
                     if {"job_hash", "state"} <= columns:
@@ -623,7 +643,7 @@ class DashboardStore:
             "storage_available": storage_available, "booklet_available": booklet_available, "automation_paused": self.paused(),
             "summary": {"confirmed_today": daily[selected.isoformat()]["confirmed"],
                 "confirmed_total": len(confirmed), "prepared_today": daily[selected.isoformat()]["prepared"],
-                "ready": sum(app["inventory_ready"] for app in applications),
+                "ready": sum(app["inventory_ready"] and app["display_state"] == "waiting_review" for app in applications),
                 "legacy_review": sum(app["state"] == "waiting_review" and not app["inventory_verified"] for app in applications),
                 "running": state_counts["running"],
                 "queued": state_counts["queued"]+state_counts["retry"], "questions": len(pending),

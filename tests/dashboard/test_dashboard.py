@@ -1011,3 +1011,53 @@ def test_dashboard_cli_loads_same_local_runtime_gate_as_workers(tmp_path, monkey
     monkeypatch.setattr(uvicorn, 'run', lambda *a, **kw: seen.append(os.environ.get('JHB_OVERNIGHT_SUBMISSIONS_ENABLED')))
     dashboard.main()
     assert seen == [expected]
+
+
+@pytest.mark.parametrize('approval_state,display_state', [
+    ('approved', 'approval_queued'), ('submitting', 'submitting'),
+    ('needs_review', 'needs_review'), ('failed', 'needs_review'),
+    ('expired', 'needs_review'), ('revoked', 'waiting_review')])
+def test_pending_submission_progress_is_not_presented_as_ready(portal, approval_state, display_state):
+    import time
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, complete=True)
+    approvals.initialize(conn)
+    now = int(time.time())
+    conn.execute('INSERT INTO application_approvals VALUES(?,?,?,?,?,?,?,?)',
+                 ('fixture', job['dedupe_hash'], approval_state, now, now+7200, 'revision', '/unused-authority', None))
+    conn.commit()
+    result = client.get('/api/v1/overview').json()
+    assert result['applications'][0]['state'] == 'waiting_review'
+    assert result['applications'][0]['display_state'] == display_state
+    assert result['applications'][0]['approval_state'] == approval_state
+    assert result['summary']['ready'] == (1 if display_state == 'waiting_review' else 0)
+    assert result['activity'][0]['state'] == display_state
+    assert conn.execute('SELECT state FROM applications').fetchone()[0] == 'waiting_review'
+    assert conn.execute('SELECT state FROM application_approvals').fetchone()[0] == approval_state
+
+
+@pytest.mark.parametrize('state', ['submitted', 'submission_uncertain', 'skipped'])
+def test_terminal_application_display_wins_over_old_pending_approval(portal, state):
+    import time
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state=state, complete=True)
+    approvals.initialize(conn); now = int(time.time())
+    conn.execute('INSERT INTO application_approvals VALUES(?,?,?,?,?,?,?,?)',
+                 ('fixture', job['dedupe_hash'], 'approved', now, now+7200, 'revision', '/unused-authority', None));conn.commit()
+    result = client.get('/api/v1/overview').json()
+    assert result['applications'][0]['display_state'] == state
+    assert result['summary']['ready'] == 0
+
+
+def test_latest_approval_and_expiry_are_presented_read_only(portal):
+    import time
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, complete=True); approvals.initialize(conn); now = int(time.time())
+    conn.executemany('INSERT INTO application_approvals VALUES(?,?,?,?,?,?,?,?)', [
+        ('old', job['dedupe_hash'], 'submitting', now-20, now+7200, 'old', '/unused-old', None),
+        ('new', job['dedupe_hash'], 'approved', now-10, now-1, 'new', '/unused-new', None)])
+    conn.commit()
+    result = client.get('/api/v1/overview').json()
+    assert result['applications'][0]['display_state'] == 'needs_review'
+    assert result['applications'][0]['approval_state'] == 'expired'
+    assert conn.execute("SELECT state FROM application_approvals WHERE approval_id='new'").fetchone()[0] == 'approved'
