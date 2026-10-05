@@ -34,7 +34,9 @@ def test_proud_work_preserves_metric_and_prefers_aws_on_equal_relevance():
     answers=experience();before=repr(answers)
     record=narratives.proposal(field("What's something you worked on that you were proud of?"),job(text='Build Python APIs and improve their reliability.'),answers)
     assert record['source']['section']=='Amazon Web Services'
-    assert record['value'].endswith('• Improved API latency by 10%.')
+    assert 'improved API latency by 10%.' in record['value']
+    assert '\n' not in record['value'] and '•' not in record['value']
+    assert record['source']['evidence_bullets'] == ['• Improved API latency by 10%.']
     assert '20%' not in record['value'] and record['proposed'] is True
     assert record['source']['review_status']=='proposed'
     assert repr(answers)==before

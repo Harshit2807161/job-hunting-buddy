@@ -130,6 +130,13 @@ class CatalogForm:
         if value == self.original:
             raise ValueError(self.error)
 
+    async def describe(self, question):
+        if self.error == "Stored answer is absent from dropdown options":
+            return {"choices": ["Other"], "truncated": False}
+        if self.error == "Observed field is no longer available":
+            raise ValueError(self.error)
+        return {"choices": [self.original], "truncated": False}
+
 
 @pytest.mark.parametrize("ref,label,key,fallback_key,original,fallback", [
     ("school--0", "School", "education.0.school", "standing.catalog.0.school", "Example Missing College", "Other"),
@@ -153,14 +160,15 @@ def test_approved_catalog_fallback_applies_only_after_original_option_is_absent(
     "Dropdown did not retain the selected answer",
 ])
 def test_education_catalog_fallback_cannot_hide_ambiguity_or_technical_failure(error):
+    from jhb.applications.cli_browser import BrowserOperationError
     original = "Example Missing College"
     actions = CatalogForm(field("School", ref="school--0"), original, error)
     answers = {"education.0.school": booklet.answer(original, "Verified synthetic school"),
                "standing.catalog.0.school": booklet.answer("Other", "Explicit synthetic user catalog fallback")}
-    result, _ = asyncio.run(prepare(None, {"url": "synthetic"}, answers, deterministic_plan, None, cli_actions=actions))
-    assert result["state"] == "waiting_input"
+    with pytest.raises(BrowserOperationError) as failure:
+        asyncio.run(prepare(None, {"url": "synthetic"}, answers, deterministic_plan, None, cli_actions=actions))
+    assert failure.value.retryable
     assert actions.attempts == [original]
-    assert result["missing"][0]["question"] == "School"
 
 
 def test_catalog_fallback_requires_explicit_user_policy():
