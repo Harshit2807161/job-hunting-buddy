@@ -188,11 +188,22 @@ def dispatch(request, helpers):
     def type_value(node, value, *, segmented=False):
         cdp("DOM.focus", nodeId=node)
         press("a", "KeyA", modifiers=4, commands=["selectAll"])
-        press("Backspace")
         if segmented:
-            for char in str(value):
-                press(char, "Digit"+char, text=char, windowsVirtualKeyCode=ord(char))
+            # An empty native date segment can interpret Backspace as moving
+            # focus to its sibling. Replace the selected text with digit keys.
+            remote = cdp("DOM.resolveNode", nodeId=node)["object"]["objectId"]
+            try:
+                for char in str(value):
+                    focused = cdp("Runtime.callFunctionOn", objectId=remote,
+                        functionDeclaration="function(){return this.isConnected&&document.activeElement===this&&!this.disabled&&!this.readOnly;}",
+                        returnByValue=True)["result"].get("value")
+                    if focused is not True:
+                        raise ValueError("Workday date did not retain an approved segment")
+                    press(char, "Digit"+char, text=char, windowsVirtualKeyCode=ord(char))
+            finally:
+                cdp("Runtime.releaseObject", objectId=remote)
         else:
+            press("Backspace")
             cdp("Input.insertText", text=str(value))
         press("Tab"); wait(0.1)
 
@@ -399,6 +410,23 @@ def dispatch(request, helpers):
             retained = js("document.getElementById("+json.dumps(actual_id)+").value")
             if not str(retained).isdigit() or int(retained) != number:
                 raise ValueError("Workday date did not retain an approved segment")
+        ids = [field["date"]["base"]+"-dateSection"+part+"-input" for part, _ in parts]
+        active_segment = json.dumps(ids)+".includes(document.activeElement?.id)"
+        # A later segment or composite blur can change a previously checked
+        # month. Finish native blur, then audit the entire approved date.
+        for _ in range(len(ids)+1):
+            if js(active_segment) is not True:
+                break
+            press("Tab"); wait(0.1)
+        if js(active_segment) is True:
+            raise ValueError("Workday date did not retain an approved segment")
+        owned_guard()
+        retained = js(json.dumps(ids)+".map(id=>{const nodes=[...document.querySelectorAll('input')].filter(e=>e.id===id);const e=nodes.length===1?nodes[0]:null;return e?{value:e.value,invalid:e.getAttribute('aria-invalid')==='true'||e.validity.valid===false,unavailable:e.disabled||e.readOnly}:null})")
+        if (not isinstance(retained, list) or len(retained) != len(parts) or
+                any(not item or item.get("invalid") or item.get("unavailable") or
+                    not str(item.get("value", "")).isdigit() or int(item["value"]) != number
+                    for item, (_, number) in zip(retained, parts))):
+            raise ValueError("Workday date did not retain an approved segment")
         return {"verified": True}
     if field["type"] == "file":
         path = Path(str(value)).resolve()

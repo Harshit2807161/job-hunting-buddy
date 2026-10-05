@@ -247,3 +247,81 @@ def test_empty_workday_landing_or_saved_review_cannot_be_reported_complete(label
         snapshot = call("observe")
         assert snapshot["fields"] == [] and snapshot["handoff"] == state
         assert inspect("window.clicks") == 0 and inspect("window.__jhbGuard") is True
+
+
+SEGMENTED_DATE_HTML = '''<style>input{display:block;margin:8px;padding:5px}</style>
+<label for=workExperience-0--jobTitle>Job Title</label><input id=workExperience-0--jobTitle>
+<div id=date>
+<input id=workExperience-0--startDate-dateSectionMonth-input aria-label='Start Date Month' maxlength=2>
+<input id=workExperience-0--startDate-dateSectionYear-input aria-label='Start Date Year' maxlength=4>
+</div><button type=button>Next section</button><form><button type=submit>Submit</button></form>
+<script>
+window.focusMoves=0;window.submissions=0;
+const month=document.querySelector('[id$=Month-input]'),year=document.querySelector('[id$=Year-input]');
+year.addEventListener('keydown',e=>{if(e.key==='Backspace'&&year.value===''){window.focusMoves++;month.focus();}});
+document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++;};
+</script>'''
+
+
+def test_segmented_date_empty_year_backspace_moves_native_focus_but_replacement_does_not():
+    with fixture_runtime(SEGMENTED_DATE_HTML) as (call, inspect, helpers, lane):
+        # Demonstrate the widget's native failure: deleting an empty year moves
+        # focus to Month. This is an actual key event, not a mocked runtime call.
+        def legacy_empty_delete():
+            cdp = helpers['cdp']
+            root = cdp('DOM.getDocument')['root']['nodeId']
+            node = cdp('DOM.querySelector', nodeId=root, selector='[id$=Year-input]')['nodeId']
+            cdp('DOM.focus', nodeId=node)
+            cdp('Input.dispatchKeyEvent', type='keyDown', key='a', code='KeyA', modifiers=4, commands=['selectAll'])
+            cdp('Input.dispatchKeyEvent', type='keyUp', key='a', code='KeyA')
+            cdp('Input.dispatchKeyEvent', type='keyDown', key='Backspace', code='Backspace')
+            cdp('Input.dispatchKeyEvent', type='keyUp', key='Backspace', code='Backspace')
+        lane.submit(legacy_empty_delete).result()
+        assert inspect("document.activeElement.id.endsWith('Month-input')") is True
+        assert inspect('window.focusMoves') == 1
+        inspect("window.focusMoves=0")
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        assert call('fill', field=field, value='2025-09')['verified'] is True
+        assert inspect("document.querySelector('[id$=Month-input]').value") == '9'
+        assert inspect("document.querySelector('[id$=Year-input]').value") == '2025'
+        assert inspect('window.focusMoves') == 0
+        assert inspect('window.submissions') == 0 and inspect('window.__jhbGuard') is True
+
+
+@pytest.mark.parametrize('corruption', ['sibling_value', 'blur_invalid'])
+def test_segmented_date_rechecks_earlier_segments_after_year_and_whole_widget_blur(corruption):
+    script = ("year.addEventListener('input',()=>{if(year.value.length===4)month.value='2';});" if corruption=='sibling_value'
+              else "year.addEventListener('blur',()=>{if(year.value.length===4)month.setAttribute('aria-invalid','true');});")
+    html = SEGMENTED_DATE_HTML.replace('</script>', script+'</script>')
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        with pytest.raises(ValueError, match='date did not retain an approved segment'):
+            call('fill', field=field, value='2025-09')
+        # Year retained correctly, but the later edit/blur invalidated Month.
+        # Per-segment immediate checks alone would falsely approve the date.
+        assert inspect("document.querySelector('[id$=Year-input]').value") == '2025'
+        assert inspect("document.querySelector('[id$=Month-input]').value") == ('2' if corruption=='sibling_value' else '9')
+        assert inspect('window.submissions') == 0 and inspect('window.__jhbGuard') is True
+
+
+def test_segmented_date_does_not_invent_day_for_month_precision_source():
+    html = SEGMENTED_DATE_HTML.replace('</div>', "<input id=workExperience-0--startDate-dateSectionDay-input aria-label='Start Date Day' maxlength=2></div>")
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        with pytest.raises(ValueError, match='explicitly approved day'):
+            call('fill', field=field, value='2025-09')
+        assert inspect("[...document.querySelectorAll('#date input')].map(e=>e.value)") == ['', '', '']
+        assert call('fill', field=field, value='2025-09-14')['verified'] is True
+        assert inspect("document.querySelector('[id$=Day-input]').value") == '14'
+        assert inspect('window.submissions') == 0
+
+
+def test_segmented_date_stops_before_typing_into_a_sibling_when_native_focus_moves():
+    html = SEGMENTED_DATE_HTML.replace('</script>', "year.addEventListener('input',()=>{if(year.value.length===1)month.focus();});</script>")
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        with pytest.raises(ValueError, match='date did not retain an approved segment'):
+            call('fill', field=field, value='2025-09')
+        assert inspect("document.querySelector('[id$=Month-input]').value") == '9'
+        assert inspect("document.querySelector('[id$=Year-input]').value") == '2'
+        assert inspect('window.submissions') == 0 and inspect('window.__jhbGuard') is True
