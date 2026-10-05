@@ -159,6 +159,11 @@ class OwnedTabs:
         if len(matching) > 1:
             raise ValueError("Multiple exact job tabs need disambiguation")
         count = self._count(before)
+        if purpose == "source_readonly":
+            # Unknown popups remain preserved and consume capacity. A read of
+            # an existing exact source tab adds no tab; a fresh source needs one.
+            count += sum(target in before and row.get("state") == "active" and target not in self.tabs
+                         for target, row in self.unclaimed.items())
         reserve = 2 if purpose == "source" else 1
         if count + reserve > _cap() and not (current.get("targetId") and _blank(current.get("url"))):
             raise TabCapacityReached(CAPACITY_MESSAGE)
@@ -171,6 +176,49 @@ class OwnedTabs:
                                  "creation_proof": "official_new_tab_returned_new_target"}
             self.save()
         return returned
+
+    def cleanup_verified_source(self, request):
+        """Close one proven transient source after exact isolated JD validation."""
+        from .authorized_submission import private_file
+        from .job_context import valid_description
+        from .linkedin_runtime import linkedin_id, outbound
+        try:
+            path = private_file(request.get("evidence_path", ""))
+            raw = path.read_bytes()
+            proof = json.loads(raw)
+            source_id = linkedin_id(request.get("approved_url"))
+            result = proof.get("resolved", {})
+            url = result.get("application_url")
+            identity = boards.job_identity(url)
+            target = proof.get("source_target_id")
+            row = self.tabs.get(target, {})
+            live = self.refresh()
+            if (hashlib.sha256(raw).hexdigest() != request.get("evidence_sha256")
+                    or proof.get("provider") != "readonly_linkedin_apply_href_and_isolated_mcp"
+                    or proof.get("native_apply_clicked") is not False or not source_id
+                    or linkedin_id(proof.get("source_url")) != source_id
+                    or proof.get("observed_apply_url") != result.get("source_url")
+                    or not outbound(proof.get("observed_apply_url"))
+                    or not isinstance(proof.get("recorded_at"), (int, float))
+                    or not 0 <= time.time()-proof["recorded_at"] <= 300
+                    or result.get("state") not in {"greenhouse", "not_greenhouse"}
+                    or result.get("closed") or not identity or identity[0] == "linkedin"
+                    or not valid_description(result.get("verified_job_description"), url)
+                    or row.get("state") != "active" or row.get("purpose") not in {"source", "source_readonly"}
+                    or row.get("creation_proof") != "official_new_tab_returned_new_target"
+                    or row.get("job_identity") != ["linkedin", source_id]
+                    or target not in live or linkedin_id(live[target].get("url")) != source_id
+                    or not any(e.get("kind") == "mcp_navigation" and boards.job_identity(e.get("url")) == identity
+                               for e in result.get("evidence", []) if isinstance(e, dict))):
+                return []
+            original = self.helpers["current_tab"]().get("targetId")
+            if self.close(target, "verified_readonly_apply_href_destination", expected_url=live[target]["url"]):
+                if original != target and original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
+                    self.helpers["switch_tab"](original)
+                return [target]
+        except (OSError, ValueError, TypeError, KeyError):
+            return []
+        return []
 
     def retain_review(self, request):
         target = request.get("target_id")
@@ -309,7 +357,7 @@ class OwnedTabs:
                 and target_id in nav.get("before_target_ids", [])):
             return
         existing = self.tabs.get(target_id, {})
-        if (existing.get("state") == "active" and existing.get("purpose") == "source"
+        if (existing.get("state") == "active" and existing.get("purpose") in {"source", "source_readonly"}
                 and nav.get("native_apply_clicked") is True
                 and nav.get("source_target_id") == target_id == nav.get("destination_target_id")
                 and nav.get("expected_identity") == list(identity)
@@ -357,7 +405,7 @@ class OwnedTabs:
             return []
         identity, live, closed = boards.job_identity(request.get("approved_url")), self.refresh(), []
         for target, row in self.tabs.items():
-            if (row.get("state") == "active" and row.get("purpose") == "source"
+            if (row.get("state") == "active" and row.get("purpose") in {"source", "source_readonly"}
                     and row.get("job_identity") == list(identity or ()) and target != destination.get("targetId")
                     and target in live and boards.job_identity(live[target].get("url")) == identity):
                 if self.close(target, "verified_external_apply_destination", expected_url=live[target]["url"]):
@@ -372,12 +420,16 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     owner = OwnedTabs(helpers, root or config.ROOT)
     before = set(owner.refresh())
     operation = request.get("operation")
-    if operation in {"open", "resolve", "cleanup_tabs"}:
+    if operation == "cleanup_source_verified":
+        if dispatcher_name != "jhb.applications.linkedin_runtime":
+            raise ValueError("Verified source cleanup is restricted to LinkedIn classification")
+        return {"closed_targets": owner.cleanup_verified_source(request)}
+    if operation in {"open", "resolve", "resolve_link", "cleanup_tabs"}:
         closed = owner.cleanup()
         if operation == "cleanup_tabs":
             return {"closed_targets": closed, "capacity": _cap(), "mutations": "owned_receipt_tabs_only"}
     scoped = dict(helpers)
-    purpose = "source" if dispatcher_name == "jhb.applications.linkedin_runtime" else "application"
+    purpose = ("source_readonly" if operation == "resolve_link" else "source") if dispatcher_name == "jhb.applications.linkedin_runtime" else "application"
     scoped["new_tab"] = lambda url="about:blank": owner.new_tab(url, purpose=purpose)
     scoped["jhb_before_apply_click"] = owner.before_apply_click
     scoped["jhb_after_apply_click"] = owner.after_apply_click

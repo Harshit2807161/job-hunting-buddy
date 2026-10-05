@@ -37,7 +37,7 @@ def outbound(url):
 
 
 def dispatch(request, helpers):
-    if request.get("operation") != "resolve":
+    if request.get("operation") not in {"resolve", "resolve_link"}:
         raise ValueError("LinkedIn source navigation does not fill or submit applications")
     job_id = linkedin_id(request.get("approved_url"))
     if not job_id:
@@ -80,6 +80,16 @@ def dispatch(request, helpers):
     finally:
         cdp("Runtime.releaseObject", objectId=obj)
     expected = outbound(href) if href else None
+    if request.get("operation") == "resolve_link":
+        from .mcp_client import is_public_url
+        if not expected or not is_public_url(expected):
+            return {"state": "ambiguous", "board_type": "linkedin", "reason": "Apply control has no public read-only outbound link",
+                    "evidence": evidence, "native_apply_required": not href}
+        # Reading the actual AX control's href creates no destination tab and
+        # changes no login/form state. The isolated MCP verifies its destination.
+        evidence.append({"url": expected, "operation": "observed_apply_href", "source_url": source_url})
+        return {"state": "observed_link", "application_url": expected, "source_target_id": source_target,
+                "source_url": source_url, "native_apply_clicked": False, "evidence": evidence}
     from .boards import job_identity
     expected_identity = job_identity(expected) if expected else None
     reusable = [tab for tab in helpers["list_tabs"]()

@@ -17,8 +17,19 @@ possible destination. A native Apply popup becomes owned only with an observed
 matching expected job, absence before the action, and CDP `openerId` identifying
 that exact LinkedIn source. A same-target navigation keeps the original proven
 ownership and becomes an application draft. Unproven new destinations remain
-open and halt further LinkedIn creation/clicks until departed. They are never
-silently claimed or closed.
+open and halt further native LinkedIn Apply clicks until departed. They are
+never silently claimed or closed.
+
+Authenticated source checking first reads the exact observed Apply control's
+public HTTPS href through the registered CLI. It creates no destination popup;
+its link goes to the isolated official Playwright MCP for exact-job validation.
+Existing source tabs can be reused, and fresh read-only source tabs need one
+slot. Unclaimed destinations also consume this path's capacity, so a full
+browser stays deferred. Button-only Apply controls retain the native popup guard.
+A proven-created read-only source closes only after private, hash-bound evidence
+confirms the same source job, an actual isolated MCP destination navigation,
+and fresh verified official job-description metadata for that exact destination.
+Existing user source tabs and unclaimed destinations stay open.
 
 Capacity is `BrowserCapacityError`, condition `browser_capacity`, with
 `mutation_started=False`; it is technical backpressure, not a candidate
