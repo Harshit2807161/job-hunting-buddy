@@ -191,9 +191,20 @@ def _snapshot(path, *, root=None):
 
 def match(conn, job, *, root=None):
     """Return a pre-browser exclusion/hold; never claim a confirmed submission."""
+    urls = [job.get(key) for key in ("url", "source_url", "application_url") if isinstance(job.get(key), str)]
+    # Receipt logging is durable before the final Sheet append. That interval
+    # must not let a confirmed exact job return through Phase 1 as a new lead.
+    for url in urls:
+        confirmation = tracking.confirmed_application(conn, url)
+        if confirmation:
+            verified = confirmation["verified"]
+            return {"state": "previously_applied" if verified else "history_integrity_handoff",
+                    "disposition": "exclude" if verified else "hold", "submission_confirmed": False,
+                    "existing_receipt_verified": verified, "match_kind": "existing_submission_record",
+                    "evidence_path": confirmation.get("receipt_path"),
+                    "reason": "An existing exact-job submission record prevents reapplication"}
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='sheet_application_history'").fetchone():
         return None
-    urls = [job.get(key) for key in ("url", "source_url", "application_url") if isinstance(job.get(key), str)]
     identities = {_json(identity) for url in urls if (identity := boards.job_identity(url))}
     ats_identities = {item for item in identities if json.loads(item)[0] != "linkedin"}
     url_keys = {key for url in urls if (key := _url_key(url))}
@@ -278,6 +289,7 @@ def cached_match(job, *, root=None):
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
         raise ValueError("History database must not be a symlink")
     with sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
         return match(conn, job, root=root)
 
 

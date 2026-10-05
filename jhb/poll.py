@@ -63,6 +63,19 @@ def run_once(conn, *, use_jobspy: bool = True, dry_run: bool = False,
         sources_queued = source_queue.enqueue(conn, candidates)
         if sources_queued:
             log.info("queued %d job source check(s)", sources_queued)
+    historical_seen = 0
+    if not seeding:
+        from .applications.historical import match as historical_match
+        # Historical rows remain in the durable source ledger, but must not
+        # appear again as new opportunities in the discovery email.
+        prior = [row for row in pending if historical_match(conn, row)]
+        seen_hashes = {row["dedupe_hash"] for row in prior}
+        pending = [row for row in pending if row["dedupe_hash"] not in seen_hashes]
+        historical_seen = len(prior)
+        if seen_hashes and not dry_run:
+            store.mark_notified(conn, sorted(seen_hashes))
+        if prior:
+            log.info("suppressed %d previously applied/history-held opening(s)", len(prior))
     if suppressed:
         # Same role already emailed (other source, or another location row).
         store.mark_notified(conn, suppressed)
@@ -94,7 +107,7 @@ def run_once(conn, *, use_jobspy: bool = True, dry_run: bool = False,
         log.info("no new openings this cycle")
 
     return {"seen": total_seen, "new": total_new, "notified": len(pending) if not seeding else 0,
-            "emails": emailed, "seeded": seeding, "sources_queued": sources_queued, "applications_queued": 0}
+            "emails": emailed, "seeded": seeding, "sources_queued": sources_queued, "historical_seen": historical_seen, "applications_queued": 0}
 
 
 def main(argv=None) -> int:

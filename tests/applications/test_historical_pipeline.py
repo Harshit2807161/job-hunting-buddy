@@ -192,3 +192,16 @@ def test_file_database_refresh_does_not_block_heartbeat_during_sheet_reads(setup
             return await task
     assert asyncio.run(run())["state"] == "imported"
     assert pulses == [True]
+
+
+def test_confirmed_receipt_blocks_source_before_final_sheet_append(setup):
+    conn, job, receipt, _, settings = setup
+    settings.unlink()  # Receipt is durable while the configured sink is unavailable.
+    tracking.record_confirmed(conn, job, receipt)
+    source_queue.enqueue(conn, [candidate(job)])
+    assert source_queue.claim(conn) is None
+    match = historical.match(conn, job)
+    assert match["disposition"] == "exclude" and match["existing_receipt_verified"] is True
+    assert match["match_kind"] == "existing_submission_record"
+    assert conn.execute("SELECT COUNT(*) FROM confirmed_submissions").fetchone()[0] == 1
+    assert conn.execute("SELECT state FROM application_sources").fetchone()[0] == "filtered"
