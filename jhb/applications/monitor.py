@@ -21,11 +21,16 @@ import subprocess
 import time
 
 from .. import config
-from . import booklet, overnight
+from . import attempt_feedback, booklet, overnight
 
 FEATURE_BRANCH = "feat/phase2-greenhouse-agent"
 REPAIR_SECONDS = 900
-VALIDATION_SECONDS = 180
+VALIDATION_COMPILE_SECONDS = 120
+VALIDATION_TEST_SECONDS = 900
+VALIDATION_DIFF_SECONDS = 30
+# The full synthetic browser suite takes substantially longer than three
+# minutes. Reserve all checks before changing code, not merely the first one.
+VALIDATION_SECONDS = VALIDATION_COMPILE_SECONDS + VALIDATION_TEST_SECONDS + VALIDATION_DIFF_SECONDS + 5
 MAX_REPAIRS = 8
 INTERVAL_SECONDS = 300
 TECHNICAL_KINDS = {
@@ -33,7 +38,7 @@ TECHNICAL_KINDS = {
     "ConnectionAbortedError", "BrokenPipeError", "FileNotFoundError", "ImportError",
     "ModuleNotFoundError", "SyntaxError", "IndentationError", "NameError",
     "TypeError", "AttributeError", "browser_transport", "browser_mechanics", "planner_transport",
-    "document_generation", "narrative_generation",
+    "document_generation", "narrative_generation", "browser_capture",
 }
 OPERATIONS = {"open", "observe", "fill", "describe", "upload", "screenshot", "planner", "classification", "runtime"}
 LOGS = ("data/applications.log", "data/poll.log", "data/launchd.log")
@@ -174,6 +179,16 @@ def snapshot(state, auth, database=None):
     health = {"observed_at": now, "application_states": {}, "source_states": {},
               "confirmed_submissions": 0, "uncertain_submissions": 0, "pending_questions": 0}
     issues = {}
+    feedback = attempt_feedback.records()
+    health["attempt_feedback"] = attempt_feedback.summarize(feedback)
+    latest = {}
+    for row in feedback:
+        latest[(row["job_hash"], row["stage"])] = row
+    # Feedback is diagnostic only. The live queue must still confirm a failed
+    # preparation; a stale failure must never resurrect a completed draft.
+    feedback_candidates = [row for row in latest.values() if auth
+        and row["recorded_at"] >= overnight._timestamp(auth["authorized_at"])
+        and row["recovery_recommendation"] == "bounded_technical_repair"]
     database = Path(database or config.DB_PATH)
     if database.exists():
         connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
@@ -189,6 +204,11 @@ def snapshot(state, auth, database=None):
                 health["uncertain_submissions"] = connection.execute("SELECT COUNT(*) FROM authorized_submission_attempts WHERE state IN ('in_progress','uncertain')").fetchone()[0]
             _preclick_issues(connection, tables, auth, issues)
             if "applications" in tables and auth:
+                for row in feedback_candidates:
+                    current = connection.execute("SELECT state FROM applications WHERE job_hash=?", (row["job_hash"],)).fetchone()
+                    if current and current["state"] in {"failed", "retry"}:
+                        _merge(issues, _issue("application", row["error_kind"], row["operation"],
+                                             row["feedback_path"], row["job_hash"]))
                 start = overnight._timestamp(auth["authorized_at"])
                 for row in connection.execute("SELECT job_hash,packet FROM applications WHERE state IN ('failed','retry') AND updated_at>=?", (start,)):
                     if not re.fullmatch(r"[a-f0-9]{64}", row["job_hash"]) or not row["packet"]:
@@ -404,16 +424,20 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
 
 
 def validate(auth, run=bounded, *, auth_path=None):
-    for index, command in enumerate([
-        [str(config.ROOT / ".venv" / "bin" / "python"), "-m", "compileall", "-q", "jhb", "tests"],
-        [str(config.ROOT / ".venv" / "bin" / "python"), "-m", "pytest", "-q"],
-        ["git", "diff", "--check"],
+    for index, (command, allowance) in enumerate([
+        ([str(config.ROOT / ".venv" / "bin" / "python"), "-m", "compileall", "-q", "jhb", "tests"], VALIDATION_COMPILE_SECONDS),
+        ([str(config.ROOT / ".venv" / "bin" / "python"), "-m", "pytest", "-q"], VALIDATION_TEST_SECONDS),
+        (["git", "diff", "--check"], VALIDATION_DIFF_SECONDS),
     ]):
         current = authorization(auth_path)
         if current is None or current["authorization_id"] != auth["authorization_id"]:
             return {"state": "authorization_ended"}
+        remaining = min(overnight._timestamp(auth["expires_at"]),
+                        overnight._timestamp(current["expires_at"])) - time.time()
+        if remaining <= 0:
+            return {"state": "authorization_ended"}
         result = run(command, directory() / f"validation-{time.time_ns()}-{index}", auth,
-                     min(VALIDATION_SECONDS, overnight._timestamp(auth["expires_at"]) - time.time()), auth_path=auth_path)
+                     min(allowance, remaining), auth_path=auth_path)
         if result["state"] != "complete":
             return result
     return {"state": "complete"}

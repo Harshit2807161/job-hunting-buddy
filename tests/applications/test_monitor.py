@@ -10,7 +10,7 @@ import time
 import pytest
 
 from jhb import config
-from jhb.applications import booklet, monitor, overnight
+from jhb.applications import attempt_feedback, booklet, monitor, overnight
 
 
 @pytest.fixture
@@ -90,6 +90,72 @@ def test_one_repair_coalesces_jobs_and_validates_before_releasing_gate(setup):
     assert len(calls) == 4
     for path in monitor.directory().glob("*.json"):
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_full_suite_gets_enough_time_for_observed_runtime_not_the_old_three_minute_cap(setup):
+    calls = []
+    def run(command, prefix, auth, timeout, **kwargs):
+        calls.append((command, timeout))
+        # Model the observed ~460-second suite without waiting in this test.
+        return {"state": "timeout" if "pytest" in command and timeout < 460 else "complete"}
+    assert monitor.validate(monitor.authorization(), run)["state"] == "complete"
+    assert [timeout for _, timeout in calls] == [120, 900, 30]
+
+
+def test_validation_clamps_each_command_to_current_authorization_expiry(setup, monkeypatch):
+    _, _, now = setup
+    auth = monitor.authorization()
+    shorter = {**auth, "expires_at": datetime.fromtimestamp(now + 50, timezone.utc).isoformat()}
+    monkeypatch.setattr(monitor, "authorization", lambda *args: shorter)
+    monkeypatch.setattr(monitor.time, "time", lambda: now)
+    seen = []
+    def run(command, prefix, authorization, timeout, **kwargs):
+        seen.append(timeout)
+        return {"state": "complete"}
+    assert monitor.validate(auth, run)["state"] == "complete"
+    assert seen == [50, 50, 30]
+    monkeypatch.setattr(monitor.time, "time", lambda: now + 50)
+    assert monitor.validate(auth, lambda *a, **k: pytest.fail("expired validation started"))["state"] == "authorization_ended"
+
+
+def test_new_repair_reserves_all_validation_budgets_before_modifying_code(setup, monkeypatch):
+    _, _, now = setup
+    failure(setup)
+    auth = monitor.authorization()
+    auth["expires_at"] = datetime.fromtimestamp(now + monitor.VALIDATION_SECONDS + 20, timezone.utc).isoformat()
+    monkeypatch.setattr(monitor, "authorization", lambda *args: auth)
+    assert monitor.once(run=lambda *a, **kw: pytest.fail("repair must defer"), inspect_repository=repo)["state"] == "insufficient_time"
+    assert not (monitor.directory() / "repair-pending.json").exists()
+
+
+def feedback_attempt(*, state="failed", token="one", **changes):
+    job = {"dedupe_hash": "b" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123"}
+    result = {"state": state, "retryable": True, "error_kind": "browser_mechanics", **changes}
+    return attempt_feedback.record_attempt(job, result, attempt_token=token)
+
+
+def test_monitor_reads_feedback_for_failure_even_if_packet_capture_failed(setup):
+    _, _, now = setup
+    path = feedback_attempt()
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("INSERT INTO applications VALUES (?, 'failed', NULL, ?)", ("b" * 64, now))
+    calls = []
+    assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "validated"
+    assert str(path.relative_to(config.ROOT)) in calls[0][1]
+    health = json.loads((monitor.directory() / "health.json").read_text())
+    assert health["attempt_feedback"]["attempts"] == 1
+
+
+@pytest.mark.parametrize("mode", ["new_handoff", "new_complete", "current_ready", "terminal", "new_unknown"])
+def test_feedback_never_resurrects_old_attempt_or_repairs_candidate_handoff(setup, mode):
+    _, _, now = setup
+    feedback_attempt()
+    if mode in {"new_handoff", "new_complete", "terminal", "new_unknown"}:
+        changes = {"state": "waiting_login"} if mode == "new_handoff" else {"state": "waiting_review"} if mode == "new_complete" else {"click_started": True} if mode == "terminal" else {"missing": [{"question": "Unknown fact"}]}
+        feedback_attempt(token="two", **changes)
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("INSERT INTO applications VALUES (?, ?, NULL, ?)", ("b" * 64, "waiting_review" if mode == "current_ready" else "failed", now))
+    assert monitor.once(run=lambda *a, **kw: pytest.fail("unsafe repair"), inspect_repository=repo)["state"] == "healthy"
 
 
 @pytest.mark.parametrize("updates", [{"missing": [{"question": "New candidate answer"}]},
