@@ -95,6 +95,16 @@ def test_known_ats_history_can_hold_unresolved_linkedin_with_same_legacy_details
     assert historical.match(conn, {**job, "url": "https://www.linkedin.com/jobs/view/99999/"})["disposition"] == "hold"
 
 
+def test_legacy_remote_is_a_work_arrangement_not_a_conflicting_location(setup):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, url="", company="Example", title="Software Engineer New Grad, ML Platform ", location="Remote")
+    historical.import_sheet(conn, executor=sheets)
+    found = historical.match(conn, {**job, "company": "Example", "title": "Software Engineer New Grad, ML Platform - Example (Remote)",
+                                   "locations": ["Remote - Multiple Locations", "United States", "Canada"]})
+    assert found["disposition"] == "hold" and found["match_kind"] == "legacy_company_role_location"
+    assert found["submission_confirmed"] is False
+
+
 @pytest.mark.parametrize("date", ["", "not applied", "TBD", "=TODAY()"])
 def test_pending_undated_rows_and_generic_links_are_not_submission_evidence(setup, date):
     conn, job, _, sheets, _ = setup

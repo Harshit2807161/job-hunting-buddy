@@ -70,7 +70,10 @@ def _locations(value):
     values = value if isinstance(value, list) else re.split(r"[;|]", str(value or ""))
     aliases = {"sf": "san francisco", "san francisco ca": "san francisco",
                "san francisco california": "san francisco", "nyc": "new york city"}
-    return {aliases.get(_words(item), _words(item)) for item in values if _words(item)}
+    # Remote alone describes work arrangement, not a conflicting country/city.
+    unspecified = {"remote", "multiple locations", "remote multiple locations", "various locations"}
+    return {aliases.get(_words(item), _words(item)) for item in values
+            if _words(item) and _words(item) not in unspecified}
 
 
 def _url_key(value):
