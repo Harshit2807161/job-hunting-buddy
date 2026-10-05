@@ -436,3 +436,23 @@ def test_autonomy_review_does_not_offer_misleading_per_job_approval_or_revoke():
         assert page.get_by_text('Why this company? Please, no AI text.', exact=True).is_visible()
         assert len(actions) == 1 and actions[0][0] == '/api/v1/workflow-policy'
         assert not errors
+
+
+def test_readable_mobile_layout_preserves_status_and_review_without_page_overflow():
+    def configure(question, detail):
+        question['contexts'][0]['type'] = 'text'
+        detail['fields'][0]['question'] = 'Describe your experience building reliable distributed systems and explain the project outcome.'
+        detail['fields'][0]['answer'] = 'Synthetic candidate answer for a long review paragraph. ' * 10
+    with workspace(configure=configure) as (page, actions, errors):
+        page.set_viewport_size({'width': 390, 'height': 844})
+        assert page.locator('.agent-panel').is_visible()
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        answer = page.get_by_label('Answer: May we contact your current employer?')
+        assert float(answer.evaluate('e => getComputedStyle(e).fontSize').removesuffix('px')) >= 16
+        answer.fill('Synthetic mobile response that remains readable without zooming.')
+        assert page.get_by_role('button', name='Save answer', exact=True).is_enabled()
+        page.get_by_role('button', name='Review Synthetic Employer application').click()
+        page.get_by_text('Describe your experience building reliable distributed systems and explain the project outcome.', exact=True).wait_for()
+        assert page.locator('.review-modal').evaluate('e => e.scrollWidth <= e.clientWidth')
+        assert float(page.locator('.review-field p').first.evaluate('e => getComputedStyle(e).fontSize').removesuffix('px')) >= 16
+        assert not actions and not errors

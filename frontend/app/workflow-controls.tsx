@@ -42,9 +42,9 @@ export function WorkflowControl({ onChange }: { onChange: (policy: WorkflowPolic
     finally { busyRef.current = false; setBusy(false); }
   }
   const autonomous = policy?.mode === "autonomous" && !error;
-  return <section className="panel" aria-label="Workflow mode" style={{ marginBottom: 24, padding: 24 }}>
+  return <section className="panel workflow-panel" aria-label="Workflow mode">
     <div className="panel-heading"><div><h2>Workflow mode</h2><p>{error ? "Mode unverified" : autonomous ? "Independent review, then submission" : "You approve each application"}</p></div>
-      <label className="choice-grid" style={{ display: "flex", alignItems: "center", gap: 10 }}><input type="checkbox" role="switch" aria-label="Full autonomy" checked={!!autonomous} disabled={busy || !policy || !!error} onChange={event => change(event.target.checked ? "autonomous" : "review")}/>Full autonomy</label></div>
+      <label className="workflow-toggle"><input type="checkbox" role="switch" aria-label="Full autonomy" checked={!!autonomous} disabled={busy || !policy || !!error} onChange={event => change(event.target.checked ? "autonomous" : "review")}/>Full autonomy</label></div>
     <p>{autonomous ? `Enabled until ${new Date(policy!.enabled_until!).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} PT. A separate reviewer checks every complete draft before submission.` : `Enable for ${policy?.max_duration_hours ?? 8} hours to let a separate reviewer authorize complete drafts. It returns to individual approval when the window expires.`}</p>
     <p className="privacy-caption">Only validated submission adapters: {policy?.available_submission_boards.join(", ") || "checking"}. Unknown facts, verification challenges and uncertain outcomes pause that application. Switching off prevents future autonomous submissions; an action already sent cannot be undone.</p>
     {policy?.gate_reasons.map(reason => <p className="form-error" key={reason}>{reason}</p>)}
