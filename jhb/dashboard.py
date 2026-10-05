@@ -116,6 +116,38 @@ def _application_presentation(conn, job_hash, state):
     return {"display_state": stage, "approval_state": approval_state}
 
 
+def _approval_outcome(conn, job_hash):
+    """Explain a consumed approval without granting another submission attempt."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone():
+        return None
+    approval = conn.execute("SELECT state,approved_at,expires_at,result_json FROM application_approvals "
+                            "WHERE job_hash=? ORDER BY approved_at DESC,rowid DESC LIMIT 1", (job_hash,)).fetchone()
+    if not approval or approval["state"] not in {"needs_review", "invalidated", "expired", "uncertain", "failed"}:
+        return None
+    result = _json(approval["result_json"])
+    attempt = None
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='authorized_submission_attempts'").fetchone():
+        attempt = conn.execute("SELECT result_json FROM authorized_submission_attempts "
+                               "WHERE job_hash=? AND started_at>=?", (job_hash, approval["approved_at"])).fetchone()
+    attempted = _json(attempt["result_json"]) if attempt else {}
+    reason = _text(result.get("reason") or attempted.get("reason"), 1000)
+    # These older diagnostics incorrectly implied that candidate edits were an
+    # error. Current-form approval captures those edits without restoring them.
+    reason = {
+        "Approved binding or retained field validity changed":
+            "The previous submission check could not validate the current form. Your browser edits were preserved.",
+        "An approved answer or document did not remain intact":
+            "The previous submission check could not verify an answer or attachment. Your browser edits were preserved.",
+    }.get(reason, reason)
+    if not reason:
+        reason = ("The approved draft did not pass submission preflight; no submission was recorded."
+                  if result.get("attempted") == 0 else "The previous approval needs review before submission can continue.")
+    return {"state": approval["state"], "reason": reason,
+            "approved_at": approval["approved_at"], "expires_at": approval["expires_at"],
+            "expired": approval["expires_at"] <= datetime.now(timezone.utc).timestamp(),
+            "click_started": attempted.get("click_started") if isinstance(attempted.get("click_started"), bool) else None}
+
+
 class DashboardStore:
     def __init__(self, root, db_path, book_path):
         self.root, self.db_path, self.book_path = Path(root), Path(db_path), Path(book_path)
@@ -268,6 +300,7 @@ class DashboardStore:
         with self.connection() as conn:
             related = _related_submissions(conn, job)
             presentation = _application_presentation(conn, job_hash, row["state"])
+            approval_outcome = _approval_outcome(conn, job_hash)
         path, packet, displayed_packet_sha = self.packet(row, job, with_digest=True)
         draft_target = self.draft_target_state(packet, self.tab_ledger())
         manifest = packet.get("review_inventory", {})
@@ -445,6 +478,7 @@ class DashboardStore:
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
+            "approval_outcome": approval_outcome,
             "incident": incident, "approval": approval, "automation_paused": self.paused(),
             "submission_supported": boards.submission_supported(boards.route_board(job.get("url"), job.get("board_type")))}
 
