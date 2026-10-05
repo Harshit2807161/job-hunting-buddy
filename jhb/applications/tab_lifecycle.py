@@ -540,6 +540,9 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     owner = OwnedTabs(helpers, root or config.ROOT)
     before = set(owner.refresh())
     operation = request.get("operation")
+    if operation == "discard_application_tab":
+        from .application_discard import close_dispatch
+        return close_dispatch(request, helpers, root=root or config.ROOT, owner=owner)
     if operation == "cleanup_source_terminal":
         if dispatcher_name != "jhb.applications.linkedin_runtime":
             raise ValueError("Source cleanup is restricted to LinkedIn classification")

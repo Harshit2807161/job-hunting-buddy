@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 from . import boards
+from .. import config
 from .boards import greenhouse_identity  # Public compatibility API for existing Greenhouse clients.
 
 SCHEMA = """
@@ -21,7 +22,16 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 """
 STATES = {"queued", "running", "retry", "waiting_review", "submission_uncertain", "waiting_input", "waiting_login",
-          "waiting_captcha", "unsupported", "failed", "submitted", "skipped"}
+          "waiting_captcha", "unsupported", "failed", "submitted", "skipped", "discarded"}
+
+
+def _discarded(conn, job_hash):
+    from .application_discard import discarded
+    if discarded(config.ROOT, job_hash):
+        conn.execute("UPDATE applications SET state='discarded',lease_until=NULL,available_at=0 "
+                     "WHERE job_hash=? AND state NOT IN ('submitted','submission_uncertain')", (job_hash,))
+        return True
+    return False
 
 
 def is_greenhouse(url: str) -> bool:
@@ -58,6 +68,8 @@ def enqueue(conn, jobs) -> int:
             _restore_confirmation(conn, confirmation)
             continue
         application_hash = boards.application_hash(url)
+        if _discarded(conn, application_hash):
+            continue
         row = {**row, "source_job_hash": row.get("source_job_hash", row["dedupe_hash"]),
                "dedupe_hash": application_hash, "board_type": routed_board, "job_identity": list(identity),
                "adapter_skill": boards.adapter(routed_board)["skill"]}
@@ -88,6 +100,9 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3):
                 break
             from .tracking import confirmed_application, _restore_confirmation
             job = json.loads(row["job_json"])
+            if _discarded(conn, row["job_hash"]):
+                row = None
+                continue
             confirmation = confirmed_application(conn, job.get("url"))
             if confirmation and confirmation["job"]["dedupe_hash"] == row["job_hash"]:
                 _restore_confirmation(conn, confirmation)
@@ -118,25 +133,34 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3):
 def finish(conn, job_hash, state, packet=None):
     if state not in STATES - {"queued", "running", "retry"}:
         raise ValueError("Invalid terminal/handoff state")
+    if _discarded(conn, job_hash):
+        conn.commit()
+        return
     # A preparation worker can finish from an older snapshot after an
     # interactive submission was confirmed. Preserve that terminal record.
     conn.execute("UPDATE applications SET state=?,lease_until=NULL,available_at=0,error_kind=NULL,"
                  "updated_at=?,packet=?,notified_at=NULL "
-                 "WHERE job_hash=? AND (state NOT IN ('submitted','waiting_review','submission_uncertain','skipped') OR state=? "
+                 "WHERE job_hash=? AND state<>'discarded' AND (state NOT IN ('submitted','waiting_review','submission_uncertain','skipped') OR state=? "
                  "OR ?='submitted' OR (state='waiting_review' AND ?='skipped'))",
                  (state, int(time.time()), str(packet) if packet else None, job_hash, state, state, state))
     conn.commit()
 
 
 def resume(conn, job_hash):
+    if _discarded(conn, job_hash):
+        conn.commit()
+        return
     conn.execute("UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,updated_at=? "
-                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submission_uncertain','submitted','skipped')", (int(time.time()), job_hash))
+                 "WHERE job_hash=? AND state NOT IN ('running','waiting_review','submission_uncertain','submitted','skipped','discarded')", (int(time.time()), job_hash))
     conn.commit()
 
 
 def retry(conn, job_hash, *, error_kind, packet=None, retry_seconds=300, max_attempts=3):
     """Retry only classified technical failures; protected handoffs never qualify."""
     now = int(time.time())
+    if _discarded(conn, job_hash):
+        conn.commit()
+        return False
     changed = conn.execute(
         "UPDATE applications SET state='retry',available_at=?,error_kind=?,lease_until=NULL,"
         "updated_at=?,packet=COALESCE(?,packet),notified_at=NULL WHERE job_hash=? "
@@ -152,6 +176,9 @@ def defer_capacity(conn, item, *, packet=None, retry_seconds=60):
     if type(retry_seconds) is not int or not 30 <= retry_seconds <= 600:
         raise ValueError("Browser capacity delay must be between 30 and 600 seconds")
     now = int(time.time())
+    if _discarded(conn, item["job_hash"]):
+        conn.commit()
+        return False
     changed = conn.execute(
         "UPDATE applications SET state='retry',available_at=?,error_kind='browser_capacity',"
         "lease_until=NULL,attempts=attempts-1,updated_at=?,packet=COALESCE(?,packet) "

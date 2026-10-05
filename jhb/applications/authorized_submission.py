@@ -48,6 +48,8 @@ def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False
     raw = authorization_path.read_bytes()
     authority = json.loads(raw)
     attempt = json.loads(attempt_path.read_text())
+    from .application_discard import check
+    check(config.ROOT, attempt.get("job_hash"))
     moment = now or datetime.now(timezone.utc)
     start = timestamp(authority.get("authorized_at", authority.get("started_at", "")))
     expiry = timestamp(authority.get("expires_at", authority.get("expiry", "")))

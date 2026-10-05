@@ -382,10 +382,12 @@ def recover_authenticated_linkedin_sources(conn, *, limit=3):
 async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
     import uuid
     from .worker import _FEEDBACK_ATTEMPT, _record_attempt_feedback
+    from . import application_discard
     async with semaphore:
         attempt_token = uuid.uuid4().hex
         context_token = _FEEDBACK_ATTEMPT.set(attempt_token)
         try:
+            application_discard.check(config.ROOT, item["job_hash"])
             result, packet = await asyncio.wait_for(runner(item["job"], book, planner_name=planner_name), timeout=timeout)
             if not isinstance(result, dict) or result.get("state") not in queue.STATES - {"queued", "running", "retry", "submitted"}:
                 raise ValueError("Invalid preparation outcome")
@@ -400,6 +402,10 @@ async def _prepare_one(item, runner, book, semaphore, timeout, planner_name):
                 result = {**result, "state": "failed", "retryable": True, "error_kind": "job_description_transport",
                           "reason": "Official job-description transport failed before browser preparation"}
                 packet = await write_packet(None, config.ROOT / "private" / "applications" / item["job_hash"], item["job"], result)
+        except application_discard.ApplicationDiscarded:
+            record = application_discard._read(application_discard._path(config.ROOT, "application-discards", item["job_hash"])) or {}
+            result = {"state": "discarded", "reason": "Candidate discarded this application", "missing": [], "filled": [], "events": []}
+            packet = record.get("packet_path")
         except Exception as exc:
             from .worker import write_packet
             result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
@@ -451,6 +457,8 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
 
     queue.initialize(conn)
     source_queue.initialize(conn)
+    from .application_discard import reconcile_pending
+    await asyncio.to_thread(reconcile_pending)
     from .tracking import restore_confirmed_applications
     historical_confirmations = restore_confirmed_applications(conn)
     local_rechecks = recover_authenticated_linkedin_sources(conn, limit=source_limit)

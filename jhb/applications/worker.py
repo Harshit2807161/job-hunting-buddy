@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
+from contextlib import nullcontext
 import fcntl
 import html
 import json
@@ -529,6 +530,9 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
 
 
 async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
+    from .application_discard import check
+    job_hash = job.get("dedupe_hash")
+    check(config.ROOT, job_hash)
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
     if "review_inventory" not in result:
@@ -538,38 +542,42 @@ async def write_packet(page, directory: Path, job, result, *, cli_actions=None):
     from .boards import job_identity
     capture = await fresh(directory, job, page=page, cli_actions=cli_actions)
     captured = capture["verified"]
+    check(config.ROOT, job_hash)
     if (not captured and result["state"] == "waiting_review"
             and (cli_actions is not None or page is not None or job_identity(job.get("url")))):
         result.update(state="failed", retryable=True, error_kind="browser_capture",
                       reason="Fresh review screenshot could not be verified; draft retained for technical retry")
         result.setdefault("events", []).append({"event": "review_capture_failed", "kind": capture.get("error_kind")})
-    created_at = int(time.time())
-    capture["packet_created_at"] = created_at
-    result["capture"] = capture
-    data = {"job": job, **result, "submitted": False, "created_at": created_at}
-    booklet.write_private(directory / "packet.json", data)
-    booklet.write_private(directory / "events.json", result["events"])
-    esc = lambda value: html.escape(str(value), quote=True)
-    notes = "".join(f"<li>{esc(note)}</li>" for note in result.get("review_notes", []))
-    rows = "".join(f'<tr><td>{esc(r["question"])}</td><td><pre>{esc(r["value"])}</pre></td><td>{esc(r["source"])}</td></tr>' for r in result.get("filled", []))
-    missing = "".join(f'<li>Required: {esc(r["question"])}</li>' for r in result.get("missing", []))
-    missing += "".join(f'<li>Optional unanswered question: {esc(r["question"])}</li>' for r in result.get("optional_questions", []))
-    inventory = result["review_inventory"]
-    inventory_rows = "".join(f'<tr><td>{esc(row["question"])}</td><td>{esc(row["status"])}</td><td>{esc(row["category"])}</td><td>{"Required" if row["required"] else "Optional"}{"; candidate’s own wording requested" if row["candidate_wording_required"] else ""}</td></tr>' for row in inventory["fields"])
-    body = f'''<!doctype html><html lang="en"><meta charset="utf-8"><title>Application review</title>
-<style>body{{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px}}td,th{{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}}pre{{white-space:pre-wrap;max-width:550px}}img{{max-width:100%}}.state{{padding:14px;background:#eef4ff}}a{{color:#1463bc}}</style>
-<h1>{esc(job['title'])} · {esc(job['company'])}</h1><p class="state">{esc(result['state'])}: {esc(result['reason'])}</p>
-<p>Application has not been submitted. Review the answers and documents before taking over the browser.</p>
-<p><a href="{esc(job['url'])}">Original posting</a> · <a href="packet.json">Structured packet</a></p>
-<ul>{notes}{missing}</ul><table><tr><th>Question</th><th>Answer</th><th>Evidence</th></tr>{rows}</table>
-<h2>Every discovered application question</h2><p>Inventory {"verified after final observation" if inventory["complete"] else "incomplete; approval is blocked"}. Blank optional questions require explicit portal acknowledgment.</p>
-<table><tr><th>Question</th><th>Status</th><th>Category</th><th>Requirement</th></tr>{inventory_rows}</table>
-<h2>Browser at handoff</h2>{'<img src="browser.png" alt="Browser screenshot at handoff">' if captured else '<p>Browser screenshot unavailable.</p>'}
-</html>'''
-    target = directory / "review.html"
-    target.write_text(body, encoding="utf-8")
-    target.chmod(0o600)
-    return target
+    from .application_discard import action_lock
+    with action_lock(config.ROOT, job_hash) if job_hash else nullcontext():
+        check(config.ROOT, job_hash)
+        created_at = int(time.time())
+        capture["packet_created_at"] = created_at
+        result["capture"] = capture
+        data = {"job": job, **result, "submitted": False, "created_at": created_at}
+        booklet.write_private(directory / "packet.json", data)
+        booklet.write_private(directory / "events.json", result["events"])
+        esc = lambda value: html.escape(str(value), quote=True)
+        notes = "".join(f"<li>{esc(note)}</li>" for note in result.get("review_notes", []))
+        rows = "".join(f'<tr><td>{esc(r["question"])}</td><td><pre>{esc(r["value"])}</pre></td><td>{esc(r["source"])}</td></tr>' for r in result.get("filled", []))
+        missing = "".join(f'<li>Required: {esc(r["question"])}</li>' for r in result.get("missing", []))
+        missing += "".join(f'<li>Optional unanswered question: {esc(r["question"])}</li>' for r in result.get("optional_questions", []))
+        inventory = result["review_inventory"]
+        inventory_rows = "".join(f'<tr><td>{esc(row["question"])}</td><td>{esc(row["status"])}</td><td>{esc(row["category"])}</td><td>{"Required" if row["required"] else "Optional"}{"; candidate’s own wording requested" if row["candidate_wording_required"] else ""}</td></tr>' for row in inventory["fields"])
+        body = f'''<!doctype html><html lang="en"><meta charset="utf-8"><title>Application review</title>
+    <style>body{{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px}}td,th{{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}}pre{{white-space:pre-wrap;max-width:550px}}img{{max-width:100%}}.state{{padding:14px;background:#eef4ff}}a{{color:#1463bc}}</style>
+    <h1>{esc(job['title'])} · {esc(job['company'])}</h1><p class="state">{esc(result['state'])}: {esc(result['reason'])}</p>
+    <p>Application has not been submitted. Review the answers and documents before taking over the browser.</p>
+    <p><a href="{esc(job['url'])}">Original posting</a> · <a href="packet.json">Structured packet</a></p>
+    <ul>{notes}{missing}</ul><table><tr><th>Question</th><th>Answer</th><th>Evidence</th></tr>{rows}</table>
+    <h2>Every discovered application question</h2><p>Inventory {"verified after final observation" if inventory["complete"] else "incomplete; approval is blocked"}. Blank optional questions require explicit portal acknowledgment.</p>
+    <table><tr><th>Question</th><th>Status</th><th>Category</th><th>Requirement</th></tr>{inventory_rows}</table>
+    <h2>Browser at handoff</h2>{'<img src="browser.png" alt="Browser screenshot at handoff">' if captured else '<p>Browser screenshot unavailable.</p>'}
+    </html>'''
+        target = directory / "review.html"
+        target.write_text(body, encoding="utf-8")
+        target.chmod(0o600)
+        return target
 
 
 def notify_pending(conn, *, send_email=False):
@@ -620,7 +628,29 @@ def _recorded_discovery(job):
         "company_question": f"How did you hear about {job['company']}?"}
 
 
-async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
+async def run_job(job, book, **kwargs):
+    """Run one job with cooperative, exact-application cancellation."""
+    from . import application_discard as cancellation
+    job_hash = job["dedupe_hash"]
+    live = not kwargs.get("demo_origin")
+    worker_token = None
+    try:
+        if live:
+            worker_token = cancellation.worker_started(config.ROOT, job)
+        return await _run_job(job, book, **kwargs)
+    except cancellation.ApplicationDiscarded:
+        record = cancellation._read(cancellation._path(config.ROOT, "application-discards", job_hash)) or {}
+        return {"state": "discarded", "reason": "Candidate discarded this application", "missing": [], "filled": [],
+                "events": [{"event": "candidate_discarded"}]}, record.get("packet_path")
+    finally:
+        if live:
+            if worker_token:
+                cancellation.worker_stopped(config.ROOT, job_hash, worker_token)
+            if cancellation.discarded(config.ROOT, job_hash):
+                await asyncio.to_thread(cancellation.finalize, config.ROOT, job_hash)
+
+
+async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headless=False,
                   interactive=False, review_seconds=0, role=None, artifacts=None, book_path=None):
     owner_token = _FEEDBACK_ATTEMPT.get()
     attempt_token = owner_token or uuid.uuid4().hex
@@ -633,6 +663,8 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
     async def persist(page, directory, job, result, *, cli_actions=None):
+        from .application_discard import check
+        check(config.ROOT, job["dedupe_hash"])
         result["selected_role"] = selected_role
         packet = await write_packet(page, directory, job, result, cli_actions=cli_actions)
         if owner_token is None:
@@ -760,6 +792,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         else:
             from .manual_ats import ManualATSCLI
             actions = ManualATSCLI(job["url"], board=board)
+        actions.job_hash = job["dedupe_hash"]
         try:
             vault = None
             if board == "workday":

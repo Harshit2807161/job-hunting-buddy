@@ -415,25 +415,28 @@ def dispatch(request, helpers):
         review_digest = None
         def native_press(x, y):
             nonlocal clicked, review_digest
-            # Geometry is now settled. Re-read authority immediately before
-            # consuming the one-shot attempt; expiry cannot be bypassed by work.
-            _, current, _ = load_gate(request["authorization_path"], request["attempt_path"])
-            if boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(current["application_url"]):
-                raise ValueError("Application identity changed before submission")
-            final_check = _checks(request, helpers, packet, current)
-            if final_check != second:
-                raise ValueError("Retained application changed during final click geometry")
-            if authority.get("require_independent_review") is True and not _review_matches(request, current, final_check):
-                raise ValueError("Independent review changed before submission")
-            if authority.get("require_independent_review") is True:
-                review_digest = hashlib.sha256(private_file(Path(request["attempt_path"]).parent / "independent-review.json").read_bytes()).hexdigest()
-            current.update(runtime_click_started=True, click_started_at=datetime.now(timezone.utc).isoformat(),
-                           double_check_count=2, checked_fields=second["double_check_count"])
-            write_private(Path(request["attempt_path"]), current)
-            clicked = True
-            helpers["js"]("window.__jhbGuard=false")
-            input_cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
-            input_cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
+            from .. import config
+            from .application_discard import action_lock
+            with action_lock(config.ROOT, attempt["job_hash"]):
+                # Geometry is now settled. Re-read authority immediately before
+                # consuming the one-shot attempt; expiry cannot be bypassed by work.
+                _, current, _ = load_gate(request["authorization_path"], request["attempt_path"])
+                if boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(current["application_url"]):
+                    raise ValueError("Application identity changed before submission")
+                final_check = _checks(request, helpers, packet, current)
+                if final_check != second:
+                    raise ValueError("Retained application changed during final click geometry")
+                if authority.get("require_independent_review") is True and not _review_matches(request, current, final_check):
+                    raise ValueError("Independent review changed before submission")
+                if authority.get("require_independent_review") is True:
+                    review_digest = hashlib.sha256(private_file(Path(request["attempt_path"]).parent / "independent-review.json").read_bytes()).hexdigest()
+                current.update(runtime_click_started=True, click_started_at=datetime.now(timezone.utc).isoformat(),
+                               double_check_count=2, checked_fields=second["double_check_count"])
+                write_private(Path(request["attempt_path"]), current)
+                clicked = True
+                helpers["js"]("window.__jhbGuard=false")
+                input_cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
+                input_cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
         def prime_pointer(x, y):
             # Clear a retained pointer press and hover only while submission is
             # guarded. IPC failure here cannot consume the one-shot click.

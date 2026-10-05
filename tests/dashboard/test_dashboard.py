@@ -51,6 +51,39 @@ def pending_question(job, book, label="Will you relocate?", ref="relocate", requ
     return questions.collect(job, {"missing": [{"question": label, "ref": ref, "required": required, "type": kind}]}, book)[0]
 
 
+def test_discard_requires_portal_click_and_hides_only_this_jobs_questions(portal):
+    root, conn, book, client, headers = portal
+    job, folder, packet = add_job(conn, root, state="waiting_input")
+    other, _, _ = add_job(conn, root, n=2, state="waiting_input")
+    pending_question(job, book)
+    pending_question(other, book)
+    path = f"/api/v1/applications/{job['dedupe_hash']}/discard"
+    before = (folder / "packet.json").read_bytes()
+    assert client.post(path, json={}).status_code == 403
+    response = client.post(path, headers=headers, json={})
+    assert response.status_code == 200
+    assert response.json()["state"] == "discarded"
+    assert response.json()["tab_close"]["state"] == "no_captured_tab"
+    details = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert details["state"] == "discarded"
+    assert details["discard"]["worker_stop"]["state"] == "not_running"
+    assert not details["questions"] and not details["approval"]["can_approve"]
+    assert client.get(f"/api/v1/applications/{other['dedupe_hash']}").json()["questions"]
+    pending = questions.pending(book)
+    assert pending and all(job["dedupe_hash"] not in item["contexts"] for item in pending)
+    assert any(other["dedupe_hash"] in item["contexts"] for item in pending)
+    assert (folder / "packet.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("state", ["submitted", "submission_uncertain"])
+def test_discard_does_not_erase_a_terminal_outcome(portal, state):
+    root, conn, book, client, headers = portal
+    job, _, _ = add_job(conn, root, state=state)
+    response = client.post(f"/api/v1/applications/{job['dedupe_hash']}/discard", headers=headers, json={})
+    assert response.status_code == 409
+    assert conn.execute("SELECT state FROM applications WHERE job_hash=?", (job["dedupe_hash"],)).fetchone()[0] == state
+
+
 def test_worker_drafting_tasks_are_visible_without_fabricating_candidate_questions(portal):
     root, conn, book, client, headers = portal
     job, folder, packet = add_job(conn, root, state='failed')

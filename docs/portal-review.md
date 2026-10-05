@@ -156,3 +156,25 @@ are retryable agent tasks (`narrative_generation`), rather than new candidate
 questions. Both model calls must be injected in CI; no subscription authentication
 or API credentials are used in tests. The flag stays disabled until integration
 and live output review.
+
+The candidate can discard one application through
+`POST /api/v1/applications/{job_hash}/discard`. This same-origin, CSRF-protected
+click records a durable exact-job exclusion, revokes pending approval, retires
+only that job's question contexts and sets its queue state to `discarded`.
+Packets, screenshots, answers and submission history remain available; current
+review evidence is also archived privately at the discard boundary. Older worker
+results, retries and rediscovery cannot resume a discarded application.
+
+Cancellation is cooperative. The current serialized browser operation finishes,
+then that application's next checkpoint exits without touching other workers or
+the shared Browser Use daemon. The official CLI closes only the exact captured
+target while holding the browser lane and only if it still displays that job.
+A changed page is preserved. Busy or disconnected closes remain explicit pending
+work, retried boundedly after the request, worker exit or a subsequent pipeline
+cycle. The portal reports worker and tab outcomes separately; a discard record
+alone does not claim a tab was closed. Unconfirmed closes are never blindly
+replayed. A per-job lock orders discard against the final native Submit press;
+already-submitted, uncertain or potentially clicked applications cannot be
+misrepresented as discarded. These controls have synthetic DB, CLI-helper and
+native browser fixture coverage; no candidate application was discarded during
+development validation.

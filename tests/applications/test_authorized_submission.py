@@ -282,7 +282,7 @@ def test_identical_native_and_attached_cover_letter_packet_records_are_scoped_an
         assert inspect("window.submissions") == 1
 
 
-@pytest.mark.parametrize("interruption", ["between_checks", "during_geometry", "authorization_revoked", "upload_receipt_mutated"])
+@pytest.mark.parametrize("interruption", ["between_checks", "during_geometry", "authorization_revoked", "upload_receipt_mutated", "candidate_discarded"])
 def test_final_check_races_or_revocation_keep_guard_and_never_consume_attempt(tmp_path, monkeypatch, interruption):
     job, packet, packet_path, manifest, auth, attempt_path = evidence(tmp_path, monkeypatch)
     with synthetic_runtime() as (call, invoke, inspect, helpers, target, other_guard, lane):
@@ -294,6 +294,9 @@ def test_final_check_races_or_revocation_keep_guard_and_never_consume_attempt(tm
             if interruption == "authorization_revoked":
                 authority = json.loads(type(attempt_path)(auth["authorization_path"]).read_text())
                 authority["enabled"] = False; write_private(type(attempt_path)(auth["authorization_path"]), authority)
+            elif interruption == "candidate_discarded":
+                write_private(config.ROOT / "private" / "application-discards" / (job["dedupe_hash"] + ".json"),
+                              {"source": "candidate_portal_discard", "job_hash": job["dedupe_hash"], "state": "discarded"})
             elif interruption == "upload_receipt_mutated":
                 helpers["js"]("document.querySelector('.file-upload__filename p').textContent='replaced.pdf'")
             else:

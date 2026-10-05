@@ -24,7 +24,7 @@ import threading
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
@@ -185,7 +185,7 @@ class DashboardStore:
             routed_contexts = candidate_contexts(book, record)
             for key, context in record.get("contexts", {}).items():
                 if key not in routed_contexts or context.get("resolved") or (queue_states is not None and queue_states.get(key) in
-                                               {"submitted", "submission_uncertain", "skipped"}) or manual_states.get(key) in {
+                                               {"submitted", "submission_uncertain", "skipped", "discarded"}) or manual_states.get(key) in {
                                                    "submitted", "submission_uncertain", "skipped", "declined"} or booklet.job_excluded(book, {"dedupe_hash": key}):
                     continue
                 contexts.append({"job_hash": key, "company": _text(context.get("company")),
@@ -336,7 +336,7 @@ class DashboardStore:
             approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
         from .applications.question_routing import route, CANDIDATE
         agent_tasks = []
-        if row["state"] not in {"submitted", "skipped", "submission_uncertain"}:
+        if row["state"] not in {"submitted", "skipped", "submission_uncertain", "discarded"}:
             packet_tasks = packet.get("agent_tasks", [])
             native_fields = manifest.get("fields", []) if isinstance(manifest, dict) else []
             if not isinstance(native_fields, list):
@@ -363,7 +363,7 @@ class DashboardStore:
                 if record.get("status") == "answered" and context.get("routing") not in {"known_answer_fill", "document_generation"}:
                     continue
                 kind = route(current_book, record, context)
-                if (kind != CANDIDATE and row["state"] not in {"submitted", "skipped", "submission_uncertain"}
+                if (kind != CANDIDATE and row["state"] not in {"submitted", "skipped", "submission_uncertain", "discarded"}
                         and not any(task["ref"] == context.get("ref") for task in agent_tasks)):
                     agent_tasks.append({"question": _text(record.get("question")), "ref": _text(context.get("ref")),
                                         "task_kind": kind, "required": context.get("required") is True})
@@ -382,7 +382,9 @@ class DashboardStore:
                                   "captured_at": packet.get("capture", {}).get("captured_at") or packet.get("created_at")}
             except (ValueError, OSError, TypeError, AttributeError):
                 pass
+        from .applications.application_discard import status as discard_status
         return {"job_hash": job_hash, "state": row["state"], "location": _location(job),
+            "discard": discard_status(self.root, job_hash),
             "related_submissions": related, "fields": output, "role_fit_notes": fit_notes[:20],
             "screenshot": screenshot, "packet_revision": displayed_packet_sha,
             "draft_focus_available": screenshot["available"] and self._focusable(row, packet),
@@ -877,6 +879,22 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             raise HTTPException(503, "Application approval is not configured") from None
         except (ValueError, OSError, sqlite3.Error):
             raise HTTPException(409, "Draft changed or blank questions were not acknowledged; refresh the review") from None
+
+    @app.post("/api/v1/applications/{job_hash}/discard")
+    def discard_application(job_hash: str, background_tasks: BackgroundTasks):
+        if not HASH.fullmatch(job_hash):
+            raise HTTPException(404, "Unknown application")
+        try:
+            from .applications import application_discard
+            with store.answer_lock, questions._locked(store.book_path):
+                with store.connection(write=True) as conn:
+                    application_discard.request(conn, job_hash, root=store.root, book_path=store.book_path)
+            result = application_discard.finalize(store.root, job_hash, timeout=3)
+            if result["tab_close"]["state"] in {"pending", "deferred"}:
+                background_tasks.add_task(application_discard.finalize, store.root, job_hash, timeout=30)
+            return result
+        except (ValueError, OSError, sqlite3.Error):
+            raise HTTPException(409, "Application cannot be discarded while its submission outcome is uncertain or a final click is in progress. Refresh its status.") from None
 
     @app.post("/api/v1/applications/{job_hash}/revoke")
     def revoke_application(job_hash: str):

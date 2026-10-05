@@ -107,6 +107,12 @@ class BrowserUseCLI:
         started = time.monotonic()
         deadline = started + self.timeout
         cancelled = _cancelled or threading.Event()
+        from . import boards, application_discard
+        job_hash = getattr(self, "job_hash", None) or boards.application_hash(payload.get("url") or self.expected_url)
+        def cancellation_check():
+            if operation != "discard_application_tab" and job_hash:
+                application_discard.check(ROOT, job_hash)
+        cancellation_check()
         if operation != "open" and self.target_id:
             payload["target_id"] = self.target_id
             if self.expected_url:
@@ -133,7 +139,7 @@ class BrowserUseCLI:
         )
         env = dict(os.environ)
         env.pop("BU_NAME", None)  # One shared local daemon, never a per-job controller.
-        if operation == "review_focus":
+        if operation in {"review_focus", "discard_application_tab"}:
             from .browser_connection import endpoint_parts
             endpoint_parts(env.get("BU_CDP_WS") or env.get("BU_CDP_URL", ""))
             env["BH_REQUIRE_EXISTING_DAEMON"] = "1"
@@ -150,6 +156,7 @@ class BrowserUseCLI:
         os.fchmod(fd, 0o600)
         try:
             while True:
+                cancellation_check()
                 if cancelled.is_set():
                     raise RuntimeError("Browser Use operation cancelled")
                 if time.monotonic() >= deadline:
@@ -161,6 +168,7 @@ class BrowserUseCLI:
                     cancelled.wait(min(0.05, max(0, deadline-time.monotonic())))
             if _before_run is not None:
                 _before_run()  # Revalidate saved evidence after acquiring the browser lane.
+            cancellation_check()
             result = self._run(script, env, deadline, cancelled)
         except (TimeoutError, RuntimeError):
             self.last_failure = {"operation": operation, "kind": "cancelled" if cancelled.is_set() else "timeout",
@@ -192,6 +200,10 @@ class BrowserUseCLI:
                     self.last_failure = {"operation": operation,
                                          "kind": "browser_mechanics" if message in MECHANICAL_ERRORS else "invalid_operation"}
                     raise BrowserOperationError(message, retryable=message in MECHANICAL_ERRORS)
+                if operation != "discard_application_tab" and isinstance(response, dict) and job_hash:
+                    application_discard.remember_target(ROOT, job_hash, response.get("target_id") or self.target_id,
+                                                         payload.get("url") or self.expected_url)
+                    cancellation_check()
                 return response
         self.last_failure = {"operation": operation, "kind": "browser_transport"}
         raise RuntimeError("Browser Use CLI returned no structured result")
