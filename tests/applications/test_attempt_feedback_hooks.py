@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,13 +27,14 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(eligibility, "assess_job", lambda job: {
         "state": "eligible", "reason": "Synthetic eligibility", "policy": "synthetic"})
     monkeypatch.setattr(role_fit, "assess", lambda *args: {"state": "eligible", "reason": "Synthetic role fit"})
-    monkeypatch.setattr(cli_browser, "BrowserUseCLI", lambda: object())
+    monkeypatch.setattr(cli_browser, "BrowserUseCLI", SimpleNamespace)
     async def fresh(*args, **kwargs):
         return {"verified": True}
     monkeypatch.setattr(capture, "fresh", fresh)
     calls = []
     prepared = result()
     async def prepare(*args, **kwargs):
+        assert kwargs["cli_actions"].job_hash == args[1]["dedupe_hash"]
         calls.append(args[1]["dedupe_hash"])
         return deepcopy(prepared), kwargs["cli_actions"]
     monkeypatch.setattr(worker, "prepare", prepare)
