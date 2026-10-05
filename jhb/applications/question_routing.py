@@ -36,6 +36,11 @@ def route(book, record, context):
     # awaiting native verification. It cannot supply a native binding or answer.
     metadata = context.get("public_question_metadata", {})
     if not field["description"] and isinstance(metadata, dict):
+        from .review_inventory import candidate_wording_requested
+        if (metadata.get("source") == "official_public_question_metadata"
+                and metadata.get("field_ref") == field["ref"]
+                and candidate_wording_requested(str(metadata.get("description", "")))):
+            return CANDIDATE  # Published own-wording guidance cannot become generator work.
         from .question_metadata import TYPES
         authorized = answers.get("eligibility.authorized_us", {})
         if (metadata.get("source") == "official_public_question_metadata"

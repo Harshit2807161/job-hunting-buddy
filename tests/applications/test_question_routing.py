@@ -176,3 +176,10 @@ def test_partial_visible_reply_does_not_override_or_resume_hidden_known_job(tmp_
     saved = booklet.load(path)
     assert saved["question_handoffs"][q["id"]]["status"] == "answered"
     assert saved["question_handoffs"][q["id"]]["contexts"][first["dedupe_hash"]]["resolved"] is True
+
+
+def test_published_own_wording_instruction_cannot_route_cover_file_to_generation():
+    record, context = item("Cover Letter", "cover_letter", type="file", required=False)
+    context["public_question_metadata"] = {"source": "official_public_question_metadata", "field_ref": "cover_letter",
+        "description": "Please write in your own words. Do not use generative AI."}
+    assert route(book(), record, context) == CANDIDATE
