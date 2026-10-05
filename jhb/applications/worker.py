@@ -18,7 +18,7 @@ from .credentials import CredentialStore
 from .planner import CodexPlanner, completed_cs_degree_answer, deterministic_plan, key_for_field, validate_plan
 
 
-def failure_result(exc, actions=None):
+def failure_result(exc, actions=None, *, job=None):
     """Classify transport/mechanics separately from unknown answers, without secrets."""
     from .cli_browser import BrowserOperationError
     if (isinstance(exc, BrowserOperationError) and getattr(exc, "condition", None) == "browser_capacity"
@@ -38,8 +38,23 @@ def failure_result(exc, actions=None):
     observed = getattr(actions, "last_failure", None)
     if observed:
         event.update({k: observed[k] for k in ("operation", "kind", "elapsed_seconds") if k in observed})
-    return {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
-            "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
+    result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
+              "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
+    progress = getattr(actions, "_preparation_progress", None)
+    if isinstance(progress, dict) and job is not None:
+        from .boards import application_hash, job_identity
+        if (isinstance(job.get("dedupe_hash"), str) and re.fullmatch(r"[a-f0-9]{64}", job["dedupe_hash"])
+                and application_hash(job.get("url")) == job.get("dedupe_hash")
+                and job.get("dedupe_hash") == progress.get("job_hash")
+                and job_identity(job.get("url")) == job_identity(progress.get("url"))
+                and callable(progress.get("snapshot"))):
+            try:
+                result = progress["snapshot"](result)
+            except Exception as checkpoint_error:
+                # A malformed checkpoint cannot mask the original failure or
+                # turn it into a reviewable draft. Do not expose error text.
+                result["events"].append({"event": "partial_progress_unavailable", "kind": type(checkpoint_error).__name__})
+    return result
 
 
 def _apply_phone_format(answers, policy):
@@ -161,6 +176,9 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
     else:
         answers.pop("standing.located_us", None)
     actions = cli_actions or BrowserActions(page, demo_origin=demo_origin)
+    # A client may be reused in tests or local tooling; never carry an older
+    # job/run checkpoint into a failure before this preparation observes it.
+    actions._preparation_progress = None
     observed_fields = {}
     narrative_calls = 0
     observed_step = 0
@@ -194,7 +212,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                    if (match := re.fullmatch(r"education\.(\d+)\.school", key)) and answers[key]["status"] == "verified"]
         if indexes:
             await actions.ensure_education(max(indexes)+1)
+    progress = {"job_hash": job.get("dedupe_hash"), "url": job.get("url"), "operation": "observe"}
     async def observe():
+        progress.update(operation="observe")
+        progress.pop("field_ref", None); progress.pop("field_type", None)
         snapshot = await actions.observe()
         booklet.annotate_work_country(snapshot, job)
         for field in snapshot.get("fields", []):
@@ -202,6 +223,18 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         return snapshot
     events = [{"event": "verified_saved_records"}] if profile_result.get("filled") else []
     filled = {(row["question"], row["ref"]): row for row in profile_result.get("filled", [])}
+    def retain_progress(failure):
+        # Only fills verified in THIS run enter current evidence. Never copy a
+        # prior packet or reclassify a failed control as an answered question.
+        context = {"operation": progress["operation"]}
+        for key in ("field_ref", "field_type"):
+            value = progress.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:.,\[\]-]{1,200}", value):
+                context[key] = value
+        return outcome({**failure, "filled": list(filled.values()),
+                        "events": [*events, *failure["events"]], "failure_context": context}, stable=False)
+    progress["snapshot"] = retain_progress
+    actions._preparation_progress = progress
     previous = None
     optional_questions = {}
     resolved_optional_refs = set()
@@ -271,6 +304,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         fingerprint = json.dumps(snapshot, sort_keys=True)
         if fingerprint == previous:
             return outcome({"state": "unsupported", "reason": "Continue did not reveal a new supported step; check blocked draft-save requests", "events": events, "filled": list(filled.values())}), actions
+        progress.update(operation="planning")
+        progress.pop("field_ref", None); progress.pop("field_type", None)
         plan = validate_plan(await asyncio.to_thread(planner, snapshot, answers), snapshot, answers)
         bindings = {b["ref"]: b["answer_key"] for b in plan["bindings"]}
         missing = []
@@ -287,6 +322,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     resolved_optional_refs.add(field["ref"])
                 continue
             try:
+                progress.update(operation="fill", field_ref=field["ref"], field_type=field["type"])
                 await actions.fill(field, record["value"])
                 education_row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
@@ -294,8 +330,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     **({"country_context": field["country_context"]} if field.get("country_context") else {}),
                     **({"proposed": True} if record.get("proposed") else {})}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
-            except ValueError as exc:
+            except Exception as exc:
                 filled.pop((field["label"], field["ref"]), None)
+                if not isinstance(exc, ValueError):
+                    raise
                 from .cli_browser import BrowserOperationError
                 if isinstance(exc, BrowserOperationError) and exc.retryable:
                     # A stale control or interrupted widget is a technical retry,
@@ -344,6 +382,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     "events": events, "filled": list(filled.values()), "optional_questions": list(optional_questions.values()),
                     "resolved_optional_refs": sorted(resolved_optional_refs), "blocked_requests": actions.blocked_requests}, stable=terminal), actions
         button = next(b for b in snapshot["buttons"] if b["ref"] == plan["next_ref"])
+        progress.update(operation="continue")
+        progress.pop("field_ref", None); progress.pop("field_type", None)
         await actions.click_next(button)
         previous = fingerprint
         events.append({"step": step, "event": "continued", "button": button["label"]})
@@ -583,7 +623,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
             result, actions = await prepare(None, job, answers, planner, vault, cli_actions=actions,
                                             narrative_preferences=policy.get("narrative_style", {}))
         except Exception as exc:
-            result = failure_result(exc, actions)
+            result = failure_result(exc, actions, job=job)
         result["review_notes"] = book.get("job_review_notes", {}).get(job["dedupe_hash"], [])
         result["role_fit"] = fit
         result.update(board=board, planner_skill=adapter(board).get("skill"))
