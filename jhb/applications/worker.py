@@ -452,6 +452,12 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                         from .cli_browser import BrowserOperationError
                         raise BrowserOperationError("Approved document changed during upload", retryable=True)
                     document_proof = {"upload_receipt": retained["upload_receipt"], "document_sha256": document_hash}
+                    if retained.get("ashby_upload_proof"):
+                        from .ashby_uploads import valid_proof
+                        if not valid_proof(retained["ashby_upload_proof"], url=job["url"], field=field,
+                                           key=key, sha256=document_hash, receipt=retained["upload_receipt"]):
+                            raise ValueError("Ashby upload proof differs from the approved document binding")
+                        document_proof["ashby_upload_proof"] = retained["ashby_upload_proof"]
                 education_row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"],

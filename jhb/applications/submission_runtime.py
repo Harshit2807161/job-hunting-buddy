@@ -119,6 +119,11 @@ def _ashby_control_state(helpers, field):
     state = helpers["js"]("(()=>{const e="+expression+";return e?{value:e.type==='file'?e.files?.[0]?.name||'':e.value,checked:e.checked,"
         "selected:e.tagName==='SELECT'?e.selectedOptions[0]?.label||'':e.getAttribute('role')==='combobox'&&e.getAttribute('aria-expanded')==='false'?e.value:'',"
         "receipt:e.__jhbUploadReceipt||null,invalid:e.getAttribute('aria-invalid')==='true'||(e.willValidate&&!e.validity.valid)}:null})()")
+    if state and field.get("type") == "file":
+        from .ashby_uploads import saved_file
+        observed_file = saved_file(helpers, field)
+        if observed_file is not None:
+            state["ashby_saved_file"] = observed_file
     from .ashby_education import school_control, retained_school_catalog
     if state and school_control(field):
         proof = helpers["js"]("(()=>{const e="+expression+";return e?{proof:e.__jhbSchoolSelection||null,expanded:e.getAttribute('aria-expanded')}:null})()")

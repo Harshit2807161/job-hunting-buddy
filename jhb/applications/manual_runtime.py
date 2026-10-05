@@ -566,19 +566,29 @@ def dispatch(request, helpers):
             if not path.is_file() or path.suffix.casefold() != ".pdf" or not path.read_bytes().startswith(b"%PDF-"):
                 raise ValueError("Approved PDF is unavailable")
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            existing = js("(()=>{const e="+expr+";return e?{filename:e.files?.[0]?.name,receipt:e.__jhbUploadReceipt,sha256:e.__jhbUploadSha256}:null})()")
+            from . import ashby_uploads
+            before = ashby_uploads.saved_file(helpers, field) if scope["board"] == "ashby" else None
+            existing = js("(()=>{const e="+expr+";return e?{filename:e.files?.[0]?.name,receipt:e.__jhbUploadReceipt,sha256:e.__jhbUploadSha256,proof:e.__jhbAshbyUploadProof}:null})()")
             if (request.get("upload_receipt") and existing and existing.get("receipt") == request["upload_receipt"]
                     and existing.get("sha256") == digest and existing.get("filename") == path.name):
-                return {"verified": True, "filename": path.name, "upload_receipt": existing["receipt"], "sha256": digest, "cached": True}
+                proof = existing.get("proof")
+                if proof and (not before or (before.get("saved_file") or {}).get("id") != proof.get("saved_file_id")):
+                    raise ValueError("Ashby saved attachment changed after verified upload")
+                return {"verified": True, "filename": path.name, "upload_receipt": existing["receipt"], "sha256": digest, "cached": True,
+                        **({"ashby_upload_proof": proof} if proof else {})}
             cdp("DOM.setFileInputFiles", backendNodeId=backend(expr), files=[str(path.resolve())])
             for _ in range(30):
                 wait(0.2)
                 retained = js("(()=>{const e="+expr+";return e?.files?.[0]?.name||''})()")
                 if retained == path.name:
                     receipt = uuid.uuid4().hex
+                    proof = (ashby_uploads.proof_for_upload(helpers, field, js("location.href"), path, receipt, before, expr)
+                             if scope["board"] == "ashby" else None)
                     js("(()=>{const e="+expr+";if(!e)return; e.__jhbUploadReceipt="+json.dumps(receipt)+
-                       ";e.__jhbUploadSha256="+json.dumps(digest)+";e.addEventListener('change',()=>{delete e.__jhbUploadReceipt;delete e.__jhbUploadSha256},{once:true,capture:true})})()")
-                    return {"verified": True, "filename": retained, "upload_receipt": receipt, "sha256": digest}
+                       ";e.__jhbUploadSha256="+json.dumps(digest)+";e.__jhbAshbyUploadProof="+json.dumps(proof)+
+                       ";e.addEventListener('change',()=>{delete e.__jhbUploadReceipt;delete e.__jhbUploadSha256;delete e.__jhbAshbyUploadProof},{once:true,capture:true})})()")
+                    return {"verified": True, "filename": retained, "upload_receipt": receipt, "sha256": digest,
+                            **({"ashby_upload_proof": proof} if proof else {})}
             raise ValueError("Approved file was not retained")
         if kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
             if kind == "text" and scope["board"] == "ashby" and field.get("calendar_format") == "MM/DD/YYYY":

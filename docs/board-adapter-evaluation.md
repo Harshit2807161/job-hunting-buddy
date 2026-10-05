@@ -234,3 +234,23 @@ Capacity deferral remains separate from a failed application attempt.
 Synthetic Chromium fixtures cover terminal/login/unsupported outcomes and
 preservation guards. This establishes no live candidate-tab closure or live
 submission evidence; existing stale source tabs require fresh classification.
+
+### Ashby restored attachment identity
+
+Live read-only inspection found that Ashby restores server-saved resumes as an
+opaque `savedFile.id` and filename while leaving the native FileList empty. The
+observed upload component has Replace/Delete controls, without a file download
+or preview action. An ephemeral input receipt alone cannot survive that remount.
+
+New upload proof waits for a changed, exact owned server ID after verifying the
+native browser File bytes against the approved PDF hash. The private packet
+retains the ID, hash, job identity, field path/ref and semantic document key.
+Read-only review accepts a restored file only when every binding still matches;
+same-named replacement IDs and source-byte changes invalidate it. Existing
+uploads without this proof are not retrospectively verified by their filename.
+
+Synthetic Chromium tests cover upload/save/remount, packet serialization,
+same-name replacement, field/job mismatches, failed saves, and preservation of
+validation errors. The new correlation mechanism has not yet been validated
+with a live upload. No live documents were replaced or applications submitted
+during this repair.

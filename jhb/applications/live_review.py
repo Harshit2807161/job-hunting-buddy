@@ -112,6 +112,9 @@ def project(packet, observation):
     seen = set()
     for item in observation["controls"]:
         field, state = item["field"], item["state"]
+        if field.get("type") == "file":
+            from .ashby_uploads import restored_state
+            state = restored_state(packet, field, state, observation["url"])
         ref = field["ref"]
         if ref in seen or field.get("description_truncated"):
             raise ValueError("Question identity or instructions are incomplete")
@@ -155,6 +158,8 @@ def project(packet, observation):
                     raise ValueError("Current upload needs document verification; it was left unchanged")
                 value = str(path)
                 source.update(sha256=previous["document_sha256"], document_origin="retained_preparation_receipt")
+                if state.get("ashby_upload_proof"):
+                    source["document_origin"] = "retained_ashby_server_file"
             documents[key] = booklet.answer(value, source)
         from .review_inventory import candidate_wording_requested
         own_wording = candidate_wording_requested(field["label"]+" "+(field.get("description") or ""))
@@ -180,6 +185,8 @@ def project(packet, observation):
                       "source": source, "user_override": True}
             if field["type"] == "file":
                 record.update(upload_receipt=state.get("receipt"), document_sha256=source["sha256"])
+                if state.get("ashby_upload_proof"):
+                    record["ashby_upload_proof"] = copy.deepcopy(state["ashby_upload_proof"])
             filled.append(record)
     if "documents.resume" not in documents:
         raise ValueError("The current application has no verified resume upload")

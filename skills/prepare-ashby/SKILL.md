@@ -135,6 +135,13 @@ Observe again after every conditional or repeated section changes. Before
 reporting ready for review, account for every required question group, retained
 selection, uploaded document, invalid control and unresolved optional decision.
 Record private DOM/AX evidence, document provenance, screenshot and review notes.
+For a verified native upload, retain the exact owned Ashby `savedFile.id` together
+with the browser File SHA-256, source PDF SHA-256, job, field and document key.
+Wait for a new server-saved ID before recording that proof. After a form remount,
+an empty native FileList can be checked against this existing proof only while
+the same server attachment ID and source bytes remain unchanged. A displayed
+filename or opaque server ID first seen after remount cannot create that proof.
+Never reupload a candidate's retained attachment merely to recover verification.
 Report live CLI validation separately from synthetic fixture checks. See
 [adapter evaluation](../../docs/board-adapter-evaluation.md) for observed board
 coverage and current limits.

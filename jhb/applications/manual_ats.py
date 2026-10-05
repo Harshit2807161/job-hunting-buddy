@@ -82,6 +82,7 @@ class ManualATSCLI(BrowserUseCLI):
                           "Existing residence differs from the approved state and country",
                           "Manual choices did not retain the approved answer",
                           "Approved file was not retained", "Observed manual control is unavailable",
+                          "Ashby server did not acknowledge the uploaded document",
                           "Observed manual input did not receive focus",
                           "Observed manual field has changed", "Autocomplete did not retain the committed choice",
                           "Foreground recovery field, target or guard changed",
