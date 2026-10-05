@@ -34,6 +34,8 @@ class ManualATSCLI(BrowserUseCLI):
         except ValueError as exc:
             from .cli_browser import BrowserOperationError
             mechanical = {"Manual input did not retain the approved answer",
+                          "Residence catalog could not recommit the original selection",
+                          "Existing residence differs from the approved state and country",
                           "Manual choices did not retain the approved answer",
                           "Approved file was not retained", "Observed manual control is unavailable",
                           "Observed manual input did not receive focus",
@@ -76,11 +78,19 @@ class ManualATSCLI(BrowserUseCLI):
         return snapshot
 
     async def ensure_profile(self, answers):
+        from .booklet import normalize
         self._residence_query = None
         state = answers.get("identity.state", {})
         if (self._scope["board"] == "ashby" and state.get("status") == "verified" and state.get("source")
                 and isinstance(state.get("value"), str) and state["value"].strip()):
             self._residence_query = state["value"]
+            country=answers.get("identity.country",{})
+            if country.get("status")=="verified" and country.get("source") and isinstance(country.get("value"),str):
+                snapshot=await super().observe()
+                if not snapshot.get("handoff"):
+                    for field in snapshot.get("fields",[]):
+                        if field.get("type")=="combobox" and normalize(field.get("label",""))=="state/country of residence":
+                            await self.invoke("prepare_residence",field=field,query=self._residence_query,country=country["value"])
         if self._scope["board"] != "workable":
             return {"supported": False}
         snapshot = await self.observe()

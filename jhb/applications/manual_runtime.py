@@ -107,7 +107,7 @@ def dispatch(request, helpers):
                 "guarded": True, "reused_tab": bool(tabs)}
     if not matches_scope(js("location.href"), scope):
         raise ValueError("Current page differs from approved manual job")
-    if request.get("foreground") is True and operation in {"fill", "describe"}:
+    if request.get("foreground") is True and operation in {"fill", "describe", "prepare_residence"}:
         # An opt-in response to demonstrated background-input failure. Reuse
         # this client's attached, scope-checked target inside the browser lane.
         helpers["activate_tab"](helpers["current_tab"]()["targetId"])
@@ -245,12 +245,64 @@ def dispatch(request, helpers):
         return {"url": js("location.href"), "title": js("document.title"), "fields": observed_fields,
                 "buttons": [{"ref": str(n["backendDOMNodeId"]), "label": n.get("name", {}).get("value", "")}
                             for n in nodes if n.get("role", {}).get("value") == "button" and n.get("backendDOMNodeId")]}
-    if operation in {"describe", "fill"}:
+    if operation in {"describe", "fill", "prepare_residence"}:
         requested = request["field"]
         current = [f for f in fields() if f["ref"] == requested["ref"]]
         if len(current) != 1 or any(current[0][k] != requested[k] for k in ("label", "type")):
             raise ValueError("Observed manual field has changed")
         field = current[0]
+        residence = scope["board"] == "ashby" and normalize(field["label"]) == "state/country of residence" and field["type"] == "combobox"
+        def residence_catalog(expr):
+            proof = js("(()=>{const e="+expr+";return e?.__jhbResidenceCatalog||null})()")
+            retained = state(expr)
+            binding = {"scope": scope, "ref": field["ref"], "label": field["label"], "required": field.get("required"),
+                       "description": field.get("description", ""), "description_truncated": field.get("description_truncated", False)}
+            if (residence and isinstance(proof, dict) and proof.get("binding") == binding and retained
+                    and retained["value"] == proof.get("selected") and retained["expanded"] == "false" and not retained["invalid"]
+                    and isinstance(proof.get("choices"), list) and 0 < len(proof["choices"]) <= 50
+                    and all(isinstance(x, str) and 0 < len(x) <= 500 for x in proof["choices"])
+                    and proof["choices"].count(proof.get("selected")) == 1):
+                return proof["choices"]
+            return None
+        def remember_residence(expr, labels, selected):
+            if not residence or len(labels)>50 or any(not x or len(x)>500 for x in labels):
+                return
+            proof = {"scope": scope, "ref": field["ref"], "label": field["label"], "required": field.get("required"),
+                     "description": field.get("description", ""), "description_truncated": field.get("description_truncated", False)}
+            js("(()=>{const e="+expr+";if(!e)return; e.__jhbResidenceCatalog="+json.dumps({"binding":proof,"choices":labels,"selected":selected})+
+               ";if(!e.__jhbResidenceListener){const clear=()=>{delete e.__jhbResidenceCatalog};"
+               "e.addEventListener('input',clear,{capture:true});e.addEventListener('change',clear,{capture:true});e.__jhbResidenceListener=true}})()")
+        if operation == "prepare_residence":
+            query, country = request.get("query"), request.get("country")
+            if not residence or not isinstance(query,str) or not query.strip() or len(query)>200 or not isinstance(country,str):
+                raise ValueError("Residence preparation is outside its approved scope")
+            expr=element_expr(field);before=state(expr)
+            if not before or not before["value"]:
+                return {"prepared":False}
+            parts=before["value"].rsplit(", ",1)
+            canonical="united states" if normalize(country) in {"us","usa","united states","united states of america"} else normalize(country)
+            if len(parts)!=2 or not option_matches(parts[0],query,field_id="state") or normalize(parts[1])!=canonical:
+                raise ValueError("Existing residence differs from the approved state and country")
+            if residence_catalog(expr):
+                return {"prepared":True,"retained":True}
+            type_text(expr,query)
+            options=[]
+            for _ in range(20):
+                options=combobox_options(expr)
+                if options:break
+                wait(.25)
+            matches=[n for n in options if n.get("name",{}).get("value")==before["value"]]
+            if len(matches)!=1:
+                type_text(expr,before["value"]);escape()
+                raise ValueError("Residence catalog could not recommit the original selection")
+            _settled_click(matches[0]["backendDOMNodeId"],cdp,wait,helpers["click_at_xy"])
+            for _ in range(10):
+                wait(.15);after=state(expr)
+                if after and after["value"]==before["value"] and after["expanded"]=="false" and not after["invalid"]:
+                    labels=[n.get("name",{}).get("value","") for n in options]
+                    remember_residence(expr,labels,after["value"])
+                    return {"prepared":True,"retained":True}
+            raise ValueError("Autocomplete did not retain the committed choice")
         if operation == "describe":
             if field["type"] == "combobox":
                 expr = element_expr(field)
@@ -262,6 +314,9 @@ def dispatch(request, helpers):
                         raise ValueError("Residence catalog query is outside its approved scope")
                     if not before:
                         raise ValueError("Observed manual control is unavailable")
+                cached = residence_catalog(expr)
+                if cached:
+                    return {"choices":cached,"type":"combobox","truncated":False,"source":"retained_owned_native_catalog"}
                 existing_query = query is not None and bool(before["value"])
                 try:
                     if query is not None and not existing_query:
@@ -416,6 +471,7 @@ def dispatch(request, helpers):
                 wait(0.15)
                 after = state(expr)
                 if after and after["value"] == value["choice"] and after["expanded"] == "false" and not after["invalid"]:
+                    remember_residence(expr,[n.get("name",{}).get("value","") for n in options],after["value"])
                     return {"verified": True, "selected": value["choice"]}
             raise ValueError("Autocomplete did not retain the committed choice")
         if kind == "file":
