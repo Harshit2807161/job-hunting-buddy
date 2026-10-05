@@ -937,6 +937,10 @@ def main():
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("Choose a port between 1024 and 65535")
+    # Match scheduled workers: the CLI loads the ignored local configuration;
+    # create_app stays injectable and never reads a developer's .env in tests.
+    config.load_dotenv()
+    config.refresh_from_env()
     import uvicorn
     uvicorn.run(create_app(), host="127.0.0.1", port=args.port, proxy_headers=False, access_log=False)
 

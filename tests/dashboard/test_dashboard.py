@@ -958,3 +958,23 @@ def test_openings_show_full_description_exclusion_recorded_by_preparation_worker
     conn.commit()
     item = client.get('/api/v1/openings').json()['items'][0]
     assert item['application_state'] == 'skipped' and item['filter_reasons'] == findings
+
+
+@pytest.mark.parametrize('existing,expected', [(None, '1'), ('0', '0')])
+def test_dashboard_cli_loads_same_local_runtime_gate_as_workers(tmp_path, monkeypatch, existing, expected):
+    import os
+    import sys
+    import uvicorn
+    from jhb import dashboard
+    monkeypatch.setattr(config, 'ROOT', tmp_path)
+    (tmp_path / '.env').write_text('JHB_OVERNIGHT_SUBMISSIONS_ENABLED=1\n')
+    if existing is None:
+        monkeypatch.delenv('JHB_OVERNIGHT_SUBMISSIONS_ENABLED', raising=False)
+    else:
+        monkeypatch.setenv('JHB_OVERNIGHT_SUBMISSIONS_ENABLED', existing)
+    monkeypatch.setattr(sys, 'argv', ['jhb.dashboard', '--port', '8030'])
+    monkeypatch.setattr(dashboard, 'create_app', lambda: 'synthetic-app')
+    seen = []
+    monkeypatch.setattr(uvicorn, 'run', lambda *a, **kw: seen.append(os.environ.get('JHB_OVERNIGHT_SUBMISSIONS_ENABLED')))
+    dashboard.main()
+    assert seen == [expected]
