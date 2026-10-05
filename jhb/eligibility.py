@@ -31,6 +31,8 @@ _SPONSORSHIP_DENIAL = re.compile(
     r"(?:employer[- ]sponsored|sponsored)\s+(?:work authorization|employment visas?)\b|"
     r"\b(?:cannot|will not|do not|does not|unable to)\s+(?:consider|hire|employ|accept)\b"
     r"[^.;]{0,80}\b(?:need|require|requiring|needing)\s+" + _SPONSOR + r"|"
+    r"\b(?:does not|do not|must not|will not)\s+(?:now\s+or\s+in\s+(?:the\s+)?future\s+)?"
+    r"require\s+" + _SPONSOR + r"|"
     r"\b(?:must|should)\s+not\s+(?:now\s+or\s+in\s+the\s+future\s+)?require\s+"
     r"(?:(?:visa|immigration|employment)\s+)?sponsorship\b", re.I)
 _NONEMPLOYMENT_SPONSOR = re.compile(r"\b(?:race|event|conference|charity|athletic|sports?)\s+sponsorship\b", re.I)

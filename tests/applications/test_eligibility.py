@@ -69,6 +69,7 @@ def test_nonrequirements_are_not_excluded(text):
     'OPT is supported, but we cannot sponsor H-1B visas in the future.',
     'Security clearance not required and visa sponsorship is not available.',
     'This role does not qualify for employer-sponsored work authorization.',
+    'Applicants must have work authorization that does not now or in the future require sponsorship of a visa for employment authorization in the United States.',
 ])
 def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_need(text):
     assert {item['category'] for item in eligibility.restrictions(text)} == {'visa_sponsorship'}

@@ -37,6 +37,10 @@ The verified official title is screened too, even when the feed title is generic
 MCP extraction preserves headings and bullets so a required clearance bullet
 cannot disappear into a neighboring preferred-qualification section. Label/value
 pairs such as "Visa Sponsorship: Not available" remain meaningful.
+When both JSON-LD and an exact-title, exact-job rendered description are observed,
+the rendered employment/qualification sections are retained too. A shorter
+metadata description cannot hide those requirements; conflicting observed job
+containers require a description handoff.
 
 Newly resolved links and replayed classifications are screened before they can
 dispatch a Phase 2 worker. Disqualified sources become `filtered`; preparation

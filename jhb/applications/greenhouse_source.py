@@ -107,7 +107,31 @@ def _observed_description(observation):
                            "title": title.strip(), "country_context": _metadata_country(record)})
     # Conflicting JobPosting records are not an invitation to choose one role.
     unique = {(item["title"], item["sha256"]): item for item in candidates}
-    return next(iter(unique.values())) if len(unique) == 1 else None
+    primary = next(iter(unique.values())) if len(unique) == 1 else None
+    if primary and postings:
+        # JSON-LD can omit a site's separate Qualifications/Employment sections.
+        # Retain observed job-container text only for this exact identity/title;
+        # generic page chrome and related postings cannot donate requirements.
+        same_title = lambda value: re.sub(r"\s+", " ", str(value or "")).strip().casefold() == primary["title"].casefold()
+        rendered_records = [r for r in observation.get("descriptions", []) if isinstance(r, dict)
+                            and job_identity(r.get("url", "")) == identity and same_title(r.get("title"))]
+        if rendered_records:
+            rendered = _observed_description({"url": url, "descriptions": rendered_records})
+            if rendered is None:
+                return None  # Conflicting/empty observed job containers need review.
+            if re.sub(r"\s+", " ", primary["text"]) in re.sub(r"\s+", " ", rendered["text"]):
+                combined = rendered["text"]
+            elif re.sub(r"\s+", " ", rendered["text"]) in re.sub(r"\s+", " ", primary["text"]):
+                combined = primary["text"]
+            else:
+                combined = primary["text"] + "\n\n" + rendered["text"]
+            if len(combined.encode()) > 1024*1024:
+                return None
+            primary = {**primary, "text": combined, "sha256": hashlib.sha256(combined.encode()).hexdigest(),
+                       "method": "exact_job_jsonld_and_observed_container"}
+            if rendered.get("country_context") and rendered["country_context"] != primary.get("country_context"):
+                primary["country_context"] = None
+    return primary
 
 
 def canonical_greenhouse(url: str, *, context_url="") -> str | None:

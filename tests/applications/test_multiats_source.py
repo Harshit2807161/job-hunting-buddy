@@ -61,6 +61,32 @@ def test_distinct_primary_jobposting_descriptions_need_handoff():
     assert 'verified_job_description' not in result
 
 
+def test_rendered_employment_requirements_are_not_hidden_by_shorter_jsonld():
+    from jhb import eligibility
+    restriction = 'Applicants must have work authorization that does not now or in the future require sponsorship of a visa.'
+    rendered = {'url': ASHBY, 'title': 'Software Engineer', 'text': TEXT+'\nQualifications\n'+restriction}
+    result, _ = resolve({ASHBY: page(ASHBY, job_postings=[posting()], descriptions=[rendered])}, ASHBY)
+    description = result['verified_job_description']
+    assert restriction in description['text']
+    assert description['sha256'] == hashlib.sha256(description['text'].encode()).hexdigest()
+    assert {r['category'] for r in eligibility.restrictions(description['text'])} == {'visa_sponsorship'}
+
+
+def test_different_job_container_cannot_donate_restrictions():
+    from jhb import eligibility
+    rendered = {'url': ASHBY.replace('555555555555', '555555555556'), 'title': 'Software Engineer',
+                'text': TEXT+'\nUS citizenship required.'}
+    result, _ = resolve({ASHBY: page(ASHBY, job_postings=[posting()], descriptions=[rendered])}, ASHBY)
+    assert eligibility.restrictions(result['verified_job_description']['text']) == []
+
+
+def test_conflicting_exact_rendered_containers_require_description_handoff():
+    rendered = [{'url': ASHBY, 'title': 'Software Engineer', 'text': TEXT+'\n'+tail}
+                for tail in ['US citizenship required.', 'Visa sponsorship is available.']]
+    result, _ = resolve({ASHBY: page(ASHBY, job_postings=[posting()], descriptions=rendered)}, ASHBY)
+    assert 'verified_job_description' not in result
+
+
 def test_employer_observed_individual_non_greenhouse_frame_is_followed_and_verified():
     employer='https://company.example/careers/software-engineer'
     result,transport=resolve({employer:page(employer,frames=[{'url':ASHBY}]),ASHBY:page(ASHBY,job_postings=[posting()])},employer)
