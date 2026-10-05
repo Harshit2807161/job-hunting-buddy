@@ -154,3 +154,21 @@ neither validates a reusable UKG preparation adapter nor enables final
 submission. Both registry capabilities remain disabled. Synthetic tests verify
 identity parsing, draft visibility and rejection by the submission capability
 gate; they are not live UKG filling or submission validation.
+
+An observed Ashby residence control returned no results when reopened with its
+already-selected full display label. Preparation may query the verified state
+and recommit only the exact original state/country option from the control's
+owned native results. It must verify the actual selection, not merely restore
+typed display text. A bounded native-catalog receipt is tied to the same input,
+job, question and retained value; edits or changed question context invalidate
+it. Later read-only inspection can use that evidence without clearing a saved
+selection. Synthetic fixtures cover successful native recommit, absent choices,
+foreign listboxes, changed descriptions and edit invalidation. A separate live
+CLI retry verified retained selection and the completed question inventory.
+
+The Browser Use transport currently counts waiting for the shared browser lane
+inside its operation timeout. An explicit interactive batch can allow more
+bounded queue time while retaining the same lock, exact-tab scope and process
+cleanup. A timeout before inspection does not establish an authentication or
+candidate-answer problem. Do not respond by opening duplicate tabs, bypassing
+the browser lock or changing final-submission deadlines.
