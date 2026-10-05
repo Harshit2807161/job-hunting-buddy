@@ -22,7 +22,7 @@ def linkedin_id(url):
 def outbound(url):
     try:
         parsed = urlsplit(url)
-        if parsed.hostname in {"www.linkedin.com", "linkedin.com"} and parsed.path == "/safety/go/":
+        if parsed.hostname in {"www.linkedin.com", "linkedin.com"} and parsed.path.rstrip("/") in {"/safety/go", "/redir/redirect", "/jobs/redirect"}:
             values = parse_qs(parsed.query).get("url", [])
             if len(values) != 1:
                 return None

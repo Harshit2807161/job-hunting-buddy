@@ -199,3 +199,14 @@ def test_unverified_or_closed_isolated_destination_preserves_source(tmp_path, mo
     result = asyncio.run(linkedin.resolve_source({'url': SOURCE}, client=cli))
     assert result['state'] == 'blocked'
     assert [c[0] for c in cli.calls] == ['resolve_link']
+
+
+@pytest.mark.parametrize("path", ["/safety/go/", "/redir/redirect", "/jobs/redirect"])
+def test_observed_first_party_apply_redirects_decode_one_public_href(fixture_browser, path):
+    from urllib.parse import quote
+    fixture, _ = fixture_browser
+    href = "https://www.linkedin.com"+path+"?url="+quote(DEST, safe="")
+    fixture.apply_html = f'<a href="{href}">Apply</a><script>window.clicks=0</script>'
+    result = resolve(fixture)
+    assert result["state"] == "observed_link" and result["application_url"] == DEST
+    assert len(fixture.new_calls) == 1 and len(fixture.pages) == 3
