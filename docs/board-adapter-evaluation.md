@@ -155,6 +155,10 @@ submission. Both registry capabilities remain disabled. Synthetic tests verify
 identity parsing, draft visibility and rejection by the submission capability
 gate; they are not live UKG filling or submission validation.
 
+The separately evaluated interactive flow is documented in
+[UKG preparation observations](ukg-interactive-preparation.md), including import
+corrections, saved-record audits and the remaining terminal-action limitations.
+
 An observed Ashby residence control returned no results when reopened with its
 already-selected full display label. Preparation may query the verified state
 and recommit only the exact original state/country option from the control's
