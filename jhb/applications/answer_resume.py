@@ -1,16 +1,20 @@
 """Recover scoped saved answers after a crash before the SQLite queue update.
 
-The booklet's explicit response is the durable outbox. Recovery only requeues
-an unchanged waiting_input packet whose entire required handoff has exact,
-current answered ledger proof. It grants no submission authority.
+The booklet's explicit response is the durable outbox. Generic recovery only
+requeues an unchanged waiting_input packet with exact current answer proof.
+Reviewed drafts additionally need an explicit server-authored edit intent and
+verified no-click evidence. Recovery grants no submission authority.
 """
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
+import stat
 from pathlib import Path
 
+from .. import config
 from . import boards, booklet, questions
 
 
@@ -21,7 +25,7 @@ def _country(value):
     return booklet.normalize(str(value)) if value is not None else None
 
 
-def _response(book, record, job_hash):
+def _response(book, record, job_hash, *, allow_declined=False):
     revision = record.get("answer_revision")
     if not isinstance(revision, str) or not revision or record.get("status") != "answered":
         return False
@@ -34,7 +38,9 @@ def _response(book, record, job_hash):
         if not item:
             item = book.get("answers", {}).get(record.get("answer_key"), {})
     source = item.get("source", {})
-    return (item.get("status") == "verified" and item.get("value") is not None
+    approved_value = (item.get("status") == "verified" and item.get("value") is not None
+                      or allow_declined and item.get("status") == "declined" and item.get("value") is None)
+    return (approved_value
             and isinstance(source, dict) and source.get("provider") == "explicit user question response"
             and source.get("question_id") == record.get("id")
             and source.get("answered_at") == revision and source.get("scope") == record.get("scope")
@@ -52,7 +58,10 @@ def eligible(book, job, packet):
         return False
     if booklet.job_excluded(book, job):
         return False
-    missing = [item for item in packet.get("missing", []) if isinstance(item, dict) and item.get("required", True)]
+    raw_missing = packet.get("missing", [])
+    if not isinstance(raw_missing, list) or any(not isinstance(item, dict) for item in raw_missing):
+        return False
+    missing = [item for item in raw_missing if item.get("required", True)]
     if not missing:
         return False  # technical/source/role handoffs without an exact ledger gap are not user answers
     try:
@@ -88,12 +97,109 @@ def _active_authority(conn, job_hash):
     return False
 
 
+def _no_terminal_click(conn, job_hash, job):
+    table = conn.execute("SELECT 1 FROM sqlite_master WHERE name='authorized_submission_attempts'").fetchone()
+    if not table:
+        return True
+    row = conn.execute("SELECT * FROM authorized_submission_attempts WHERE job_hash=?", (job_hash,)).fetchone()
+    if row is None:
+        return True
+    if row["state"] not in {"waiting_review", "waiting_input", "waiting_login", "waiting_captcha"}:
+        return False
+    try:
+        from .authorized_submission import private_file
+        proof = json.loads(private_file(row["attempt_path"]).read_bytes())
+        return (proof.get("runtime_click_started") is False and proof.get("job_hash") == job_hash
+                and proof.get("authorization_id") == row["authorization_id"]
+                and boards.job_identity(proof.get("application_url")) == boards.job_identity(job.get("url")))
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        return False
+
+
+def _explicit_review_edit(book, job, packet, packet_path, packet_bytes, book_path):
+    """A server-authored edit intent proves which reviewed draft the user edited.
+
+    Old facts legitimately differ after the answer; the original binding's
+    digest proves the old review revision instead of silently recomputing it.
+    Generic answered records can never reset a waiting_review application.
+    """
+    job_hash = job.get("dedupe_hash")
+    if (packet.get("state") != "waiting_review" or packet.get("submitted") is not False
+            or packet.get("missing") or packet.get("verification")
+            or packet.get("job", {}).get("dedupe_hash") != job_hash
+            or boards.application_hash(job.get("url")) != job_hash
+            or boards.job_identity(packet.get("job", {}).get("url")) != boards.job_identity(job.get("url"))
+            or booklet.job_excluded(book, job)):
+        return False
+    inventory = packet.get("review_inventory", {})
+    if inventory.get("complete") is not True or not isinstance(inventory.get("fields"), list):
+        return False
+    fields = inventory["fields"]
+    if not fields or any(not isinstance(f, dict) or not f.get("ref") or not f.get("question") for f in fields):
+        return False
+    if len({f["ref"] for f in fields}) != len(fields):
+        return False
+    try:
+        scope = questions._scope(job)
+        from .approvals import _digest
+        from .capture import MAX_BYTES, valid as valid_capture
+        image = packet_path.with_name("browser.png")
+        from .authorized_submission import private_file
+        image_stat = image.lstat()
+        if (image.is_symlink() or any(parent.is_symlink() for parent in image.parents)
+                or not image.resolve().is_relative_to((config.ROOT / "private").resolve())
+                or not stat.S_ISREG(image_stat.st_mode) or image_stat.st_mode & 0o077
+                or image_stat.st_size > MAX_BYTES):
+            return False
+        image_bytes = image.read_bytes()
+        if packet.get("capture", {}).get("verified") is not True or not valid_capture(packet, image_bytes):
+            return False
+    except (OSError, ValueError, TypeError):
+        return False
+    for record in book.get("question_handoffs", {}).values():
+        if not isinstance(record, dict) or record.get("scope") != scope or not _response(book, record, job_hash, allow_declined=True):
+            continue
+        context = record.get("contexts", {}).get(job_hash, {})
+        intent = record.get("candidate_edit_intents", {}).get(job_hash, {})
+        if (not isinstance(intent, dict) or intent.get("provider") != "local_dashboard_explicit_edit"
+                or intent.get("job_hash") != job_hash or intent.get("question_id") != record.get("id")
+                or intent.get("answer_revision") != record.get("answer_revision")
+                or intent.get("approval_revoked") is not True or context.get("resolved")):
+            continue
+        matching = [f for f in fields if f["ref"] == context.get("ref")
+                    and booklet.normalize(f["question"]) == record.get("normalized_question")]
+        if len(matching) != 1:
+            continue
+        response = book.get("custom_answers", {}).get(record.get("custom_answer_key"), {})
+        if response.get("status") == "declined" and (context.get("required") is not False
+                                                    or matching[0].get("required") is not False):
+            continue
+        binding = intent.get("review_binding", {})
+        if (not isinstance(binding, dict) or not re.fullmatch(r"[a-f0-9]{64}", str(intent.get("review_revision", "")))
+                or _digest(binding) != intent["review_revision"]
+                or binding.get("packet_sha256") != hashlib.sha256(packet_bytes).hexdigest()
+                or intent.get("packet_sha256") != binding["packet_sha256"]
+                or binding.get("screenshot_sha256") != hashlib.sha256(image_bytes).hexdigest()
+                or binding.get("selected_role") not in {"sde", "ml"}):
+            continue
+        try:
+            if (private_file(intent.get("packet_path", "")) != packet_path
+                    or private_file(binding.get("packet_path", "")) != packet_path
+                    or private_file(binding.get("book_path", "")) != Path(book_path).resolve()):
+                continue
+        except (OSError, ValueError, TypeError):
+            continue
+        return True
+    return False
+
+
 def recover(conn, book_path=booklet.DEFAULT_PATH, *, limit=100):
     """Idempotent, bounded restart reconciliation, serialized with answer writes.
 
-    Only waiting_input can become queued. Reviewed, running, submitted,
-    uncertain and active-authority records stay protected; no old approval is
-    renewed. A later pass cannot reset retries again once the job is queued.
+    Generic recovery only touches waiting_input. A waiting_review draft needs
+    a server-authored exact explicit-edit intent and no terminal-click proof.
+    Running, submitted, uncertain and active-authority records stay protected;
+    no approval is renewed or retry reset repeated once the job is queued.
     """
     if type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError("Answer recovery limit must be between 1 and 200")
@@ -103,7 +209,7 @@ def recover(conn, book_path=booklet.DEFAULT_PATH, *, limit=100):
     recovered = 0
     with questions._locked(book_path):
         book = booklet.load(book_path)
-        rows = conn.execute("SELECT job_hash,job_json,packet FROM applications WHERE state='waiting_input' "
+        rows = conn.execute("SELECT job_hash,job_json,packet,state FROM applications WHERE state IN ('waiting_input','waiting_review') "
                             "AND packet IS NOT NULL ORDER BY updated_at,job_hash LIMIT ?", (limit,)).fetchall()
         for row in rows:
             if _active_authority(conn, row["job_hash"]):
@@ -112,14 +218,20 @@ def recover(conn, book_path=booklet.DEFAULT_PATH, *, limit=100):
                 path = private_file(Path(row["packet"]).with_name("packet.json"))
                 if not path.is_file() or path.stat().st_size > MAX_PACKET_BYTES:
                     continue
-                packet, job = json.loads(path.read_bytes()), json.loads(row["job_json"])
-                if job.get("dedupe_hash") != row["job_hash"] or not eligible(book, job, packet):
+                packet_bytes = path.read_bytes()
+                packet, job = json.loads(packet_bytes), json.loads(row["job_json"])
+                if job.get("dedupe_hash") != row["job_hash"]:
+                    continue
+                safe = (_no_terminal_click(conn, row["job_hash"], job) and
+                        (eligible(book, job, packet) if row["state"] == "waiting_input" else
+                         _explicit_review_edit(book, job, packet, path, packet_bytes, book_path)))
+                if not safe:
                     continue
             except (OSError, ValueError, TypeError, KeyError):
                 continue
             recovered += conn.execute(
                 "UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,"
-                "updated_at=?,notified_at=NULL WHERE job_hash=? AND state='waiting_input'",
-                (int(time.time()), row["job_hash"])).rowcount
+                "updated_at=?,notified_at=NULL WHERE job_hash=? AND state=?",
+                (int(time.time()), row["job_hash"], row["state"])).rowcount
         conn.commit()
     return recovered
