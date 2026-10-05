@@ -897,8 +897,21 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             return {key: result[key] for key in ("approval_id", "state", "job_hash") if key in result}
         except ImportError:
             raise HTTPException(503, "Application approval is not configured") from None
-        except (ValueError, OSError, sqlite3.Error):
-            raise HTTPException(409, "Draft changed or blank questions were not acknowledged; refresh the review") from None
+        except (ValueError, OSError, sqlite3.Error, RuntimeError, TimeoutError) as exc:
+            message = "Draft changed or blank questions were not acknowledged; refresh the review"
+            if current_form:
+                text = str(exc)
+                if "attachment" in text or "uploaded" in text or "upload" in text or text.endswith((": Resume", ": Resume/CV", ": Cover Letter")):
+                    message = "The current attachment could not be verified. It was left unchanged; review the saved attachment in Chrome."
+                elif "optional blank" in text:
+                    message = "A current optional field is blank. Refresh the review and acknowledge each field you want to leave blank."
+                elif "spreadsheet application" in text or "duplicate submission" in text:
+                    message = "This role matches an existing application in your history. Reconcile that match before reapplying."
+                elif "tab" in text.lower() or "Current page differs" in text:
+                    message = "The saved tab is not showing the expected application form. Open the saved draft before submitting."
+                else:
+                    message = "The current browser form could not be verified. Your answers were left unchanged; refresh this review."
+            raise HTTPException(409, message) from None
 
     @app.post("/api/v1/applications/{job_hash}/discard")
     def discard_application(job_hash: str, background_tasks: BackgroundTasks):
