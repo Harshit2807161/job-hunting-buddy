@@ -90,6 +90,24 @@ def test_all_required_answers_must_have_current_scoped_proof(context):
     assert answer_resume.recover(conn, path) == 1
 
 
+def test_saved_user_response_can_resume_with_remaining_worker_document_task(context):
+    conn, path, job, packet, packet_path, question = context
+    packet['missing'].append({'question': 'Cover Letter', 'ref': 'cover_letter',
+                              'type': 'file', 'required': True})
+    booklet.write_private(packet_path, packet)
+    questions.collect(job, packet, path)
+    assert answer_resume.recover(conn, path) == 1
+
+
+def test_routing_worker_tasks_alone_never_triggers_answer_recovery(context):
+    conn, path, job, packet, packet_path, question = context
+    packet['missing'] = [{'question': 'Cover Letter', 'ref': 'cover_letter',
+                          'type': 'file', 'required': True}]
+    booklet.write_private(packet_path, packet)
+    questions.collect(job, packet, path)
+    assert answer_resume.recover(conn, path) == 0
+
+
 @pytest.mark.parametrize("table,status", [("application_approvals", "approved"), ("application_approvals", "submitting"),
                                            ("authorized_submission_attempts", "in_progress"), ("authorized_submission_attempts", "uncertain"),
                                            ("authorized_submission_attempts", "submitted")])

@@ -34,6 +34,52 @@ def test_known_answer_widget_failure_cannot_become_unknown_fact():
                             deterministic_plan,None,cli_actions=BrokenForm()))
 
 
+def test_legacy_value_error_for_known_optional_control_never_reports_ready():
+    import pytest
+    from jhb.applications.cli_browser import BrowserOperationError
+    class BrokenForm:
+        blocked_requests = 0
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {'fields': [{'ref': 'gender', 'label': 'Gender', 'type': 'select',
+                                'required': False, 'options': [{'label': 'Male'}, {'label': 'Female'}]}],
+                    'buttons': [{'ref': 'submit', 'label': 'Submit application'}]}
+        async def fill(self, field, value): raise ValueError('Legacy retained value failure')
+        async def describe(self, field): return {'choices': ['Male', 'Female']}
+    with pytest.raises(BrowserOperationError) as failure:
+        asyncio.run(prepare(None, {'url': 'synthetic'},
+            {'disclosure.gender': booklet.answer('Male', 'synthetic profile')},
+            deterministic_plan, None, cli_actions=BrokenForm()))
+    assert failure.value.retryable
+
+
+def test_incompatible_new_choice_stays_candidate_input():
+    class ChangedForm:
+        blocked_requests = 0
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {'fields': [{'ref': 'country', 'label': 'Country', 'type': 'combobox', 'required': True}],
+                    'buttons': []}
+        async def fill(self, field, value): raise ValueError('Stored answer is absent from dropdown options')
+        async def describe(self, field): return {'choices': ['Canada', 'France']}
+    result, _ = asyncio.run(prepare(None, {'url': 'synthetic'},
+        {'identity.country': booklet.answer('United States', 'synthetic profile')},
+        deterministic_plan, None, cli_actions=ChangedForm()))
+    assert result['state'] == 'waiting_input'
+    assert result['missing'][0]['choices'] == ['Canada', 'France']
+
+
+def test_portal_answer_cannot_leak_to_a_hidden_sibling_application():
+    from jhb.applications.worker import _scoped_custom_answers
+    scope = {'board': 'example', 'ats': 'greenhouse'}
+    book = {'custom_answers': {'custom.question': {**booklet.answer('Yes', 'synthetic user'),
+             'scope': scope, 'job_hashes': ['1' * 64]}}}
+    assert _scoped_custom_answers(book, {'dedupe_hash': '1' * 64}, scope)
+    assert not _scoped_custom_answers(book, {'dedupe_hash': '2' * 64}, scope)
+
+
 def test_accomplishment_prompts_use_selected_verified_experience_without_input():
     from jhb.applications.narratives import ACCOMPLISHMENTS_PROMPT
     labels=[ACCOMPLISHMENTS_PROMPT,"Second example:","Third example:"]

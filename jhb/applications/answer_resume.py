@@ -70,9 +70,12 @@ def eligible(book, job, packet):
         return False
     ledger = [record for record in book.get("question_handoffs", {}).values()
               if isinstance(record, dict) and record.get("scope") == scope and job_hash in record.get("contexts", {})]
+    from .question_routing import CANDIDATE, route
     if any(record.get("status") == "pending" and record["contexts"][job_hash].get("required")
-           and not record["contexts"][job_hash].get("resolved") for record in ledger):
+           and not record["contexts"][job_hash].get("resolved")
+           and route(book, record, record["contexts"][job_hash]) == CANDIDATE for record in ledger):
         return False
+    explicit_responses = 0
     for item in missing:
         if not isinstance(item.get("question"), str) or questions._SECRET.search(item["question"]):
             return False
@@ -81,9 +84,16 @@ def eligible(book, job, packet):
                    and _country(record.get("country_context")) == _country(item.get("country_context"))
                    and record["contexts"][job_hash].get("ref") == item.get("ref")
                    and record["contexts"][job_hash].get("required") is True]
-        if len(matches) != 1 or not _response(book, matches[0], job_hash):
+        if len(matches) != 1:
             return False
-    return True
+        record = matches[0]
+        if _response(book, record, job_hash):
+            explicit_responses += 1
+        elif (record.get("status") != "pending"
+              or route(book, record, record["contexts"][job_hash]) == CANDIDATE):
+            return False
+    # Merely routing a technical/document task never creates a replay trigger.
+    return explicit_responses > 0
 
 
 def _active_authority(conn, job_hash):

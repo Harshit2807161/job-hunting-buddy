@@ -162,6 +162,14 @@ def _question(field, key, reason=""):
                                      isinstance(field.get("description"), str) and len(field["description"]) > 4096}
 
 
+def _scoped_custom_answers(book, job, scope):
+    """Portal answers apply only to the application contexts the user saw."""
+    return {key: item for key, item in book.get("custom_answers", {}).items()
+            if scope is not None and item.get("scope") == scope
+            and (not item.get("job_hash") or item["job_hash"] == job["dedupe_hash"])
+            and (not item.get("job_hashes") or job["dedupe_hash"] in item["job_hashes"])}
+
+
 def role_for_job(job):
     value = job.get("role_classes", "")
     classes = set(value if isinstance(value, list) else str(value).split(","))
@@ -366,10 +374,24 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                         events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": fallback_key})
                         continue
                 events.append({"step": step, "event": "unfilled", "question": field["label"], "answer_key": key})
+                # A known compatible answer failing to stick is worker work.
+                # Re-read the exact control's choices before distinguishing
+                # a mechanical failure from genuinely different question scope.
+                observed = dict(field)
+                if hasattr(actions, "describe") and field["type"] in {"combobox", "select"}:
+                    try:
+                        described = await actions.describe(field)
+                        if isinstance(described.get("choices"), list):
+                            observed["options"] = [{"label": value} for value in described["choices"] if isinstance(value, str)]
+                    except (ValueError, RuntimeError):
+                        pass
+                from .question_routing import CANDIDATE, field_route
+                if field_route(observed, answers) != CANDIDATE:
+                    raise BrowserOperationError("Verified answer needs a field repair", retryable=True) from exc
                 if field["required"]:
-                    missing.append(_question(field, key, "Stored answer unavailable or incompatible with field"))
+                    missing.append(_question(observed, key, "Observed choices need a more specific answer"))
                 else:
-                    optional_questions[field["ref"]] = _question(field, key, "Stored answer unavailable or incompatible with field")
+                    optional_questions[field["ref"]] = _question(observed, key, "Observed choices need a more specific answer")
         if missing:
             for item in missing + list(optional_questions.values()):
                 if hasattr(actions, "describe") and item["type"] in {"combobox", "select"}:
@@ -605,9 +627,7 @@ async def run_job(job, book, *, planner_name="codex", demo_origin=None, headless
         scope = question_scope(job) if not demo_origin else None
     except ValueError:
         scope = None
-    answers.update({key: item for key, item in book.get("custom_answers", {}).items()
-                    if scope is not None and item.get("scope") == scope
-                    and (not item.get("job_hash") or item["job_hash"] == job["dedupe_hash"])})
+    answers.update(_scoped_custom_answers(book, job, scope))
     from .boards import adapter, board_type, preparation_supported
     board = board_type(job["url"])
     if not demo_origin and not preparation_supported(board):
