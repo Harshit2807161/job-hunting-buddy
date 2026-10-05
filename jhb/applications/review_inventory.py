@@ -50,15 +50,52 @@ def category(field,key=None):
     return 'application_question'
 
 
+def _retained_catalog_fallback(field, key, filled, answers):
+    """Accept only a retained native catalog choice bound to its original fact.
+
+    The worker selects this fallback only after the actual education value is
+    absent from the native dropdown. Do not infer it from an empty catalog or
+    overwrite the candidate's original school/major during review.
+    """
+    native = re.fullmatch(r'(school|discipline)--(\d+)', field['ref'])
+    if not native or field['type'] not in {'combobox', 'select'}:
+        return None
+    column = 'major' if native[1] == 'discipline' else 'school'
+    if key != f'education.{native[2]}.{column}':
+        return None
+    rows = [row for row in filled if row['ref'] == field['ref']]
+    if len(rows) != 1:
+        return None
+    retained = rows[0]
+    fallback_key = f'standing.catalog.{native[2]}.{column}'
+    original, fallback = answers.get(key, {}), answers.get(fallback_key, {})
+    source = fallback.get('source')
+    if (original.get('status') != 'verified' or not original.get('value') or not original.get('source')
+            or fallback.get('status') != 'verified' or not fallback.get('value')
+            or not isinstance(source, dict) or not source.get('policy')
+            or source.get('actual_value') != original['value']
+            or source.get('original_source') != original['source']
+            or retained.get('question') != field['label'] or retained.get('key') != fallback_key
+            or retained.get('value') != fallback['value'] or retained.get('source') != source):
+        return None
+    return retained
+
+
 def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
     """Reconcile every observed question; an optional blank is still visible."""
     records=[]
     for field in observed:
         key=key_for_field(field,answers)
+        canonical_key=key
         approved=answers.get(key,{})
         matches=[row for row in filled if row['ref']==field['ref'] and row.get('key')==key]
         retained=next((row for row in matches if approved.get('status')=='verified'
                        and row.get('value')==approved.get('value') and row.get('source')==approved.get('source')),None)
+        if retained is None and sum(row['ref'] == field['ref'] for row in observed) == 1:
+            retained = _retained_catalog_fallback(field, key, filled, answers)
+            if retained is not None:
+                key = retained['key']
+                approved = answers[key]
         description=field.get('description','')
         description=description if isinstance(description,str) else ''
         description_truncated=field.get('description_truncated') is True or len(description)>4096
@@ -69,7 +106,7 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
         status='answered' if retained else 'declined' if approved.get('status')=='declined' else 'blank'
         records.append({'ref':field['ref'],'question':field['label'],'type':field['type'],
                         'required':field['required'],'status':status,'answer_key':key,
-                        'category':category(field,key),'source':retained.get('source') if retained else approved.get('source'),
+                        'category':category(field,canonical_key),'source':retained.get('source') if retained else approved.get('source'),
                         'proposed':bool(retained and (retained.get('proposed') or approved.get('proposed') or
                             isinstance(retained.get('source'),dict) and retained['source'].get('kind')=='grounded_narrative')),
                         'step':field.get('observed_step',0),'choices':[o['label'] for o in field.get('options',[])],

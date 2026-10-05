@@ -145,13 +145,18 @@ class CatalogForm:
 def test_approved_catalog_fallback_applies_only_after_original_option_is_absent(ref, label, key, fallback_key, original, fallback):
     question = field(label, ref=ref)
     actions = CatalogForm(question, original, "Stored answer is absent from dropdown options")
-    answers = {key: booklet.answer(original, "Verified synthetic original education fact"),
-               fallback_key: booklet.answer(fallback, "Explicit synthetic user catalog fallback")}
+    original_source = "Verified synthetic original education fact"
+    answers = {key: booklet.answer(original, original_source),
+               fallback_key: booklet.answer(fallback, {"policy": "Explicit synthetic user catalog fallback",
+                   "actual_value": original, "original_source": original_source})}
     result, _ = asyncio.run(prepare(None, {"url": "synthetic"}, answers, deterministic_plan, None, cli_actions=actions))
     assert result["state"] == "waiting_review"
     assert actions.attempts == [original, fallback]
     assert result["filled"][0]["key"] == fallback_key
     assert result["filled"][0]["value"] == fallback
+    assert result["review_inventory"]["complete"] is True
+    assert result["review_inventory"]["fields"][0]["status"] == "answered"
+    assert result["review_inventory"]["fields"][0]["answer_key"] == fallback_key
     assert answers[key]["value"] == original
 
 
