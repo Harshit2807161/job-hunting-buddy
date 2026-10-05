@@ -24,8 +24,10 @@ must not appear in an answer unless independently present in the current inputs.
 Use only the exact official JD and the chosen verified resume as factual sources.
 The private style reference gives tone and emphasis, never permission to reuse
 its company or candidate claims. Paraphrase naturally; do not paste source quotes
-into the answer. Cite complete provided support units by exact input_id, unit_id
-and quote in the structured support list. Preserve negation and conditions; do
+into the answer. Cite complete provided support units by exact input_id and
+unit_id in the structured support list; do not output or recopy their text.
+The local validator attaches each complete source text before review and storage.
+Preserve negation and conditions; do
 not cherry-pick substrings. Limit the list to relevant units, including official
 JD support and at most one candidate unit. Every factual assertion in the answer
 must follow from this support and its full context. Do not manufacture products,

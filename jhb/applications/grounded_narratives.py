@@ -26,6 +26,7 @@ VERSION = 3
 TIMEOUT = 60
 FAILURE_TTL = 300
 CURATED_RESPONSE_MAX_BYTES = 256 * 1024
+CURATED_CACHE_MODE = "curated_company_interest_v2"
 FACT_KEYS = ("role.experience", "role.projects", "role.skills")
 _FACTUAL = re.compile(r"\b(?:fail\w*|mistake\w*|conflict\w*|obstacle\w*|fired|terminated|"
     r"owned|ownership|managed|supervised|challenge\w*|how many|years?|salary|compensation|sponsor\w*|visa\w*|"
@@ -363,9 +364,17 @@ def _curated_model(prompt, schema, scratch, execute):
     return parsed
 
 
-def _curated_validate(parsed, inputs):
+def _curated_validate(parsed, inputs, *, hydrated=False):
     from jsonschema import validate
-    validate(parsed, json.loads((Path(__file__).parents[2]/"schemas/company-interest-draft.json").read_text()))
+    wire = json.loads(json.dumps(parsed))
+    cached_quotes = []
+    if hydrated:
+        for support in wire.get("support", []):
+            # Only locally hydrated caches may carry full quotes. The model's
+            # wire schema accepts IDs alone and cannot supply replacement text.
+            cached_quotes.append(support.pop("quote", None))
+    validate(wire, json.loads((Path(__file__).parents[2]/"schemas/company-interest-draft.json").read_text()))
+    parsed = wire
     if parsed["field_ref"] != inputs["field_ref"]:
         raise ValueError("Narrative belongs to another observed question")
     if parsed["state"] == "needs_input":
@@ -378,14 +387,20 @@ def _curated_validate(parsed, inputs):
             or len(text) > inputs["style"]["max_characters"]):
         raise ValueError("Narrative violates the brief")
     evidence = []
-    for support in parsed["support"]:
+    hydrated_support = []
+    for index, support in enumerate(parsed["support"]):
         key = support["input_id"]
         units = inputs["job_description"]["units"] if key == "job_description" else inputs["facts"].get(key, {}).get("units", [])
-        if not any(unit["id"] == support["unit_id"] and unit["text"] == support["quote"] for unit in units):
-            raise ValueError("Invented or truncated narrative support")
-        if _UNTRUSTED.search(support["quote"]):
+        matches = [unit for unit in units if unit["id"] == support["unit_id"]]
+        if len(matches) != 1:
+            raise ValueError("Narrative support is not an exact approved input unit")
+        quote = matches[0]["text"]
+        if hydrated and cached_quotes[index] != quote:
+            raise ValueError("Cached support changed or truncated its complete source")
+        if _UNTRUSTED.search(quote):
             raise ValueError("Unsafe narrative support")
-        evidence.append(support["quote"])
+        evidence.append(quote)
+        hydrated_support.append({**support, "quote": quote})
     if (not any(s["input_id"] == "job_description" for s in parsed["support"])
             or sum(s["input_id"] != "job_description" for s in parsed["support"]) > 1
             or len({s["unit_id"] for s in parsed["support"]}) != len(parsed["support"])):
@@ -398,7 +413,7 @@ def _curated_validate(parsed, inputs):
     # Source units are provenance, not a paragraph assembled from quotations.
     if '“' in text or '”' in text or re.search(r'your mission stands out|my relevant background includes|i would welcome the chance', text, re.I):
         raise ValueError("Narrative uses the retired quote template")
-    return parsed
+    return {**parsed, "support": hydrated_support}
 
 
 def _curated_record(recipe, review, inputs, answers, fingerprint):
@@ -436,7 +451,7 @@ def curated_company_interest(field, job, answers, *, preferences=None, execute=N
         return {"state": "agent_task", "reason_code": "narrative_source_unavailable"}
     if not inputs:
         return {"state": "agent_task", "reason_code": "narrative_source_unavailable"}
-    fingerprint = _digest({"version": VERSION, "mode": "curated_company_interest_v1",
+    fingerprint = _digest({"version": VERSION, "mode": CURATED_CACHE_MODE,
                            **inputs, "question": booklet.normalize(inputs["question"])})
     directory = config.ROOT / "private" / "grounded-narratives"
     try:
@@ -450,7 +465,7 @@ def curated_company_interest(field, job, answers, *, preferences=None, execute=N
                 cached = json.loads(path.read_text())
                 if cached.get("fingerprint") == fingerprint:
                     if cached.get("recipe") and cached.get("review"):
-                        recipe = _curated_validate(cached["recipe"], inputs)
+                        recipe = _curated_validate(cached["recipe"], inputs, hydrated=True)
                         review = cached["review"]
                         _curated_review_validate(review, recipe, inputs)
                         if recipe["state"] != "proposed" or review["verdict"] != "approved":

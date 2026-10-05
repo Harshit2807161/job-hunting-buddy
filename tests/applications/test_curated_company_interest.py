@@ -46,8 +46,8 @@ def models(calls, mutate=None, verdict="approved", review_mutate=None):
         calls.append(("draft", command, kwargs, inputs))
         company = inputs["job_description"]["units"][0]; candidate = inputs["facts"]["role.experience"]["units"][0]
         parsed = {"field_ref": inputs["field_ref"], "state": "proposed", "answer": ANSWER, "reason_code": "none", "support": [
-            {"input_id": "job_description", "unit_id": company["id"], "quote": company["text"]},
-            {"input_id": "role.experience", "unit_id": candidate["id"], "quote": candidate["text"]}]}
+            {"input_id": "job_description", "unit_id": company["id"]},
+            {"input_id": "role.experience", "unit_id": candidate["id"]}]}
         if mutate: mutate(parsed)
         Path(command[command.index("--output-last-message")+1]).write_text(json.dumps(parsed))
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -239,7 +239,7 @@ def test_changed_fact_jd_and_cache_review_invalidate_safe_reuse(context):
     data=json.loads(path.read_text());data['review']['verdict']='reject';path.write_text(json.dumps(data))
     # Exercise the exact corrupted cache, without treating an earlier recipe as approved.
     cache_context= drafts._inputs(*context,None,curated=True)
-    key=drafts._digest({'version':drafts.VERSION,'mode':'curated_company_interest_v1',**cache_context,'question':booklet.normalize(cache_context['question'])})
+    key=drafts._digest({'version':drafts.VERSION,'mode':drafts.CURATED_CACHE_MODE,**cache_context,'question':booklet.normalize(cache_context['question'])})
     current=config.ROOT/'private/grounded-narratives'/f'{key}.json'
     data=json.loads(current.read_text());data['review']['verdict']='reject';current.write_text(json.dumps(data))
     assert drafts.curated_company_interest(*context,execute=execute,review_execute=review)['state']=='agent_task'
@@ -344,3 +344,37 @@ def test_whole_flattened_jd_support_cannot_trim_negation_or_conditions(context):
     job['verified_job_description'].update(text=text,sha256=hashlib.sha256(text.encode()).hexdigest())
     result=invoke(context,calls,mutate=lambda p:p['support'][0].update(quote='the team builds search tools.'))
     assert result['state']=='agent_task' and [c[0] for c in calls]==['draft']
+
+
+def test_drafter_sends_only_short_evidence_ids_but_review_and_cache_keep_full_context(context):
+    field,job,answers=context;calls=[];wire_sizes=[]
+    text=('This team does not build weapons. '+job['verified_job_description']['text']+' ')*25
+    job['verified_job_description'].update(text=text,sha256=hashlib.sha256(text.encode()).hexdigest())
+    execute,review=models(calls)
+    def capture_wire(command,**kwargs):
+        result=execute(command,**kwargs)
+        raw=Path(command[command.index('--output-last-message')+1]).read_text()
+        parsed=json.loads(raw)
+        assert all(set(item)=={'input_id','unit_id'} for item in parsed['support'])
+        wire_sizes.append(len(raw))
+        return result
+    result=drafts.curated_company_interest(*context,execute=capture_wire,review_execute=review)
+    assert result['state']=='proposed' and wire_sizes[0]<1000<len(text)
+    assert calls[1][3]['draft']['support'][0]['quote']==text.strip()
+    assert result['record']['source']['support'][0]['quote']==text.strip()
+    assert drafts.curated_company_interest(*context,execute=capture_wire,review_execute=review)['state']=='proposed'
+    assert len(calls)==2
+    path=next((config.ROOT/'private/grounded-narratives').glob('*.json'))
+    data=json.loads(path.read_text())
+    data['recipe']['support'][0]['quote']='This team builds weapons.'
+    path.write_text(json.dumps(data))
+    assert drafts.curated_company_interest(*context,execute=capture_wire,review_execute=review)['state']=='agent_task'
+    assert len(calls)==2  # Tampering cannot become a shortened positive cache.
+
+
+@pytest.mark.parametrize('change',[lambda p:p['support'][0].update(unit_id='unknown-approved-unit'),
+                                lambda p:p['support'][0].update(input_id='role.projects')])
+def test_unknown_or_wrong_source_unit_ids_fail_before_independent_review(context,change):
+    calls=[]
+    assert invoke(context,calls,mutate=change)['state']=='agent_task'
+    assert [c[0] for c in calls]==['draft']

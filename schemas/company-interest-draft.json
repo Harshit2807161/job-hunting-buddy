@@ -8,11 +8,10 @@
     "reason_code": {"enum": ["none", "insufficient_evidence", "unknown_autobiographical"]},
     "support": {"type": "array", "maxItems": 5, "items": {
       "type": "object", "additionalProperties": false,
-      "required": ["input_id", "unit_id", "quote"],
+      "required": ["input_id", "unit_id"],
       "properties": {
         "input_id": {"enum": ["job_description", "role.experience", "role.projects", "role.skills"]},
-        "unit_id": {"type": "string", "maxLength": 100},
-        "quote": {"type": "string", "maxLength": 24000}
+        "unit_id": {"type": "string", "maxLength": 100}
       }
     }}
   }

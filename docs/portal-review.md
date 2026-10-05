@@ -138,8 +138,10 @@ is informational: it never changes receipt history, job state or approval rules.
 It runs before the legacy mission-sentence template and never silently falls back
 to that template. A tool-less local Codex call drafts a brief paraphrased paragraph
 from complete official JD units and the selected verified resume; a fresh read-only
-Codex call checks every factual claim, the exact answer hash and its style. Accepted
-text is still marked proposed and still needs per-application portal approval.
+Codex call checks every factual claim, the exact answer hash and its style.
+Draft transport cites evidence IDs only; local validation attaches the exact full
+source units before review and storage, so long JDs need not be copied in output.
+Accepted text is still marked proposed and still needs per-application portal approval.
 A reviewer approval is a writing check, never submission authority.
 
 The private `workflow_preferences.narrative_style.company_interest_reference`
