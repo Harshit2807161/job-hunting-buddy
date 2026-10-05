@@ -1,0 +1,140 @@
+"""Synthetic Ashby contact catalog tests; never candidate Chrome."""
+
+import pytest
+
+from jhb.applications import booklet, known_answers, review_inventory
+from jhb.applications.manual_runtime import application_scope, dispatch
+from jhb.applications.planner import key_for_field
+from jhb.applications.submission_runtime import _checks
+
+URL = 'https://jobs.ashbyhq.com/example/11111111-2222-3333-4444-555555555555/application'
+@pytest.mark.parametrize('available', [True, False])
+@pytest.mark.parametrize('existing', ['', 'San Diego, California, United States'])
+def test_native_contact_city_queries_restores_commits_and_fresh_audits(available, existing):
+    from playwright.sync_api import sync_playwright
+    html = '''<form class=ashby-application-form-container><div data-field-path=_systemfield_location>
+<label class=ashby-application-form-question-title for=_systemfield_location>Location</label>
+<input role=combobox aria-expanded=false oninput="window.inputEvents++;menu(this)" onkeydown="if(event.key==='ArrowDown')menu(this)"><div id=options role=listbox></div>
+</div><button type=submit>Submit application</button></form><script>
+window.inputEvents=0;window.commits=0;window.submissions=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();window.submissions++};
+function menu(e){e.setAttribute('aria-controls','options');e.setAttribute('aria-expanded','true');
+if(AVAILABLE)document.querySelector('#options').innerHTML='<div role="option" onclick="choose()">San Diego, California, United States</div><div role="option">San Diego, Texas, United States</div><div role="option">San Diego, California, Canada</div>'}
+function choose(){window.commits++;document.querySelector('input[role=combobox]').value='San Diego, California, United States';document.querySelector('input[role=combobox]').setAttribute('aria-expanded','false');document.querySelector('#options').innerHTML=''}
+</script>'''.replace('AVAILABLE', 'true' if available else 'false')
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(); page = browser.new_page()
+        page.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=html)); page.goto(URL)
+        session = page.context.new_cdp_session(page)
+        helpers = {'cdp': lambda method, **params: session.send(method, params), 'js': page.evaluate,
+                   'wait': lambda seconds: page.wait_for_timeout(seconds*1000), 'click_at_xy': lambda x, y: page.mouse.click(x, y),
+                   'list_tabs': lambda: [{'targetId': 'fixture', 'url': URL}], 'current_tab': lambda: {'targetId': 'fixture'},
+                   'switch_tab': lambda target: None}
+        def call(operation, **values):return dispatch({'operation': operation, 'scope': application_scope(URL), **values}, helpers)
+        try:
+            call('open', url=URL);field = call('observe')['fields'][0]
+            if existing: page.locator('input[role=combobox]').fill(existing)
+            page.evaluate('window.inputEvents=0')
+            catalog = call('describe', field=field, query='San Diego')
+            assert page.locator('input[role=combobox]').input_value() == existing
+            if existing: assert page.evaluate('window.inputEvents') == 0  # No clearing or retyping committed values.
+            assert page.evaluate('window.commits') == 0
+            field['options'] = [{'label': v, 'value': v} for v in catalog['choices']]
+            answers = {'preferences.application_city': booklet.answer('San Diego, CA', 'synthetic explicit application city'),
+                       'identity.city': booklet.answer('La Jolla', 'synthetic mailing city'),
+                       'identity.state': booklet.answer('CA', 'synthetic verified contact state'),
+                       'identity.country': booklet.answer('United States', 'synthetic verified contact country')}
+            key = known_answers.enrich(field, {}, answers)
+            if available:
+                assert call('fill', field=field, value=answers[key]['value'])['verified']
+                assert page.evaluate('window.commits') == 1
+                filled = [{'ref': field['ref'], 'question': field['label'], 'key': key,
+                           'value': answers[key]['value'], 'source': answers[key]['source']}]
+                packet = {'job': {'url': URL}, 'filled': filled,
+                          **review_inventory.build([field], filled, answers, key_for_field, complete=True)}
+                result = _checks({'target_id': 'fixture', 'documents': {}}, helpers, packet,
+                                 {'application_url': URL, 'authorization_scope': 'one exact application explicitly approved in the local review portal'})
+                assert result['retained'][0]['state']['selected'] == 'San Diego, California, United States'
+                page.evaluate("""(()=>{const note=document.createElement('div');
+                  note.className='ashby-application-form-question-description';
+                  note.textContent='Choose your preferred office, not residence.';
+                  document.querySelector('[data-field-path=_systemfield_location]').append(note)})()""")
+                changed = call('observe')['fields'][0]
+                assert known_answers.enrich(changed, {}, answers) is None
+                assert key_for_field(changed, answers) is None
+                with pytest.raises(ValueError, match='outside its approved scope'):
+                    call('describe', field=field, query='San Diego')
+                assert page.evaluate('window.commits') == 1
+            else:
+                assert key is None
+                assert key_for_field(field, answers) is None
+                with pytest.raises(ValueError, match='Autocomplete choice is absent'):
+                    call('fill', field=field, value={'query': 'San Diego', 'choice': 'San Diego, California, United States'})
+                assert page.evaluate('window.commits') == 0  # Typed California alone is not a selected answer.
+            assert answers['identity.city']['value'] == 'La Jolla'
+            assert page.evaluate('window.submissions') == 0 and page.evaluate('window.__jhbGuard') is True
+        finally: browser.close()
+
+
+
+@pytest.mark.parametrize('choices', [[], ['San Diego'], ['San Diego, California, Canada'], ['San Diego, Texas, United States'], ['San Diego, California, United States']*2])
+def test_contact_location_projection_rejects_partial_wrong_region_or_ambiguous_catalog(choices):
+    answers = {'preferences.application_city': booklet.answer('San Diego, CA', 'explicit city'),
+               'identity.city': booklet.answer('La Jolla', 'mailing'),
+               'identity.state': booklet.answer('CA', 'state'), 'identity.country': booklet.answer('United States', 'country')}
+    field = {'ref':'ashby:_systemfield_location:control:0','label':'Location','type':'combobox','required':True,
+             'options':[{'label':v,'value':v} for v in choices]}
+    assert known_answers.enrich(field, {}, answers) is None
+    assert key_for_field(field, answers) is None
+    assert answers['identity.city']['value']=='La Jolla'
+
+
+def test_custom_employer_location_not_treated_as_standard_contact_field():
+    assert not known_answers.contact_location({'ref':'custom-office','label':'Location','type':'combobox'})
+
+
+def test_unverified_or_contradictory_application_city_cannot_query_catalog():
+    answers={'preferences.application_city':booklet.answer('San Diego, TX','explicit city'),
+             'identity.state':booklet.answer('CA','state'),'identity.country':booklet.answer('United States','country')}
+    assert known_answers.contact_location_basis(answers) is None
+    answers['preferences.application_city']={'value':'San Diego, CA','source':'unconfirmed','status':'needs_input'}
+    assert known_answers.contact_location_basis(answers) is None
+
+
+def test_controller_uses_verified_application_city_and_rejects_missing_catalog():
+    import asyncio
+    from jhb.applications.manual_ats import ManualATSCLI
+    from jhb.applications.cli_browser import BrowserOperationError
+    field={'ref':'ashby:_systemfield_location:control:0','label':'Location','type':'combobox','required':True,'options':[]}
+    class CLI(ManualATSCLI):
+        def __init__(self): super().__init__(URL);self.calls=[];self.available=True
+        async def invoke(self,operation,**payload):
+            self.calls.append((operation,payload))
+            if operation=='observe':return {'fields':[dict(field)],'buttons':[]}
+            return {'choices':['San Diego, California, United States'] if self.available else [],'truncated':False}
+    answers={'preferences.application_city':booklet.answer('San Diego, CA','explicit city'),
+             'identity.city':booklet.answer('La Jolla','mailing'),
+             'identity.state':booklet.answer('CA','state'),'identity.country':booklet.answer('United States','country')}
+    cli=CLI()
+    async def inspect():
+        await cli.ensure_profile(answers)
+        return await cli.observe()
+    snapshot=asyncio.run(inspect())
+    queries=[p['query'] for op,p in cli.calls if op=='describe']
+    assert queries==['San Diego']
+    key=known_answers.enrich(snapshot['fields'][0],{},answers)
+    assert answers[key]['value']=={'query':'San Diego','choice':'San Diego, California, United States'}
+    changed={**snapshot['fields'][0],'description':'Choose your preferred office, not residence.'}
+    assert key_for_field(changed,answers) is None
+    assert known_answers.enrich(changed,{},answers) is None
+    cli.available=False
+    with pytest.raises(BrowserOperationError,match='catalog is unavailable'):
+        asyncio.run(cli.observe())
+    assert answers['identity.city']['value']=='La Jolla'
+
+
+def test_no_application_city_does_not_fall_back_to_mailing_location():
+    answers={'identity.location':booklet.answer('La Jolla, CA, USA','mailing'),
+             'identity.state':booklet.answer('CA','state'),'identity.country':booklet.answer('United States','country')}
+    assert known_answers.contact_location_basis(answers) is None
+    field={'ref':'ashby:_systemfield_location:control:0','label':'Location','type':'combobox','required':True,'options':[]}
+    assert key_for_field(field,answers) is None

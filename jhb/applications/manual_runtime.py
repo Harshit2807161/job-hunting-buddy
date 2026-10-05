@@ -252,12 +252,14 @@ def dispatch(request, helpers):
             raise ValueError("Observed manual field has changed")
         field = current[0]
         residence = scope["board"] == "ashby" and normalize(field["label"]) == "state/country of residence" and field["type"] == "combobox"
+        from .known_answers import plain_contact_location
+        catalog_control = residence or (scope["board"] == "ashby" and plain_contact_location(field))
         def residence_catalog(expr):
             proof = js("(()=>{const e="+expr+";return e?.__jhbResidenceCatalog||null})()")
             retained = state(expr)
             binding = {"scope": scope, "ref": field["ref"], "label": field["label"], "required": field.get("required"),
                        "description": field.get("description", ""), "description_truncated": field.get("description_truncated", False)}
-            if (residence and isinstance(proof, dict) and proof.get("binding") == binding and retained
+            if (catalog_control and isinstance(proof, dict) and proof.get("binding") == binding and retained
                     and retained["value"] == proof.get("selected") and retained["expanded"] == "false" and not retained["invalid"]
                     and isinstance(proof.get("choices"), list) and 0 < len(proof["choices"]) <= 50
                     and all(isinstance(x, str) and 0 < len(x) <= 500 for x in proof["choices"])
@@ -265,7 +267,7 @@ def dispatch(request, helpers):
                 return proof["choices"]
             return None
         def remember_residence(expr, labels, selected):
-            if not residence or len(labels)>50 or any(not x or len(x)>500 for x in labels):
+            if not catalog_control or len(labels)>50 or any(not x or len(x)>500 for x in labels):
                 return
             proof = {"scope": scope, "ref": field["ref"], "label": field["label"], "required": field.get("required"),
                      "description": field.get("description", ""), "description_truncated": field.get("description_truncated", False)}
@@ -309,7 +311,7 @@ def dispatch(request, helpers):
                 before = state(expr)
                 query = request.get("query")
                 if query is not None:
-                    if (scope["board"] != "ashby" or normalize(field["label"]) != "state/country of residence"
+                    if (not catalog_control
                             or not isinstance(query, str) or not query.strip() or len(query) > 200):
                         raise ValueError("Residence catalog query is outside its approved scope")
                     if not before:

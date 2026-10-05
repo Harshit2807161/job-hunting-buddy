@@ -157,6 +157,9 @@ def key_for_field(field, answers):
     known_key = observed_known_key(field, answers)
     if known_key:
         return known_key
+    from .known_answers import contact_location
+    if contact_location(field):
+        return None  # A scalar mailing location cannot fill a native contact catalog.
     # Workday's observed repeater metadata maps original records by index;
     # generated DOM row ids need not be consecutive or start at zero.
     kind, index, column = (field.get("record_kind"), field.get("record_index"), field.get("record_column"))

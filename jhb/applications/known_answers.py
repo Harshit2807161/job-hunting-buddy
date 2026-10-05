@@ -50,10 +50,34 @@ def _choices(field):
     return result
 
 
+def contact_location(field):
+    return (_label(field) == "location" and field.get("type") == "combobox"
+            and field.get("ref") == "ashby:_systemfield_location:control:0")
+
+
+def plain_contact_location(field):
+    """Only the observed standard contact question has this standing mapping."""
+    return (contact_location(field) and not field.get("description")
+            and not field.get("description_truncated"))
+
+
+def contact_location_basis(answers):
+    city, state, country = (_verified(answers, key) for key in
+                            ("preferences.application_city", "identity.state", "identity.country"))
+    if not all(r and isinstance(r.get("value"), str) for r in (city, state, country)):
+        return None
+    parts = [p.strip() for p in city["value"].split(",")]
+    from .cli_runtime import option_matches
+    if (len(parts) != 2 or not parts[0] or not option_matches(parts[1], state["value"], field_id="state")
+            or normalize(country["value"]) not in {"us", "usa", "united states", "united states of america"}):
+        return None
+    return parts[0], state, country, city
+
+
 def _signature(field):
     observation = {"ref": field.get("ref"), "label": _label(field), "type": field.get("type"),
                    "choices": _choices(field), "country_context": field.get("country_context")}
-    if _label(field) == "state/country of residence" and field.get("type") == "combobox":
+    if (_label(field) == "state/country of residence" and field.get("type") == "combobox") or contact_location(field):
         # Search results are transient; a closed committed autocomplete emits
         # no options. Bind stable question metadata, then audit exact committed
         # value against the recorded native catalog choice and verified facts.
@@ -277,6 +301,25 @@ def enrich(field, job, answers, *, as_of=None):
         result = _graduate(answers, today)
         if result:
             value, evidence = result
+    elif plain_contact_location(field):
+        basis = contact_location_basis(answers)
+        if basis:
+            city, state, country, original = basis
+            from .cli_runtime import option_matches
+            selected = []
+            for choice in choices:
+                parts = [p.strip() for p in choice.split(",")]
+                if (len(parts) == 3 and normalize(parts[0]) == normalize(city)
+                        and option_matches(parts[1], state["value"], field_id="state")
+                        and normalize(parts[2]) in {"united states", "united states of america", "usa", "us"}):
+                    selected.append(choice)
+            if len(selected) == 1:
+                value = {"query": city, "choice": selected[0]}
+                evidence = {"records": {"preferences.application_city": original,
+                            "identity.state": state, "identity.country": country},
+                            "criterion": "Verified application city matched to one observed city/state/country catalog choice; mailing city unchanged",
+                            "observed_choices": choices,
+                            "projection": {"control_type": "combobox", "native_catalog_verification_required": True}}
     elif label == "state/country of residence" and field.get("type") == "combobox":
         state, country = (_verified(answers, key) for key in ("identity.state", "identity.country"))
         if state and isinstance(state.get("value"), str) and state["value"].strip():

@@ -170,6 +170,16 @@ selection. Synthetic fixtures cover successful native recommit, absent choices,
 foreign listboxes, changed descriptions and edit invalidation. A separate live
 CLI retry verified retained selection and the completed question inventory.
 
+The standard Ashby contact Location field also needs a native catalog selection;
+a stored city string alone cannot fill it. Its adapter now derives a query and
+one exact city/state/country option from verified application-location preferences,
+independently of the mailing city. This is restricted to the observed system field
+without extra instructions. Synthetic Chromium fixtures cover restored blank
+queries, already-filled values, wrong-country and ambiguous choices, native
+commit, final retained-answer audit, and changed-context rejection. Live validation
+of this contact-field extension remains pending; the residence retry above does
+not establish it.
+
 The Browser Use transport currently counts waiting for the shared browser lane
 inside its operation timeout. An explicit interactive batch can allow more
 bounded queue time while retaining the same lock, exact-tab scope and process
