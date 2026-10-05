@@ -99,6 +99,18 @@ relevant verified achievement, preserving technical tools and metric qualifiers;
 do not paste a resume bullet list or invent motivations, failures, or feelings.
 When both experiences fit equally, discuss AWS before AnyFeast. Exact numbered
 accomplishment prompts may retain the approved source bullets and their format.
+For projects requested within a time window, select work with verified dates
+inside that window. An undated project does not establish when the candidate
+worked on it. Briefly explain the problem, the candidate's contribution and the
+supported result in a paragraph; preserve qualifiers such as estimated savings.
+Different questions can use different examples without repeating the same story.
+
+Questions about daily AI use need documented practice or observed current
+candidate-directed work, not an invented habit inferred from the job description.
+Keep any generated answer proposed and scoped to the exact application. Asking
+where the candidate does not rely on AI describes a workflow; it does not itself
+forbid AI assistance in writing the answer. Separate instructions requiring the
+candidate's own words or prohibiting AI-written responses still require a handoff.
 Generated prose remains a proposed answer visible in the portal; candidate-only
 or no-AI wording needs the candidate's own response. Do not turn assistant
 suggestions into profile facts. Cover letters
