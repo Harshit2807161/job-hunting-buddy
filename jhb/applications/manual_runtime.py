@@ -397,7 +397,8 @@ def dispatch(request, helpers):
                 raise ValueError("Required multiple-choice answers need an approved selection")
             wanted = []
             for answer in values:
-                matches = [o for o in field["options"] if option_matches(o["label"], answer)]
+                matches = [o for o in field["options"] if option_matches(
+                    o["label"], answer, field_id=field["ref"], field_label=field["label"])]
                 if len(matches) != 1:
                     raise ValueError("Answer does not uniquely match an observed choice")
                 wanted.append(matches[0])
@@ -465,7 +466,8 @@ def dispatch(request, helpers):
             return {"verified": True, "checked": value}
         if kind == "select":
             options = field.get("options", [])
-            matches = [o for o in options if not o.get("disabled") and option_matches(o["label"], value)]
+            matches = [o for o in options if not o.get("disabled") and option_matches(
+                o["label"], value, field_id=field["ref"], field_label=field["label"])]
             if len(matches) != 1:
                 raise ValueError("Stored answer is absent from dropdown options" if not matches else "Answer does not uniquely match an observed choice")
             wanted = matches[0]

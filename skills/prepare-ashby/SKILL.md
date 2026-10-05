@@ -35,6 +35,12 @@ from the resume-autofill uploader. For a custom country or location combobox,
 inspect and select an exact observed option; a typed search string is not a
 verified selection. Unsupported controls require a bounded manual handoff.
 
+Choice matching must preserve the observed question context through both filling
+and final audit. A verified No for Veteran Status can match the corresponding
+nonprotected-veteran option; that wording is not a generic synonym for No in
+unrelated questions. Combined demographic categories require every contributing
+verified disclosure and an exact observed option.
+
 Keep visible help owned by a question separate from its exact label. Include
 that help in the answer and review context: a conditional instruction can change
 which offered answer applies, and candidate-only wording can appear there.

@@ -281,7 +281,8 @@ def _checks(request, helpers, packet, attempt):
                 valid = True
         elif kind in {"radio", "multiselect"} and board in {"ashby", "workable", "lever"}:
             values = value if isinstance(value, list) else [value]
-            choices = [[o["label"] for o in field.get("options", []) if option_matches(o["label"], v)] for v in values]
+            choices = [[o["label"] for o in field.get("options", []) if option_matches(
+                o["label"], v, field_id=field["ref"], field_label=field["label"])] for v in values]
             valid = (all(len(options) == 1 for options in choices)
                      and (kind != "radio" or len(choices) == 1)
                      and sorted(state.get("selected", [])) == sorted(options[0] for options in choices))
