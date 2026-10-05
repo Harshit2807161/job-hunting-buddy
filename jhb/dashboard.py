@@ -276,14 +276,29 @@ class DashboardStore:
         if not complete_inventory or row["state"] != "waiting_review":
             approval = {**approval, "can_approve": False, "reason": "Already submitted" if row["state"] == "submitted"
                         else "Full form inventory must be captured before approval"}
-        pending_questions = [q for q in self.pending(queue_states={job_hash: row["state"]})
-                             if any(c["job_hash"] == job_hash for c in q["contexts"])]
+        try:
+            pending_questions = [q for q in self.pending(queue_states={job_hash: row["state"]})
+                                 if any(c["job_hash"] == job_hash for c in q["contexts"])]
+        except (ValueError, OSError, KeyError, TypeError):
+            pending_questions = []
+            approval = {**approval, "can_approve": False, "reason": "Answer booklet unavailable; refresh before approval"}
         if any(any(c["job_hash"] == job_hash and c["required"] for c in q["contexts"]) for q in pending_questions):
             approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
         fit = packet.get("role_fit", {})
         fit_notes = [_text(note if isinstance(note, str) else note.get("reason") or note.get("message"), 1500)
                      for note in fit.get("review_notes", []) if isinstance(note, (dict, str))] if isinstance(fit, dict) else []
+        screenshot = {"available": False, "revision": None, "captured_at": None}
+        if path is not None:
+            try:
+                from .applications.capture import valid as valid_capture
+                image = self.private_bytes(path.with_name("browser.png"), limit=15*1024*1024)
+                if valid_capture(packet, image):
+                    screenshot = {"available": True, "revision": hashlib.sha256(image).hexdigest(),
+                                  "captured_at": packet.get("capture", {}).get("captured_at") or packet.get("created_at")}
+            except (ValueError, OSError, TypeError, AttributeError):
+                pass
         return {"job_hash": job_hash, "state": row["state"], "fields": output, "role_fit_notes": fit_notes[:20],
+            "screenshot": screenshot,
             "questions": pending_questions,
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
@@ -420,12 +435,18 @@ class DashboardStore:
             booklet_available = True
         except (ValueError, OSError, KeyError, TypeError):
             pending, booklet_available = [], False
+        blockers = Counter(context["job_hash"] for q in pending for context in q["contexts"] if context["required"])
+        for application in applications:
+            application["inventory_verified"] = application["inventory_ready"]
+            application["pending_required_questions"] = blockers[application["id"]]
+            if application["pending_required_questions"] or not booklet_available:
+                application["inventory_ready"] = False
         return {"generated_at": now.isoformat(), "timezone": str(ZONE), "selected_date": selected.isoformat(),
             "storage_available": storage_available, "booklet_available": booklet_available, "automation_paused": self.paused(),
             "summary": {"confirmed_today": daily[selected.isoformat()]["confirmed"],
                 "confirmed_total": len(confirmed), "prepared_today": daily[selected.isoformat()]["prepared"],
                 "ready": sum(app["inventory_ready"] for app in applications),
-                "legacy_review": sum(app["state"] == "waiting_review" and not app["inventory_ready"] for app in applications),
+                "legacy_review": sum(app["state"] == "waiting_review" and not app["inventory_verified"] for app in applications),
                 "running": state_counts["running"],
                 "queued": state_counts["queued"]+state_counts["retry"], "questions": len(pending),
                 "uncertain": state_counts["submission_uncertain"],
@@ -563,9 +584,12 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
             raise HTTPException(400, "Date must use YYYY-MM-DD") from None
 
     @app.get("/api/v1/applications/{job_hash}/screenshot")
-    def screenshot(job_hash: str):
+    def screenshot(job_hash: str, revision: str | None = None):
         try:
-            return Response(store.screenshot(job_hash), media_type="image/png")
+            content = store.screenshot(job_hash)
+            if revision is not None and (not HASH.fullmatch(revision) or hashlib.sha256(content).hexdigest() != revision):
+                raise ValueError("Screenshot changed after this review snapshot")
+            return Response(content, media_type="image/png", headers={"Cache-Control": "no-store"})
         except (ValueError, OSError, sqlite3.Error):
             raise HTTPException(404, "Validated review screenshot is unavailable") from None
 

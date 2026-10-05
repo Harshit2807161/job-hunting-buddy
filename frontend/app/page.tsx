@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Application = { id: string; company: string; title: string; location: string; url: string | null; board: string;
-  state: string; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
+  state: string; pending_required_questions?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
   has_screenshot: boolean; has_incident: boolean; inventory_ready: boolean; screenshot_at: number | null; confirmed_at: string | null; confirmed_date: string | null; sheet_synced: boolean };
 type Question = { id: string; question: string; kind: string; updated_at: string; required: boolean; country_context: string | null;
   contexts: { job_hash: string; company: string; title: string; url: string | null; required: boolean; type: string; choices: string[]; reason: string }[] };
@@ -19,7 +19,7 @@ type Tab = "all" | "submitted" | "waiting_review" | "attention";
 const stateNames: Record<string, string> = { queued: "Queued", running: "Preparing", retry: "Retry scheduled", waiting_review: "Ready for review",
   waiting_input: "Needs your answer", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome to verify",
   submitted: "Submitted", skipped: "Filtered out", unsupported: "Adapter needed", failed: "Technical review" };
-const applicationLabel = (a: Application) => a.state === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[a.state] || a.state;
+const applicationLabel = (a: Application) => a.state === "waiting_review" && !!a.pending_required_questions ? "Needs your answer" : a.state === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[a.state] || a.state;
 const initials = (s: string) => s.trim().split(/\s+/).slice(0, 2).map(v => v[0]).join("").toUpperCase() || "?";
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const dateLabel = (day: string, short = false) => new Date(day + "T12:00:00").toLocaleDateString("en-US", { month: short ? "short" : "long", day: "numeric", ...(short ? {} : { year: "numeric" }) });
@@ -101,6 +101,7 @@ type ReviewDetail = { job_hash: string; state: string; inventory_complete: boole
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
   role_fit_notes?: string[]; questions?: Question[];
+  screenshot?: { available: boolean; revision: string | null; captured_at: string | number | null };
   fields: { ref: string; question: string; type: string; required: boolean | null; status: string; category: string;
     answer: string | boolean | number | string[] | null; candidate_wording_required: boolean; proposed?: boolean }[];
   incident: { state: string; summary: string; blank_questions: { ref: string; question: string }[] } | null;
@@ -179,7 +180,7 @@ function ReviewModal({ application: app, close, onChanged }: { application: Appl
       {detail?.state === "waiting_review" && <div className="approval-actions"><button className="primary" disabled={busy || !canApprove} onClick={() => changeApproval("approve")}>{busy ? "Saving…" : "Approve and submit this application"}<Icon name="check" size={17}/></button><button className="text-button" disabled={busy} onClick={() => changeApproval("revoke")}>Revoke approval</button><p>{detail.approval.reason || "Approval binds this exact draft, candidate facts and PDF bytes."}</p></div>}
       {saved && <div className="notice success" role="status">{saved}</div>}
     </div>
-    {app.has_screenshot ? <><p className="screenshot-caption">Saved at the preparation handoff{app.screenshot_at ? ` · ${timeLabel(app.screenshot_at)} PT` : ""}. Open the live form to inspect its current state.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
+    {(detail?.screenshot?.available ?? app.has_screenshot) ? <><p className="screenshot-caption">Saved at the preparation handoff{(detail?.screenshot?.captured_at ?? app.screenshot_at) ? ` · ${timeLabel((detail?.screenshot?.captured_at ?? app.screenshot_at)!)} PT` : ""}. Open the live form to inspect its current state.</p><img className="review-image" src={`/api/v1/applications/${app.id}/screenshot${detail?.screenshot?.revision ? `?revision=${encodeURIComponent(detail.screenshot.revision)}` : ""}`} alt={`Saved review screenshot for ${app.company}`}/></> : <div className="screenshot-empty"><Icon name="image" size={32}/><h3>No validated screenshot saved</h3><p>Screenshot availability does not establish form completeness.</p></div>}
     {app.confirmed_at && <div className="receipt-banner"><Icon name="check" size={16}/>Submission confirmed {dateLabel(app.confirmed_date!, true)} at {timeLabel(app.confirmed_at)} PT{app.sheet_synced ? " · Sheets synced" : ""}.</div>}
   </section></div>;
 }

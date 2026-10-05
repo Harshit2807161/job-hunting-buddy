@@ -521,3 +521,44 @@ def test_ordinary_answer_has_no_review_edit_intent(portal):
         json={"value": False, "revision": q["updated_at"]})
     assert response.status_code == 200
     assert not booklet.load(book)["question_handoffs"][q["id"]].get("candidate_edit_intents")
+
+
+
+def test_ready_count_excludes_new_required_ledger_question_without_mislabeling_legacy(portal):
+    _, _, book, client, _ = portal
+    job, _, _ = reviewable(portal)
+    assert client.get("/api/v1/overview").json()["summary"]["ready"] == 1
+    pending_question(job, book, "Current work authorization?", "authorization", required=True)
+    view = client.get("/api/v1/overview").json()
+    assert view["summary"]["ready"] == 0 and view["summary"]["legacy_review"] == 0
+    row = next(a for a in view["applications"] if a["id"] == job["dedupe_hash"])
+    assert row["inventory_verified"] is True and row["inventory_ready"] is False
+    assert row["pending_required_questions"] == 1
+
+
+def test_screenshot_endpoint_never_returns_new_image_under_old_review_digest(portal):
+    root, conn, _, client, _ = portal
+    job, folder, packet = add_job(conn, root)
+    url = f"/api/v1/applications/{job['dedupe_hash']}"
+    before = client.get(url).json()["screenshot"]
+    assert before["available"] is True
+    image = client.get(url+"/screenshot?revision="+before["revision"])
+    assert image.status_code == 200 and image.headers["cache-control"] == "no-store"
+    (folder / "browser.png").write_bytes(PNG+b"A different synthetic review image")
+    assert client.get(url+"/screenshot?revision="+before["revision"]).status_code == 404
+    after = client.get(url).json()["screenshot"]
+    assert after["revision"] != before["revision"]
+    assert client.get(url+"/screenshot?revision="+after["revision"]).content == (folder / "browser.png").read_bytes()
+    assert client.get(url+"/screenshot?revision=../../private").status_code == 404
+
+
+
+def test_unavailable_booklet_keeps_saved_review_readable_but_never_ready(portal):
+    _, _, book, client, _ = portal
+    job, _, _ = reviewable(portal)
+    book.unlink()
+    overview = client.get("/api/v1/overview").json()
+    assert overview["booklet_available"] is False and overview["summary"]["ready"] == 0
+    response = client.get(f"/api/v1/applications/{job['dedupe_hash']}")
+    assert response.status_code == 200
+    assert response.json()["fields"] and response.json()["approval"]["can_approve"] is False

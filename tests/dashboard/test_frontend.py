@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import base64
 import os
 from pathlib import Path
 import threading
@@ -52,7 +53,7 @@ def workspace(fragment="", state=None, configure=None):
                     "status": "blank", "category": "substantive_written", "answer": None, "candidate_wording_required": True}],
         "approval": {"can_approve": True, "revision": "exact-draft-revision", "blank_questions": [{"ref": "why", "question": "Why this company? Please, no AI text.", "required": False, "type": "textarea"}]}}
     if state is not None:
-        state.update(overview=overview, detail=detail, question=question)
+        state.update(overview=overview, detail=detail, question=question, screenshot_requests=[])
     if configure is not None:
         configure(question, detail)
     def respond(route):
@@ -68,6 +69,11 @@ def workspace(fragment="", state=None, configure=None):
             value = {"status": "answered", "state": "approved", "job_hash": KEY,
                 "affected_jobs": [KEY], "resumed_jobs": [KEY], "automation_paused": True,
                 "applications": [{"job_hash": KEY, "state": "queued", "remaining_required_questions": 0}]}
+        elif path == f"/api/v1/applications/{KEY}/screenshot":
+            if state is not None:
+                state["screenshot_requests"].append(route.request.url)
+            route.fulfill(status=200, content_type="image/png", body=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jOYQAAAAASUVORK5CYII="))
+            return
         elif path == "/api/v1/session": value = {"csrf_token": "synthetic-csrf"}
         elif path == "/api/v1/overview": value = overview
         elif path == f"/api/v1/applications/{KEY}": value = detail
@@ -213,3 +219,22 @@ def test_text_to_checkbox_question_revision_cannot_coerce_old_text_to_false():
         button.click()
         page.get_by_text("Answer saved", exact=True).wait_for()
         assert actions[0][1]["value"] is False and errors == []
+
+
+def test_open_review_fetches_updated_capture_by_digest_and_uses_detail_timestamp():
+    state = {}
+    def initial_capture(question, detail):
+        detail["screenshot"] = {"available": True, "revision": "a"*64, "captured_at": "2026-10-04T21:05:00Z"}
+    with workspace(f"#review/{KEY}", state=state, configure=initial_capture) as (page, actions, errors):
+        image = page.get_by_alt_text("Saved review screenshot for Synthetic Employer")
+        image.wait_for()
+        assert image.get_attribute("src").endswith("revision="+"a"*64)
+        assert "2:05" in page.locator(".screenshot-caption").inner_text()
+        state["detail"]["screenshot"] = {"available": True, "revision": "b"*64, "captured_at": "2026-10-04T21:10:00Z"}
+        state["detail"]["approval"]["revision"] = "new-image-bound-draft"
+        page.wait_for_function("document.querySelector('.review-image')?.src.endsWith('revision=' + 'b'.repeat(64))", timeout=10000)
+        assert "2:10" in page.locator(".screenshot-caption").inner_text()
+        page.wait_for_function("document.querySelector('.review-image')?.complete")
+        assert any(url.endswith("revision="+"a"*64) for url in state["screenshot_requests"])
+        assert any(url.endswith("revision="+"b"*64) for url in state["screenshot_requests"])
+        assert actions == [] and errors == []
