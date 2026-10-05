@@ -175,7 +175,8 @@ def _checks(request, helpers, packet, attempt):
             matches = [f for f in inventory if
                        (f.get("ref") == field.get("ref") or field.get("type") == "file" and f.get("type") == "file")
                        and normalize(f.get("question", "")) == normalize(field.get("label", ""))
-                       and f.get("type") == field.get("type") and bool(f.get("required")) == bool(field.get("required"))]
+                       and f.get("type") == field.get("type") and bool(f.get("required")) == bool(field.get("required"))
+                       and f.get("calendar_format") == field.get("calendar_format")]
             if len(matches) != 1:
                 return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
                         "click_started": False}
@@ -251,9 +252,14 @@ def _checks(request, helpers, packet, attempt):
                      and sorted(state.get("selected", [])) == sorted(options[0] for options in choices))
         elif kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
             actual, expected = state["value"], str(value)
-            if kind == "tel":
+            if board == "ashby" and kind == "text" and field.get("calendar_format") == "MM/DD/YYYY":
+                from .calendar_dates import retained_day
+                valid = retained_day(actual, expected)
+            elif kind == "tel":
                 actual, expected = re.sub(r"\D", "", actual), re.sub(r"\D", "", expected)
-            valid = actual == expected
+                valid = actual == expected
+            else:
+                valid = actual == expected
         else:
             valid = False
         if not valid:

@@ -332,7 +332,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         updated = await observe()
         if updated.get("handoff"):
             return outcome({"state": updated["handoff"], "reason": updated["reason"], "events": events, "filled": list(filled.values())}), actions
-        if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country")) for f in snapshot["fields"]}:
+        if {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country"), f.get("calendar_format")) for f in updated["fields"]} != {(f["ref"], f["label"], f["type"], f["required"], f.get("country_context"), f.get("separate_phone_country"), f.get("calendar_format")) for f in snapshot["fields"]}:
             events.append({"step": step, "event": "fields_revealed"})
             previous = None
             continue

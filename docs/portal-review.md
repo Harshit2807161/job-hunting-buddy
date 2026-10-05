@@ -77,6 +77,16 @@ Degree focus and differently scoped screening questions remain candidate handoff
 These mappings are covered by synthetic tests; live form results are recorded
 separately in the adapter evaluation.
 
+The observed Ashby React datepicker uses a text input with a local calendar
+display. Only its exact date class and owned wrapper establish the
+`MM/DD/YYYY` widget format. Preparation preserves the approved ISO source date,
+types the local display format through native input, commits with Tab and
+checks the calendar day after blur. Inventory and fresh retained-value audits
+bind the observed format; changed widget metadata or an off-by-one day blocks
+submission. Plain text controls receive no date normalization. The timezone
+regression reproduces ISO midnight becoming the previous US calendar day in an
+isolated Chromium fixture; live validation of the repaired path is separate.
+
 Full-page review captures settle the exact application at the page top with
 native Browser Use scrolling before capture, so sticky headers do not cover
 fields in the middle of the saved image. A live Ashby validation confirmed four

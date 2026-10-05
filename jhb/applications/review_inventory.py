@@ -61,6 +61,8 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
                             isinstance(retained.get('source'),dict) and retained['source'].get('kind')=='grounded_narrative')),
                         'step':field.get('observed_step',0),'choices':[o['label'] for o in field.get('options',[])],
                         'candidate_wording_required':wording})
+        if field.get('calendar_format'):
+            records[-1]['calendar_format'] = field['calendar_format']
     # Workable's saved rows are independently reopened/read by its preparer.
     # Their closed editor controls must remain reviewable too.
     seen={record['ref'] for record in records}

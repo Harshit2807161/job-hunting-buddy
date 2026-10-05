@@ -62,6 +62,9 @@ ASHBY_FIELDS = r"""(()=>{
    if(e.type==='radio'||e.type==='checkbox'||['hidden','password','submit','button','reset'].includes(e.type))continue;
    if(e.type!=='file'&&!visible(e))continue;
    fields.push({ref:e.id||'ashby:'+path+':control:'+index,widget:'native',control_index:index,owner_index,
+    ...(e.type==='text'&&e.classList.contains('ashby-application-form-input-date')&&
+        e.closest('.react-datepicker__input-container')?.closest('.react-datepicker-wrapper')?.closest('[data-field-path]')===group
+        ?{calendar_format:'MM/DD/YYYY'}:{}),
     label:label(e)||heading,type:e.getAttribute('role')==='combobox'?'combobox':e.tagName==='SELECT'?'select':e.type,required:e.required||required,
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]});
   }
@@ -407,6 +410,19 @@ def dispatch(request, helpers):
                     return {"verified": True, "filename": retained, "upload_receipt": receipt, "sha256": digest}
             raise ValueError("Approved file was not retained")
         if kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
+            if kind == "text" and scope["board"] == "ashby" and field.get("calendar_format") == "MM/DD/YYYY":
+                from .calendar_dates import approved_day, native_value, retained_day
+                type_text(expr, native_value(value))
+                # The observed React datepicker commits/formats on blur. ISO
+                # text can parse at UTC midnight and shift a US calendar day.
+                cdp("Input.dispatchKeyEvent", type="keyDown", key="Tab", code="Tab", windowsVirtualKeyCode=9)
+                cdp("Input.dispatchKeyEvent", type="keyUp", key="Tab", code="Tab", windowsVirtualKeyCode=9)
+                for _ in range(2):
+                    wait(0.2)
+                    after = state(expr)
+                    if not after or after["invalid"] or not retained_day(after.get("value"), value):
+                        raise ValueError("Calendar input did not retain the approved day")
+                return {"verified": True, "calendar_format": "MM/DD/YYYY", "calendar_day": approved_day(value).isoformat()}
             type_text(expr, value)
             after = state(expr)
             actual, expected = (after or {}).get("value"), str(value)
