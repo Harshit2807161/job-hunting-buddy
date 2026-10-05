@@ -61,6 +61,34 @@ def test_documents_are_agent_work_not_candidate_questions(label):
     assert route(book(), record, context) == CANDIDATE
 
 
+@pytest.mark.parametrize("label", ["Cover Letter", "Upload cover letter", "Attach Cover Letter", "Portfolio or Cover Letter", "Cover Letter or Portfolio"])
+def test_cover_routing_honors_exact_scoped_user_file_or_optional_decline(label):
+    record, context = item(label, "cover_letter", type="file", required=False)
+    data = book()
+    data['answers']['documents.cover_letter'] = booklet.answer()
+    custom = {**booklet.answer('/synthetic/approved-letter.pdf', {'provider':'explicit user question response','question_id':'q_synthetic'}),
+              'question':label,'field_ref':'cover_letter','scope':record['scope'],'job_hashes':[context['job_hash']]}
+    data['custom_answers']['custom.cover'] = custom
+    assert route(data, record, context) == KNOWN
+    custom.update(value=None,status='declined')
+    assert route(data, record, context) == KNOWN
+    context['required'] = True
+    assert route(data, record, context) == CANDIDATE
+    context['required'] = False
+    custom['field_ref'] = 'other-document'
+    assert route(data, record, context) == DOCUMENT
+    custom['field_ref'] = 'cover_letter';custom['job_hashes'] = ['b'*64]
+    assert route(data, record, context) == DOCUMENT
+
+
+def test_cover_route_never_uses_file_path_for_prose_or_nonletter_upload():
+    record, context = item('Cover Letter or Portfolio', 'cover', type='textarea')
+    data=book();data['answers']['documents.cover_letter']=booklet.answer('/synthetic/letter.pdf','Synthetic verified PDF')
+    assert route(data,record,context)==CANDIDATE
+    context['type']='file';record['question']='Portfolio'
+    assert route(data,record,context)==CANDIDATE
+
+
 def test_maintenance_preserves_answers_history_permissions_and_is_idempotent(tmp_path):
     path = tmp_path / "private" / "book.json"
     data = book(); booklet.write_private(path, data)

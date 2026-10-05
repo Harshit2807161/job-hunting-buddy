@@ -69,9 +69,14 @@ def field_route(field, answers):
     if field.get("description_truncated"):
         return CANDIDATE
     own_wording = candidate_wording_requested(label + "\n" + str(field.get("description", "")))
-    if (not own_wording and field["type"] == "file" and booklet.normalize(label) in
-            {"cover letter", "upload cover letter", "attach cover letter", "portfolio or cover letter"}):
-        document = answers.get("documents.cover_letter", {})
+    from .cover_letter_runner import cover_field
+    if not own_wording and cover_field(field):
+        # Exact scoped user choices precede reusable role documents, just as
+        # they do in the preparer. An optional explicit blank is settled;
+        # making that document required needs a new candidate decision.
+        document = answers.get(key_for_field(field, answers), {})
+        if document.get("status") == "declined":
+            return CANDIDATE if field.get("required") else KNOWN
         return (KNOWN if document.get("status") == "verified" and document.get("source")
                 and isinstance(document.get("value"), str) and document["value"].strip() else DOCUMENT)
     # Derivations are ephemeral and recomputed from these exact observations.
