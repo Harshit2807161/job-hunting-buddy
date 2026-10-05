@@ -197,7 +197,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
     observed_step = 0
     def outcome(result, *, stable=False):
         from .review_inventory import build
-        return {**result, "agent_tasks": list(document_tasks.values()), "generated_documents": generated_documents,
+        return {**result, "agent_tasks": [*document_tasks.values(), *result.get("agent_tasks", [])], "generated_documents": generated_documents,
                 **build(list(observed_fields.values()), result.get("filled", []), answers,
                                  key_for_field, complete=stable, step_count=observed_step+1 if observed_fields else 0)}
     if not cli_actions:
@@ -325,11 +325,47 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 # Preserve exact text and surface the candidate-only prompt,
                 # including optional prompts, in the ledger and portal.
                 continue
+            # An explicit candidate reply outranks an earlier proposed narrative
+            # if this catalog is reused while a draft is being corrected.
+            explicit = {key: item for key, item in answers.items()
+                if key.startswith("custom.") and item.get("status") in {"verified", "declined"} and item.get("user_override") is True
+                and isinstance(item.get("source"), dict) and item["source"].get("provider") == "explicit user question response"
+                and key_for_field(field, {key: item}) == key}
+            if explicit:
+                reordered = {**explicit, **{key: value for key, value in answers.items() if key not in explicit}}
+                answers.clear(); answers.update(reordered)
             existing = answers.get(key_for_field(field, answers), {})
+            from .grounded_narratives import curated_observation
+            source = existing.get("source", {})
+            if (isinstance(source, dict) and source.get("method") == "codex_curated_company_interest"
+                    and source.get("observed_question") != curated_observation(field)):
+                # This same-run proposal was reviewed against different help.
+                # Candidate responses and other factual bindings stay intact.
+                answers.pop(key_for_field(field, answers), None)
+                existing = {}
             if existing.get("status") in {"verified", "declined"}:
                 continue
-            record = proposal(field, narrative_job, answers)
-            if not record and os.environ.get("JHB_GROUNDED_NARRATIVES") == "1" and narrative_calls < 3:
+            from .grounded_narratives import intent, curated_company_interest, company_interest_candidate
+            curated = (os.environ.get("JHB_CURATED_COMPANY_INTEREST") == "1"
+                       and company_interest_candidate(field, narrative_job.get("company")))
+            if curated:
+                if narrative_calls >= 3:
+                    proposed = {"state": "agent_task", "reason_code": "narrative_call_budget"}
+                else:
+                    narrative_calls += 1
+                    proposed = await asyncio.to_thread(curated_company_interest, field, narrative_job, answers,
+                                                       preferences=narrative_preferences)
+                if proposed.get("state") == "agent_task":
+                    return outcome({"state": "failed", "reason": "Company-interest drafting or review needs an agent retry",
+                        "error_kind": "narrative_generation", "retryable": True, "missing": [],
+                        "filled": list(filled.values()), "events": events, "agent_tasks": [{
+                            "question": field["label"], "ref": field["ref"], "required": field["required"],
+                            "type": field["type"], "task_kind": "narrative_generation",
+                            "reason_code": proposed.get("reason_code", "narrative_generation_unavailable"), "retryable": True}]}, stable=False), actions
+                record = proposed.get("record") if proposed.get("state") == "proposed" else None
+            else:
+                record = proposal(field, narrative_job, answers)
+            if not curated and not record and os.environ.get("JHB_GROUNDED_NARRATIVES") == "1" and narrative_calls < 3:
                 from .grounded_narratives import draft, intent
                 if intent(field, narrative_job.get("company")):
                     narrative_calls += 1

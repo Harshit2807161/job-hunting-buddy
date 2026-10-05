@@ -133,3 +133,22 @@ full title as a recorded confirmed application. It shows both locations and link
 the earlier portal record. Different posting IDs do not establish different
 internal requisitions, and matching titles do not prove duplication. This warning
 is informational: it never changes receipt history, job state or approval rules.
+
+`JHB_CURATED_COMPANY_INTEREST=1` enables a separate company-interest drafting route.
+It runs before the legacy mission-sentence template and never silently falls back
+to that template. A tool-less local Codex call drafts a brief paraphrased paragraph
+from complete official JD units and the selected verified resume; a fresh read-only
+Codex call checks every factual claim, the exact answer hash and its style. Accepted
+text is still marked proposed and still needs per-application portal approval.
+A reviewer approval is a writing check, never submission authority.
+
+The private `workflow_preferences.narrative_style.company_interest_reference`
+is a bounded style reference, not a source of facts about other companies or the
+candidate. Word/character limits and this reference participate in the cache key,
+as do question, official JD, selected facts and resume bytes. Existing explicit
+candidate answers take precedence. Employer own-wording/no-AI guidance and unknown
+factual history remain handoffs. Generation/reviewer outages and rejected prose
+are retryable agent tasks (`narrative_generation`), rather than new candidate
+questions. Both model calls must be injected in CI; no subscription authentication
+or API credentials are used in tests. The flag stays disabled until integration
+and live output review.

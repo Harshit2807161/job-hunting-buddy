@@ -1,0 +1,13 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["field_ref", "answer_sha256", "verdict", "factual_claims_supported", "all_claims_checked", "style_pass", "issues"],
+  "properties": {
+    "field_ref": {"type": "string", "minLength": 1, "maxLength": 300},
+    "answer_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["approved", "reject", "needs_input"]},
+    "factual_claims_supported": {"type": "boolean"},
+    "all_claims_checked": {"type": "boolean"},
+    "style_pass": {"type": "boolean"},
+    "issues": {"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 500}}
+  }
+}

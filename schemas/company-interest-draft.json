@@ -1,0 +1,19 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["field_ref", "state", "answer", "support", "reason_code"],
+  "properties": {
+    "field_ref": {"type": "string", "minLength": 1, "maxLength": 300},
+    "state": {"enum": ["proposed", "needs_input"]},
+    "answer": {"type": "string", "maxLength": 2000},
+    "reason_code": {"enum": ["none", "insufficient_evidence", "unknown_autobiographical"]},
+    "support": {"type": "array", "maxItems": 5, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_id", "unit_id", "quote"],
+      "properties": {
+        "input_id": {"enum": ["job_description", "role.experience", "role.projects", "role.skills"]},
+        "unit_id": {"type": "string", "maxLength": 100},
+        "quote": {"type": "string", "maxLength": 3000}
+      }
+    }}
+  }
+}
