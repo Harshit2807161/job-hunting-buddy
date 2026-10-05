@@ -255,16 +255,34 @@ def dispatch(request, helpers):
             if field["type"] == "combobox":
                 expr = element_expr(field)
                 before = state(expr)
+                query = request.get("query")
+                if query is not None:
+                    if (scope["board"] != "ashby" or normalize(field["label"]) != "state/country of residence"
+                            or not isinstance(query, str) or not query.strip() or len(query) > 200):
+                        raise ValueError("Residence catalog query is outside its approved scope")
+                    if not before:
+                        raise ValueError("Observed manual control is unavailable")
+                    if before["value"]:
+                        # Preserve the existing value. It is a search candidate,
+                        # not proof of selection; fill will still query and
+                        # require a real native catalog click/readback.
+                        return {"choices": [before["value"]], "type": "combobox", "truncated": False,
+                                "current_value_candidate": True}
                 try:
-                    click(expr)
+                    type_text(expr, query) if query is not None else click(expr)
                     labels = []
-                    for _ in range(8):
-                        wait(0.15)
+                    for _ in range(20 if query is not None else 8):
+                        wait(0.25 if query is not None else 0.15)
                         labels = [n.get("name", {}).get("value", "") for n in combobox_options(expr)]
                         if labels:
                             break
                 finally:
+                    if query is not None:
+                        type_text(expr, before["value"])
                     escape()
+                    if query is not None:
+                        cdp("Input.dispatchKeyEvent", type="keyDown", key="Tab", code="Tab", windowsVirtualKeyCode=9)
+                        cdp("Input.dispatchKeyEvent", type="keyUp", key="Tab", code="Tab", windowsVirtualKeyCode=9)
                 after = state(expr)
                 if not before or not after or before["value"] != after["value"]:
                     raise ValueError("Read-only choices inspection changed the draft value")

@@ -43,6 +43,8 @@ MECHANICAL_ERRORS = {
     "Native select did not retain the approved answer", "Dropdown did not retain the selected answer",
     "Form did not retain the exact answer", "Observed continuation button is unavailable",
     "Dropdown catalog is still loading",
+    "Autocomplete choice is absent", "Autocomplete choice is ambiguous",
+    "Autocomplete did not retain the committed choice",
     "Calendar input did not retain the approved day",
 }
 

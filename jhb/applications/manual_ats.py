@@ -13,6 +13,7 @@ class ManualATSCLI(BrowserUseCLI):
         if not isinstance(foreground, bool):
             raise ValueError("Foreground preference must be an explicit boolean")
         self.foreground = foreground
+        self._residence_query = None
         from .boards import board_type, job_identity
         if board_type(approved_url) != board or job_identity(approved_url) is None:
             raise ValueError(f"Manual scope requires an exact {board.title()} application URL")
@@ -61,7 +62,25 @@ class ManualATSCLI(BrowserUseCLI):
     async def ensure_education(self, count):
         return {"supported": False, "reason": "Manual adapter does not add education rows"}
 
+    async def observe(self):
+        snapshot = await super().observe()
+        if self._scope["board"] == "ashby" and self._residence_query and not snapshot.get("handoff"):
+            from .booklet import normalize
+            for field in snapshot.get("fields", []):
+                if field.get("type") == "combobox" and normalize(field.get("label", "")) == "state/country of residence":
+                    catalog = await self.invoke("describe", field=field, query=self._residence_query)
+                    if not catalog.get("choices") or catalog.get("truncated"):
+                        from .cli_browser import BrowserOperationError
+                        raise BrowserOperationError("Autocomplete residence catalog is unavailable", retryable=True)
+                    field["options"] = [{"label": v, "value": v} for v in catalog["choices"]]
+        return snapshot
+
     async def ensure_profile(self, answers):
+        self._residence_query = None
+        state = answers.get("identity.state", {})
+        if (self._scope["board"] == "ashby" and state.get("status") == "verified" and state.get("source")
+                and isinstance(state.get("value"), str) and state["value"].strip()):
+            self._residence_query = state["value"]
         if self._scope["board"] != "workable":
             return {"supported": False}
         snapshot = await self.observe()

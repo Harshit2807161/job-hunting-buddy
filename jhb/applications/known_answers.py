@@ -50,6 +50,11 @@ def _choices(field):
 def _signature(field):
     observation = {"ref": field.get("ref"), "label": _label(field), "type": field.get("type"),
                    "choices": _choices(field), "country_context": field.get("country_context")}
+    if _label(field) == "state/country of residence" and field.get("type") == "combobox":
+        # Search results are transient; a closed committed autocomplete emits
+        # no options. Bind stable question metadata, then audit exact committed
+        # value against the recorded native catalog choice and verified facts.
+        observation["choices"] = []
     if field.get("description") or field.get("description_truncated"):
         observation.update(description=field.get("description"), description_truncated=bool(field.get("description_truncated")))
     return hashlib.sha256(json.dumps(observation, sort_keys=True).encode()).hexdigest()
@@ -81,7 +86,7 @@ def key_for_field(field, answers):
                 pass
             else:
                 return "preferences.start_date"
-    if label == "state/country of residence" and field.get("type") in {"text", "combobox", "select"}:
+    if label == "state/country of residence" and field.get("type") in {"text", "select"}:
         # This is contact residence, never the country of the job or nationality.
         state = _verified(answers, "identity.state")
         if state and isinstance(state.get("value"), str) and state["value"].strip():
@@ -246,13 +251,32 @@ def enrich(field, job, answers, *, as_of=None):
         result = _graduate(answers, today)
         if result:
             value, evidence = result
+    elif label == "state/country of residence" and field.get("type") == "combobox":
+        state, country = (_verified(answers, key) for key in ("identity.state", "identity.country"))
+        if state and isinstance(state.get("value"), str) and state["value"].strip():
+            from .cli_runtime import option_matches
+            selected = [choice for choice in choices if option_matches(choice, state["value"], field_id="state")]
+            if country and isinstance(country.get("value"), str):
+                canonical_country = "United States" if normalize(country["value"]) in {"us", "usa", "united states", "united states of america"} else country["value"]
+                selected += [choice for choice in choices if ", " in choice
+                             and option_matches(choice.rsplit(", ", 1)[0], state["value"], field_id="state")
+                             and normalize(choice.rsplit(", ", 1)[1]) == normalize(canonical_country)]
+            if len(selected) == 1:
+                value = {"query": state["value"], "choice": selected[0]}
+                evidence = {"records": {"identity.state": state, **({"identity.country": country} if country else {})},
+                            "criterion": "Verified contact residence matched to observed native display or query catalog; fill still requires real catalog commit",
+                            "observed_choices": choices,
+                            "projection": {"control_type": "combobox", "native_catalog_verification_required": True}}
     elif label == _LINKS and field.get("type") in {"text", "textarea"}:
         records = {key: item for key in ("links.github", "links.scholar", "links.portfolio")
                    if (item := _verified(answers, key)) and isinstance(item.get("value"), str)
                    and re.fullmatch(r"https://[^\s]+", item["value"])}
         if records:
-            value = "\n".join(dict.fromkeys(item["value"] for item in records.values()))
-            evidence = {"records": records}
+            urls = list(dict.fromkeys(item["value"] for item in records.values()))
+            separator = "\n" if field["type"] == "textarea" else " "
+            value = separator.join(urls)
+            evidence = {"records": records, "projection": {"control_type": field["type"],
+                                                          "separator": separator, "urls": urls}}
     elif label == "how many months in a row can you commit to?" and field.get("type") == "multiselect":
         commitment = _verified(answers, "preferences.residency_commitment")
         def approved_range(text):

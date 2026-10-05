@@ -42,8 +42,10 @@ def test_exact_known_aliases_reuse_verified_values(label, key):
 
 def test_residence_state_does_not_infer_job_country_or_work_authorization():
     values = facts()
-    residence = field("State/Country of Residence", kind="combobox", choices=())
-    assert key_for_field(residence, values) == "identity.state"
+    residence = field("State/Country of Residence", kind="combobox", choices=("California", "New York"))
+    key = known_answers.enrich(residence, {}, values)
+    assert key_for_field(residence, values) == key
+    assert values[key]["value"] == {"query": "California", "choice": "California"}
     question = field("Are you legally authorized to work in the country in which this job is located?")
     known_answers.enrich(question, {"work_country": None}, values, as_of=date(2026, 10, 4))
     assert key_for_field(question, values) is None
@@ -155,7 +157,7 @@ def test_optional_links_aggregate_verified_existing_urls_without_inventing_publi
     values["links.scholar"]["status"] = "needs_input"
     question = field(known_answers._LINKS, kind="text", choices=())
     key = known_answers.enrich(question, {}, values, as_of=date(2026, 10, 4))
-    assert values[key]["value"] == "https://github.com/synthetic\nhttps://synthetic.example/"
+    assert values[key]["value"] == "https://github.com/synthetic https://synthetic.example/"
     assert "publications" not in values[key]["value"]
 
 
