@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from contextlib import nullcontext
 import fcntl
 import html
+import hashlib
 import json
 import logging
 import os
@@ -438,10 +439,23 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 continue
             try:
                 progress.update(operation="fill", field_ref=field["ref"], field_type=field["type"])
-                await actions.fill(field, record["value"])
+                document_hash = None
+                if field["type"] == "file" and Path(str(record["value"])).is_file():
+                    document_bytes = Path(str(record["value"])).read_bytes()
+                    if document_bytes.startswith(b"%PDF-"):
+                        document_hash = hashlib.sha256(document_bytes).hexdigest()
+                retained = await actions.fill(field, record["value"])
+                document_proof = {}
+                if (document_hash and isinstance(retained, dict) and retained.get("verified") is True
+                        and isinstance(retained.get("upload_receipt"), str) and retained["upload_receipt"]):
+                    if hashlib.sha256(Path(str(record["value"])).read_bytes()).hexdigest() != document_hash:
+                        from .cli_browser import BrowserOperationError
+                        raise BrowserOperationError("Approved document changed during upload", retryable=True)
+                    document_proof = {"upload_receipt": retained["upload_receipt"], "document_sha256": document_hash}
                 education_row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", field["ref"])
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"],
+                    **document_proof,
                     **({"country_context": field["country_context"]} if field.get("country_context") else {}),
                     **({"proposed": True} if record.get("proposed") else {}),
                     **({"user_override": True} if record.get("user_override") is True else {})}

@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from jhb.applications import booklet
 from jhb.applications.planner import deterministic_plan
@@ -205,3 +206,35 @@ def test_owned_no_ai_help_prevents_drafting_and_legacy_generated_fill(monkeypatc
     assert form.calls == []
     assert result["optional_questions"][0]["description"].startswith("Please do not use")
     assert result["review_inventory"]["fields"][0]["candidate_wording_required"] is True
+
+
+@pytest.mark.parametrize('verified,receipt,mutate', [(True, 'native-proof', False), (False, 'native-proof', False), (True, None, False), (True, 'native-proof', True)])
+def test_verified_upload_preserves_native_receipt_and_stable_document_hash(tmp_path, verified, receipt, mutate):
+    import hashlib
+    from jhb.applications.cli_browser import BrowserOperationError
+    document = tmp_path / 'synthetic-resume.pdf'
+    document.write_bytes(b'%PDF-synthetic verified original')
+    class FileForm:
+        blocked_requests = 0
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {'fields': [{'ref': 'resume', 'label': 'Resume', 'type': 'file', 'required': True}],
+                    'buttons': [{'ref': 'submit', 'label': 'Submit application'}]}
+        async def fill(self, field, value):
+            if mutate: document.write_bytes(b'%PDF-different document after upload')
+            return {'verified': verified, 'upload_receipt': receipt}
+    operation = prepare(None, {'url': 'synthetic'}, {'documents.resume': booklet.answer(str(document), 'Synthetic selected resume')},
+                        deterministic_plan, None, cli_actions=FileForm())
+    if mutate:
+        with pytest.raises(BrowserOperationError, match='changed during upload') as error:
+            asyncio.run(operation)
+        assert error.value.retryable
+    else:
+        result, _ = asyncio.run(operation)
+        row = result['filled'][0]
+        if verified and receipt:
+            assert row['upload_receipt'] == receipt
+            assert row['document_sha256'] == hashlib.sha256(document.read_bytes()).hexdigest()
+        else:
+            assert 'upload_receipt' not in row and 'document_sha256' not in row
