@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+from urllib.parse import urlsplit
 
 from .. import config
 from . import boards
@@ -44,6 +45,19 @@ def _blank(url):
     value = str(url or "")
     return (value in {"", "about:blank", "data:text/html,"} or value.startswith("about:blank#")
             or value.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")))
+
+
+def _source_location(url, source_id):
+    from .linkedin_runtime import linkedin_id
+    if linkedin_id(url) == source_id:
+        return True
+    try:
+        parsed = urlsplit(url)
+        return (parsed.scheme == "https" and parsed.hostname in {"linkedin.com", "www.linkedin.com"}
+                and not parsed.username and not parsed.password and parsed.port in {None, 443}
+                and re.match(r"^/(?:login|authwall|uas/login|checkpoint)(?:/|$)", parsed.path) is not None)
+    except (ValueError, TypeError):
+        return False
 
 
 def _cap():
@@ -164,6 +178,14 @@ class OwnedTabs:
             # an existing exact source tab adds no tab; a fresh source needs one.
             count += sum(target in before and row.get("state") == "active" and target not in self.tabs
                          for target, row in self.unclaimed.items())
+        if purpose in {"source", "source_readonly"}:
+            source_count = sum(target in before and row.get("state") in {"active", "close_unconfirmed"}
+                               and row.get("purpose") in {"source", "source_readonly"}
+                               for target, row in self.tabs.items())
+            # Source classification must not occupy every application slot.
+            # Exact existing-tab reuse above needs no additional budget.
+            if source_count >= min(2, max(0, _cap()-1)):
+                raise TabCapacityReached(CAPACITY_MESSAGE)
         reserve = 2 if purpose == "source" else 1
         if count + reserve > _cap() and not (current.get("targetId") and _blank(current.get("url"))):
             raise TabCapacityReached(CAPACITY_MESSAGE)
@@ -219,6 +241,96 @@ class OwnedTabs:
         except (OSError, ValueError, TypeError, KeyError):
             return []
         return []
+
+    def cleanup_source_terminal(self, request):
+        """Close only a proven owned read-only source with a fresh safe DOM.
+
+        Classification may end at login, unsupported, filtered or unknown. None
+        of those outcomes needs a disposable LinkedIn listing to occupy a draft
+        slot. The outcome never grants authority over user tabs or destinations.
+        """
+        from .linkedin_runtime import linkedin_id
+        original = None
+        try:
+            _, raw = _private(request.get("evidence_path", ""), self.root, limit=2_000_000)
+            proof = json.loads(raw)
+            source_id = linkedin_id(request.get("approved_url"))
+            observation = proof.get("readonly_observation", {})
+            target = observation.get("target_id")
+            row, live = self.tabs.get(target, {}), self.refresh()
+            outcome = proof.get("classification", {})
+            if (hashlib.sha256(raw).hexdigest() != request.get("evidence_sha256")
+                    or proof.get("provider") != "readonly_linkedin_terminal_classifier"
+                    or proof.get("native_apply_clicked") is not False
+                    or not source_id or linkedin_id(proof.get("source_url")) != source_id
+                    or observation.get("native_apply_clicked") is not False
+                    or observation.get("operation") != "resolve_link"
+                    or linkedin_id(observation.get("source_url")) != source_id
+                    or observation.get("target_id") != proof.get("source_target_id")
+                    or not isinstance(proof.get("recorded_at"), (int, float))
+                    or not 0 <= time.time()-proof["recorded_at"] <= 300
+                    or not isinstance(observation.get("recorded_at"), (int, float))
+                    or not 0 <= proof["recorded_at"]-observation["recorded_at"] <= 300
+                    or outcome.get("state") not in {"greenhouse", "not_greenhouse", "blocked", "ambiguous", "filtered", "unsupported", "closed"}
+                    or row.get("state") != "active" or row.get("purpose") != "source_readonly"
+                    or row.get("creation_proof") != "official_new_tab_returned_new_target"
+                    or row.get("job_identity") != ["linkedin", source_id]
+                    or observation != row.get("readonly_observation")
+                    or outcome.get("handoff") == "waiting_captcha"
+                    or not _source_location(observation.get("observed_url"), source_id)
+                    or target not in live or live[target].get("url") != observation.get("observed_url")):
+                return []
+            # A user may have begun a form or login after source classification.
+            # Read DOM state immediately before closing; never clear these values.
+            original = self.helpers["current_tab"]().get("targetId")
+            self.helpers["switch_tab"](target)
+            if self.helpers["current_tab"]().get("targetId") != target:
+                return []
+            state = self.helpers["js"]("""(() => {
+                const visible=e=>!!(e.getClientRects().length)&&getComputedStyle(e).visibility!=='hidden';
+                const dialogs=[...document.querySelectorAll('dialog[open],[role=dialog],[aria-modal=true],.jobs-easy-apply-modal')].some(visible);
+                const edits=[...document.querySelectorAll('input,textarea,select,[contenteditable=true]')].some(e=>{
+                    if(e.tagName==='INPUT'&&e.type==='file') return e.files.length>0;
+                    if(e.isContentEditable) return !!e.innerText.trim();
+                    if(e.tagName==='SELECT') {
+                        const index=[...e.options].findIndex(o=>o.defaultSelected);
+                        return e.selectedIndex!==(index<0?0:index);
+                    }
+                    if(e.type==='checkbox'||e.type==='radio') return e.checked!==e.defaultChecked;
+                    if(e.type==='hidden'||e.type==='button'||e.type==='submit') return false;
+                    return e.value!==e.defaultValue || (e.type==='password'&&!!e.value);
+                });
+                const applications=[...document.querySelectorAll('form[action*=apply],.jobs-easy-apply-content,iframe[src*=recaptcha],iframe[src*=hcaptcha]')].some(visible);
+                return {url:location.href, ready:document.readyState==='complete', dialogs, edits, applications};
+            })()""")
+            if (not isinstance(state, dict) or state.get("url") != observation["observed_url"]
+                    or state.get("ready") is not True or any(state.get(key) is not False for key in ("dialogs", "edits", "applications"))):
+                return []
+            if self.close(target, "terminal_readonly_source_without_draft", expected_url=observation["observed_url"]):
+                return [target]
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+            return []
+        finally:
+            if original and original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
+                self.helpers["switch_tab"](original)
+        return []
+
+    def record_readonly_observation(self, request, result):
+        """Capture a no-click classifier witness in the private ownership ledger."""
+        from .linkedin_runtime import linkedin_id
+        current = self.helpers["current_tab"]()
+        source_id = linkedin_id(request.get("approved_url"))
+        row = self.tabs.get(current.get("targetId"), {})
+        if (not source_id or row.get("state") != "active" or row.get("purpose") != "source_readonly"
+                or row.get("job_identity") != ["linkedin", source_id]):
+            return result
+        observation = {"operation": "resolve_link", "native_apply_clicked": False,
+                       "target_id": current["targetId"], "observed_url": current.get("url"),
+                       "source_url": request["approved_url"], "recorded_at": time.time(),
+                       "classification_state": result.get("state")}
+        row["readonly_observation"] = observation
+        self.save()
+        return {**result, "readonly_observation": observation}
 
     def retain_review(self, request):
         target = request.get("target_id")
@@ -420,6 +532,10 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     owner = OwnedTabs(helpers, root or config.ROOT)
     before = set(owner.refresh())
     operation = request.get("operation")
+    if operation == "cleanup_source_terminal":
+        if dispatcher_name != "jhb.applications.linkedin_runtime":
+            raise ValueError("Source cleanup is restricted to LinkedIn classification")
+        return {"closed_targets": owner.cleanup_source_terminal(request)}
     if operation == "cleanup_source_verified":
         if dispatcher_name != "jhb.applications.linkedin_runtime":
             raise ValueError("Verified source cleanup is restricted to LinkedIn classification")
@@ -433,6 +549,15 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
     scoped["new_tab"] = lambda url="about:blank": owner.new_tab(url, purpose=purpose)
     scoped["jhb_before_apply_click"] = owner.before_apply_click
     scoped["jhb_after_apply_click"] = owner.after_apply_click
+    if dispatcher_name == "jhb.applications.linkedin_runtime" and operation == "resolve":
+        # A subsequent native Apply route invalidates earlier read-only evidence.
+        identity = list(boards.job_identity(request.get("approved_url")) or ())
+        for row in owner.tabs.values():
+            if row.get("state") == "active" and row.get("job_identity") == identity:
+                row.pop("readonly_observation", None)
+                if row.get("purpose") == "source_readonly":
+                    row["purpose"] = "source"
+        owner.save()
     try:
         result = dispatcher(request, scoped)
     except BaseException:
@@ -445,6 +570,8 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
             pass  # Preserve the original browser failure for its repair handoff.
         raise
     owner.refresh()
+    if dispatcher_name == "jhb.applications.linkedin_runtime" and operation == "resolve_link" and isinstance(result, dict):
+        result = owner.record_readonly_observation(request, result)
     if operation == "screenshot" and isinstance(result, dict) and not result.get("error"):
         owner.retain_review(request)
     if dispatcher_name == "jhb.applications.linkedin_runtime" and operation == "resolve" and isinstance(result, dict):

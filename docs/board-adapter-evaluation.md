@@ -176,3 +176,24 @@ bounded queue time while retaining the same lock, exact-tab scope and process
 cleanup. A timeout before inspection does not establish an authentication or
 candidate-answer problem. Do not respond by opening duplicate tabs, bypassing
 the browser lock or changing final-submission deadlines.
+
+### Read-only source tabs and application capacity
+
+A local classification run exposed six retained LinkedIn source listings using
+all worker-owned tab slots. Those pages had login or unsupported outcomes, so
+the older cleanup rule requiring a verified external job description never ran.
+The result was browser-capacity backpressure before application preparation.
+
+Owned source creation is now limited to two tabs (and below the total cap),
+reserving capacity for application drafts. Exact existing-source reuse remains
+available. A read-only classification records a private no-click witness in the
+ownership ledger. Terminal classification can close that exact source only
+with a fresh SHA-bound private proof and matching target, URL and job identity.
+A fresh DOM inspection preserves changed inputs, passwords, uploads, dialogs,
+application forms and verification challenges. User tabs and unclaimed popups
+remain untouched. Native Apply routing invalidates earlier read-only evidence.
+Capacity deferral remains separate from a failed application attempt.
+
+Synthetic Chromium fixtures cover terminal/login/unsupported outcomes and
+preservation guards. This establishes no live candidate-tab closure or live
+submission evidence; existing stale source tabs require fresh classification.

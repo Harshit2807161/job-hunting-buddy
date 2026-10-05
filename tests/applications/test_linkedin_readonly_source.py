@@ -210,3 +210,117 @@ def test_observed_first_party_apply_redirects_decode_one_public_href(fixture_bro
     result = resolve(fixture)
     assert result["state"] == "observed_link" and result["application_url"] == DEST
     assert len(fixture.new_calls) == 1 and len(fixture.pages) == 3
+
+
+def terminal_proof(root, result, *, state='blocked'):
+    observation = result['readonly_observation']
+    path = root/'private'/'source-checks'/'terminal-proof.json'
+    booklet.write_private(path, {'provider': 'readonly_linkedin_terminal_classifier', 'recorded_at': time.time(),
+        'native_apply_clicked': False, 'source_url': SOURCE, 'source_target_id': observation['target_id'],
+        'readonly_observation': observation, 'classification': {'state': state, 'handoff': 'waiting_login'}})
+    return path
+
+
+def terminal_cleanup(fixture, path):
+    return dispatch_owned({'operation': 'cleanup_source_terminal', 'approved_url': SOURCE, 'evidence_path': str(path),
+        'evidence_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}, fixture.helpers(), linkedin_runtime.dispatch,
+        dispatcher_name=MODULE)
+
+
+@pytest.mark.parametrize('state', ['blocked', 'ambiguous', 'filtered', 'unsupported', 'not_greenhouse'])
+def test_terminal_readonly_sources_close_after_classification_without_closing_user_or_popup(fixture_browser, state):
+    fixture, root = fixture_browser
+    result = resolve(fixture)
+    target = result['readonly_observation']['target_id']
+    fixture.current = 'user'
+    assert terminal_cleanup(fixture, terminal_proof(root, result, state=state))['closed_targets'] == [target]
+    assert fixture.closed == [target] and set(fixture.pages) == {'user', 'unclaimed'}
+    assert fixture.current == 'user'
+    assert terminal_cleanup(fixture, terminal_proof(root, result, state=state))['closed_targets'] == []
+    assert fixture.closed == [target]
+
+
+@pytest.mark.parametrize('problem', ['edited_input', 'modal', 'application_form', 'uploaded_file', 'password',
+    'changed_url', 'wrong_job', 'stale', 'native_click', 'wrong_target', 'changed_observation', 'application_owned', 'captcha'])
+def test_terminal_cleanup_preserves_ambiguous_or_user_edited_targets(fixture_browser, problem):
+    fixture, root = fixture_browser
+    result = resolve(fixture)
+    observation = result['readonly_observation']
+    target = observation['target_id']; page = fixture.pages[target]
+    path = terminal_proof(root, result)
+    proof = json.loads(path.read_bytes())
+    if problem == 'edited_input':
+        page.evaluate("document.body.insertAdjacentHTML('beforeend','<input id=answer>')")
+        page.locator('#answer').fill('Candidate is editing')
+    elif problem == 'modal': page.evaluate("document.body.insertAdjacentHTML('beforeend','<div role=dialog>Easy Apply</div>')")
+    elif problem == 'application_form': page.evaluate("document.body.insertAdjacentHTML('beforeend','<form action=/apply><input></form>')")
+    elif problem == 'uploaded_file':
+        page.evaluate("document.body.insertAdjacentHTML('beforeend','<input type=file>')")
+        page.locator('input[type=file]').set_input_files({'name': 'synthetic.pdf', 'mimeType': 'application/pdf', 'buffer': b'fixture'})
+    elif problem == 'password': page.evaluate("document.body.insertAdjacentHTML('beforeend','<input type=password value=fixture>')")
+    elif problem == 'changed_url': page.goto('https://example.test/')
+    elif problem == 'wrong_job': proof['source_url'] = SOURCE.replace('1234567890', '1111111111')
+    elif problem == 'stale': proof['recorded_at'] -= 301
+    elif problem == 'native_click': proof['native_apply_clicked'] = True
+    elif problem == 'wrong_target': proof['source_target_id'] = 'user'
+    elif problem == 'changed_observation': proof['readonly_observation']['recorded_at'] -= 1
+    elif problem == 'application_owned':
+        owner = OwnedTabs(fixture.helpers(), root); owner.tabs[target]['purpose'] = 'application'; owner.save()
+    elif problem == 'captcha': proof['classification']['handoff'] = 'waiting_captcha'
+    booklet.write_private(path, proof)
+    assert terminal_cleanup(fixture, path)['closed_targets'] == [] and fixture.closed == []
+    assert target in fixture.pages and 'user' in fixture.pages and 'unclaimed' in fixture.pages
+
+
+def test_existing_user_source_never_receives_disposable_observation(fixture_browser):
+    fixture, root = fixture_browser
+    fixture.add('user-source', SOURCE)
+    result = resolve(fixture)
+    assert 'readonly_observation' not in result
+    assert OwnedTabs(fixture.helpers(), root).tabs == {}
+
+
+def test_source_budget_reserves_application_slots_and_reuses_existing(fixture_browser):
+    fixture, root = fixture_browser
+    resolve(fixture)
+    owner = OwnedTabs(fixture.helpers(), root)
+    second = owner.new_tab(SOURCE.replace('1234567890', '2222222222'), purpose='source_readonly')
+    before = list(fixture.new_calls)
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab(SOURCE.replace('1234567890', '3333333333'), purpose='source_readonly')
+    assert fixture.new_calls == before
+    assert owner.new_tab(SOURCE.replace('1234567890', '2222222222'), purpose='source_readonly') == second
+    # A distinct application's target still has capacity despite two sources.
+    app = owner.new_tab(DEST.replace('11111111', '33333333'), purpose='application')
+    assert owner.tabs[app]['purpose'] == 'application'
+
+
+def test_terminal_classifier_attempts_cleanup_for_readonly_login_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'ROOT', tmp_path)
+    cli = Client({'state': 'blocked', 'handoff': 'waiting_login', 'readonly_observation': {
+        'target_id': 'source', 'source_url': SOURCE, 'observed_url': SOURCE, 'operation': 'resolve_link',
+        'native_apply_clicked': False, 'recorded_at': time.time()}})
+    result = asyncio.run(linkedin.resolve_source({'url': SOURCE}, client=cli))
+    assert result['state'] == 'blocked' and result['handoff'] == 'waiting_login'
+    assert [operation for operation, _ in cli.calls] == ['resolve_link', 'cleanup_source_terminal']
+    assert result['source_cleanup']['closed_targets'] == ['source']
+
+
+def test_native_route_invalidates_previous_readonly_cleanup_authority(fixture_browser):
+    fixture, root = fixture_browser
+    result = resolve(fixture); path = terminal_proof(root, result)
+    dispatch_owned({'operation': 'resolve', 'approved_url': SOURCE}, fixture.helpers(),
+                   lambda request, helpers: {'state': 'ambiguous'}, dispatcher_name=MODULE)
+    assert terminal_cleanup(fixture, path)['closed_targets'] == [] and fixture.closed == []
+    row = OwnedTabs(fixture.helpers(), root).tabs[result['readonly_observation']['target_id']]
+    assert row['purpose'] == 'source' and 'readonly_observation' not in row
+
+
+@pytest.mark.parametrize('url,allowed', [('https://www.linkedin.com/login', True), ('https://other.example.test/login', False)])
+def test_login_location_requires_first_party_and_no_edits(fixture_browser, url, allowed):
+    fixture, root = fixture_browser
+    result = resolve(fixture); target = result['readonly_observation']['target_id']
+    fixture.pages[target].goto(url)
+    owner = OwnedTabs(fixture.helpers(), root)
+    result = owner.record_readonly_observation({'approved_url': SOURCE}, {'state': 'blocked', 'handoff': 'waiting_login'})
+    assert terminal_cleanup(fixture, terminal_proof(root, result))['closed_targets'] == ([target] if allowed else [])
