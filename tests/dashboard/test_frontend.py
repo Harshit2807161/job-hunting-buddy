@@ -300,6 +300,6 @@ def test_public_descriptor_refresh_shows_context_and_requires_answer_version_ref
         state['question']['updated_at']='public-metadata-revision'
         page.get_by_text('Public application guidance',exact=True).wait_for()
         assert page.get_by_text('Public guidance: do not select Yes without this condition.').is_visible()
-        assert page.get_by_text('This public descriptor has not established a live field observation or approval.').is_visible()
+        assert page.get_by_text('Published by the employer. The agent will verify these details in your application before using your answer.').is_visible()
         assert page.get_by_role('button',name='Save answer',exact=True).is_disabled()
         assert not actions and not errors
