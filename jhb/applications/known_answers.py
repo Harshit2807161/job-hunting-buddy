@@ -247,6 +247,15 @@ def enrich(field, job, answers, *, as_of=None):
                 records["screening.non_compete"] = restriction
                 value, evidence = restriction["value"], {"records": records, "owned_instruction": description,
                     "criterion": "Verified US state code outside California; reuse explicit restriction answer"}
+    elif (label == "u.s. work authorization" and field.get("type") in {"radio", "select", "combobox"}
+          and normalize(field.get("description") or "") == "are you authorized to work in the united states?"
+          and field.get("description_truncated") is False
+          and normalize(str(field.get("country_context") or "")) in {"", "us", "usa", "united states"}):
+        authorized = _verified(answers, "eligibility.authorized_us")
+        if authorized and isinstance(authorized.get("value"), bool):
+            value, evidence = authorized["value"], {"records": {"eligibility.authorized_us": authorized},
+                "owned_question": field["description"],
+                "criterion": "Exact owned US authorization question; no citizenship, export-control, or sponsorship inference"}
     elif label == _GRADUATE and field.get("type") in {"radio", "select", "combobox"}:
         result = _graduate(answers, today)
         if result:

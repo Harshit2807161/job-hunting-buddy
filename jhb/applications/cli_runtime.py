@@ -95,7 +95,24 @@ def _settled_click(backend, cdp, wait, click_at_xy):
         return
     raise ValueError("Observed control remains obstructed after scrolling" if obstructed else "Observed control did not settle in the viewport")
 
-FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
+FIELD_DATA = r"""(()=>{
+ const ownedDescription=e=>{
+   const owner=e.closest('.field-wrapper');
+   const parts=[];const explicit=e.getAttribute('description');if(explicit)parts.push(explicit);
+   if(owner){
+     const ids=new Set([e.id+'-description',...(e.getAttribute('aria-describedby')||'').split(' ').filter(Boolean)]);
+     for(const id of ids){
+       const nodes=[...document.querySelectorAll('[id]')].filter(n=>n.id===id);
+       if(nodes.length!==1)continue;
+       const n=nodes[0];
+       if(n.closest('.field-wrapper')!==owner||!n.classList.contains('question-description')||
+          !n.getClientRects().length||getComputedStyle(n).visibility==='hidden'||n.closest('[aria-hidden="true"]'))continue;
+       const text=n.innerText.trim();if(text&&!parts.includes(text))parts.push(text);
+     }
+   }
+   const text=parts.join('\n');return {description:text.slice(0,4096),description_truncated:text.length>4096};
+ };
+ return [...document.querySelectorAll('input,textarea,select')]
  .filter(e=>e.id && !e.disabled && (e.type==='file' ||
    (e.getClientRects().length && getComputedStyle(e).visibility!=='hidden')))
  .filter(e=>!['hidden','password','submit','button','reset'].includes(e.type))
@@ -103,7 +120,7 @@ FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
    required:e.required||e.getAttribute('aria-required')==='true'||(e.type==='file'&&e.closest('.file-upload')?.getAttribute('aria-required')==='true'),
    label:((e.type==='file'?((e.closest('.file-upload')?.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.closest('.file-upload')?.querySelector('.upload-label')?.innerText):'')||e.getAttribute('aria-label')||[...(e.labels||[])].map(l=>l.innerText).join(' ')||
      (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||'').trim(),
-   description:e.getAttribute('description')||'',
+   ...ownedDescription(e),
    separate_phone_country:e.type==='tel' && !!e.closest('.iti') &&
      [...(e.closest('.phone-input')||e.closest('.iti')).querySelectorAll('input[role="combobox"],select,[role="combobox"]')]
        .some(c=>c!==e && !c.disabled && !c.matches('.iti__search-input,[id$="__search-input"]') &&
@@ -112,7 +129,7 @@ FIELD_DATA = r"""[...document.querySelectorAll('input,textarea,select')]
           /^(?:country|calling code|country code)$/i.test((c.getAttribute('aria-label')||[...(c.labels||[])].map(l=>l.innerText).join(' ')).trim()))),
    value:e.value,checked:e.checked,selected:e.closest('.select__value-container')?.querySelector('.select__single-value')?.innerText||'',
    invalid:e.getAttribute('aria-invalid')==='true',
-   options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}))"""
+   options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}));})()"""
 
 
 def option_matches(label, value, *, field_id="", field_label=""):
@@ -419,6 +436,7 @@ def dispatch(request, helpers):
                 label = item["description"] + " (" + label + ")"
             fields.append({"ref": item["id"], "label": label,
                            "type": kind, "required": item["required"], "options": item["options"],
+                           "description": item["description"], "description_truncated": item["description_truncated"],
                            **({"separate_phone_country": item["separate_phone_country"]} if kind == "tel" else {})})
         for upload in js("[...document.querySelectorAll('.file-upload')].filter(e=>e.querySelector('.file-upload__filename')).map(e=>({label:((e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')||e.querySelector('.upload-label')?.innerText||e.innerText.split('\\n')[0]).trim(),filename:e.querySelector('.file-upload__filename p')?.innerText||'',required:e.getAttribute('aria-required')==='true'}))"):
             upload["label"] = upload["label"].rstrip(" *")
@@ -453,15 +471,23 @@ def dispatch(request, helpers):
         try:
             click(backend)
             wait(0.2)
-            if not options_for(field):
+            options = options_for(field)
+            if not options:
                 # React Select can focus its input without expanding on a click.
                 # Native ArrowDown opens that focused combobox without choosing.
                 keypress("ArrowDown")
-                wait(0.2)
-            labels = [n.get("name", {}).get("value", "") for n in options_for(field)]
+                for _ in range(8):
+                    wait(0.25)
+                    options = options_for(field)
+                    if options:
+                        break
+            labels = [n.get("name", {}).get("value", "") for n in options]
             return {"choices": list(dict.fromkeys(labels))[:50], "truncated": len(labels)>50, "type": kind}
         finally:
             keypress("Escape")
+            after = control_value(ref)
+            if not before or not after or any(before[k] != after[k] for k in ("value", "selected", "checked", "countryCode")):
+                raise ValueError("Read-only choices inspection changed the draft value")
 
     if operation == "fill":
         field, value = request["field"], request["value"]
