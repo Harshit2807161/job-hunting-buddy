@@ -169,6 +169,21 @@ def _checks(request, helpers, packet, attempt):
                                  "expected_url": attempt["application_url"]}, helpers, attempt["application_url"])
     if snapshot.get("handoff"):
         return {"state": snapshot["handoff"], "reason": snapshot["reason"], "click_started": False}
+    annotate_work_country(snapshot, packet.get("job", {}))
+    records = packet.get("filled", [])
+    approved = {r["key"]: answer(r["value"], r.get("source")) for r in records}
+    for r in records:
+        if str(r["key"]).startswith("custom."):
+            approved[r["key"]].update(question=r["question"], field_ref=r["ref"])
+            if r.get("user_override") is True:
+                approved[r["key"]]["user_override"] = True
+            if r.get("country_context"):
+                approved[r["key"]]["country_context"] = r["country_context"]
+    from .native_question_context import enrich_sync
+    enrich_sync(snapshot, packet.get("job", {}), approved,
+                lambda field: _board_dispatch({"operation": "describe", "field": field,
+                    "target_id": request["target_id"], "expected_url": attempt["application_url"]},
+                    helpers, attempt["application_url"]))
     if attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal":
         inventory = packet.get("review_inventory", {}).get("fields", [])
         for field in snapshot["fields"]:
@@ -182,16 +197,8 @@ def _checks(request, helpers, packet, attempt):
             if len(matches) != 1:
                 return {"state": "waiting_review", "reason": "Application questions changed after portal approval; review the updated form",
                         "click_started": False}
-    annotate_work_country(snapshot, packet.get("job", {}))
     if helpers["js"]("[...document.querySelectorAll('input[type=password]')].some(e=>e.getClientRects().length)"):
         return {"state": "waiting_login", "reason": "Website authentication is required", "click_started": False}
-    records = packet.get("filled", [])
-    approved = {r["key"]: answer(r["value"], r.get("source")) for r in records}
-    for r in records:
-        if str(r["key"]).startswith("custom."):
-            approved[r["key"]].update(question=r["question"], field_ref=r["ref"])
-            if r.get("country_context"):
-                approved[r["key"]]["country_context"] = r["country_context"]
     documents = request.get("documents", {})
     checked, retained = [], []
     attached_labels = {normalize(f["label"]) for f in snapshot["fields"] if f["ref"].startswith("uploaded:")}

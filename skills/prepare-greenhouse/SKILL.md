@@ -60,3 +60,12 @@ candidate's own wording through the ledger and portal, even if optional.
 Preserve exact labels and requiredness. An optional blank requires explicit
 per-field portal acknowledgment, and submission requires approval of the exact
 packet.
+
+Greenhouse may label a required dropdown with a heading and put its actual
+question in a visible `.question-description` owned by the same field. Preserve
+the heading and field reference; read the separate description before binding.
+For an explicitly answered public-guided question, inspect only its exact native
+dropdown with a bounded describe operation, then close it without changing the
+retained value. Public API descriptions and choices can clarify the question in
+the portal; they do not establish native choices, live retention, or readiness.
+The final audit repeats the owned native check for those approved responses.

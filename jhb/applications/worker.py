@@ -223,6 +223,11 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         booklet.annotate_work_country(snapshot, job)
         for field in snapshot.get("fields", []):
             observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
+        if cli_actions and hasattr(actions, "describe") and not snapshot.get("handoff"):
+            from .native_question_context import enrich_async
+            await enrich_async(snapshot, job, answers, actions.describe)
+            for field in snapshot.get("fields", []):
+                observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         return snapshot
     events = [{"event": "verified_saved_records"}] if profile_result.get("filled") else []
     filled = {(row["question"], row["ref"]): row for row in profile_result.get("filled", [])}
@@ -335,7 +340,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 display_label = field["label"] + (f" (education record {int(education_row[1])+1})" if education_row else "")
                 filled[(field["label"], field["ref"])] = {"question": display_label, "ref": field["ref"], "key": key, "value": record["value"], "source": record["source"],
                     **({"country_context": field["country_context"]} if field.get("country_context") else {}),
-                    **({"proposed": True} if record.get("proposed") else {})}
+                    **({"proposed": True} if record.get("proposed") else {}),
+                    **({"user_override": True} if record.get("user_override") is True else {})}
                 events.append({"step": step, "event": "filled", "question": field["label"], "answer_key": key})
             except Exception as exc:
                 filled.pop((field["label"], field["ref"]), None)
