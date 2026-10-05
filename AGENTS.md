@@ -3,6 +3,13 @@
 Keep Phase 1's `main` and `v0.1.0` baseline reviewable. Phase 2 work belongs on a
 feature branch until its tests and live limitations have been reviewed.
 
+Keep agent workspaces inside this repository. Reuse existing worktrees where
+possible; any additional worktree belongs under the ignored
+`private/agent-workspaces/` directory. Never create sibling project directories
+in the user's home directory. Preserve uncommitted work when moving worktrees,
+use `git worktree move` to keep Git metadata valid, and verify their status after
+relocation. Do not delete worktrees or their changes as an automatic cleanup.
+
 Use `skills/prepare-greenhouse/SKILL.md` for application planning and
 `skills/tailor-cover-letter/SKILL.md` for cover-letter work. Read the candidate's
 local source skill before editing a letter; references stay unchanged.
