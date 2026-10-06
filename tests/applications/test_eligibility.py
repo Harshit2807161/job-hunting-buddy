@@ -12,6 +12,44 @@ from jhb.sources import simplify
 
 EXCLUSIVE_EMPLOYMENT = ('At this time, we are only able to consider applicants who are '
                         'US Citizens or Green Card Holders for employment opportunities.')
+REQUIRED_US_PERSON = ('U.S. Person Required: Must be a U.S. citizen, lawful permanent resident, '
+                      'or protected individual such as an asylee or refugee in compliance with ITAR / EAR regulations.')
+
+
+@pytest.mark.parametrize('text', [
+    REQUIRED_US_PERSON,
+    '<h3>Eligibility</h3><p>' + REQUIRED_US_PERSON + '</p>',
+    'U.S. Person Required:\nMust be a US citizen, lawful permanent resident, or protected individual.',
+    'Applicants must be a United States person.',
+    'The person hired must therefore be either a US person as defined by ITAR.',
+    'US person status is required for this position.',
+    'Applicants are required to be a US person.',
+    'Required qualifications:\nUS person status\nPython experience',
+    'US persons only.',
+])
+def test_mandatory_us_person_is_closed_even_with_resident_and_protected_statuses(text):
+    findings = eligibility.restrictions(text)
+    assert {item['category'] for item in findings} == {'citizenship'}
+    assert len(findings) == 1
+
+
+@pytest.mark.parametrize('text', [
+    'The person hired must therefore be either a US person as defined by ITAR or otherwise eligible for a federally issued export control license.',
+    'US Person Required: US citizen or permanent resident, or eligible to obtain an export authorization.',
+    'US Person Required:\nUS citizen or permanent resident or eligible for an export control license.',
+    'US persons include US citizens, lawful permanent residents, refugees and asylees.',
+    'Are you required to be a US person?',
+    'Applicants must disclose US person status.',
+    'US person status is preferred.',
+    'US person status is not required.',
+    'No US person status required.',
+    'Applicants are not required to be a US person.',
+    'We do not require applicants to be US persons.',
+    'Preferred qualifications:\nUS person status',
+    'Must support US person customers.',
+])
+def test_us_person_definitions_questions_nonrequirements_and_export_alternatives_remain_open(text):
+    assert eligibility.restrictions(text) == []
 
 
 @pytest.mark.parametrize('text', [
@@ -226,7 +264,7 @@ def job(description="Ordinary application development position."):
     return item
 
 
-@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT])
+@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON])
 def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path, monkeypatch, text):
     def forbidden(*args, **kwargs):
         pytest.fail("Excluded job must not access the candidate browser")
@@ -241,13 +279,14 @@ def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path,
 
 
 @pytest.mark.parametrize('source', [False, True])
-def test_legacy_eligible_backlog_is_refiltered_before_either_queue_claim(source):
+@pytest.mark.parametrize('description', [EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON])
+def test_legacy_eligible_backlog_is_refiltered_before_either_queue_claim(source, description):
     from jhb.applications import source_queue
     module, table, state = (source_queue, 'application_sources', 'filtered') if source else (queue, 'applications', 'skipped')
     conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
     module.enqueue(conn, [job()])
     stored = json.loads(conn.execute(f'SELECT job_json FROM {table}').fetchone()[0])
-    stored['verified_job_description'] = job(EXCLUSIVE_EMPLOYMENT)['verified_job_description']
+    stored['verified_job_description'] = job(description)['verified_job_description']
     stored['eligibility'] = {'state': 'eligible', 'policy': 'exclude-incompatible-employment-requirements-v2'}
     conn.execute(f'UPDATE {table} SET job_json=?', (json.dumps(stored),)); conn.commit()
     assert module.claim(conn) is None

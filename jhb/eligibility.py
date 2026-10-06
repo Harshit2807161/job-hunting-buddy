@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-POLICY_ID = "exclude-incompatible-employment-requirements-v3"
+POLICY_ID = "exclude-incompatible-employment-requirements-v4"
 _CITIZEN = re.compile(r"\bcitizen(?:ship|s)?\b|\bnationality\b", re.I)
 _CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:secret|confidential|security)[-\s]+cleared|(?:active|current|secret|confidential|government|federal|dod)\s+clearance|clearance|top[-\s]*secret|ts\s*/\s*sci|ts[- ]sci|sci\s+clearance)\b", re.I)
 _POLYGRAPH = re.compile(r"\bpolygraph\b", re.I)
@@ -50,16 +50,23 @@ _MANDATORY = re.compile(r"\b(?:must|shall|require[ds]?|requirement|mandatory|nec
 _NEGATED_NOUN = r"(?:(?:US|United\s+States|British|Canadian|UK)\s+)?(?:active\s+|security\s+)?(?:clearance|citizenship|nationality|polygraph)"
 _NEGATED = re.compile(r"\b(?:not\s+required|not\s+necessary|not\s+needed|need\s+not|(?:do|does)\s+not\s+(?:need|require)|no\s+" + _NEGATED_NOUN + r"(?:\s+or\s+" + _NEGATED_NOUN + r")*(?:\s+(?:is|are))?\s+required|no\s+" + _NEGATED_NOUN + r"\s+requirement|without\s+(?:a\s+)?(?:security\s+)?clearance|not\s+a\s+requirement)\b", re.I)
 _OPTIONAL = re.compile(r"\b(?:optional|preferred|desirable|a plus|nice to have)\b", re.I)
-_REQUIREMENT_LABEL = re.compile(r"(?:visa sponsorship|sponsorship|security clearance|clearance|US citizenship|citizenship)\s*:", re.I)
+_REQUIREMENT_LABEL = re.compile(r"(?:visa sponsorship|sponsorship|security clearance|clearance|US citizenship|citizenship|US person(?: status)? required)\s*:", re.I)
 _NONDISCRIMINATION = re.compile(r"without\s+regard\s+to|regardless\s+of|(?:do|does|will|shall)\s+not\s+discriminate|non[- ]discrimination", re.I)
 _DISCLOSURE = re.compile(r"\b(?:disclosure|demographic|survey|citizenship\s+status\s+(?:question|information|response)|(?:disclose|report|indicate|select|state)\b[^.;]{0,35}\bcitizenship)\b", re.I)
+_EXPORT_AUTHORIZATION_ALTERNATIVE = (
+    r"\bor\s+(?:(?:be|otherwise)\s+)*(?:eligible\s+(?:to\s+obtain|for)|obtain)\b"
+    r"[^.;]{0,100}\b(?:export\s+(?:control\s+)?(?:licen[cs]e|authorization)|"
+    r"authorizations?\s+from\s+the\s+US\s+Department\s+of\s+State)\b")
 _RESIDENCY_ALTERNATIVE = re.compile(
     r"(?:\bor\s+|,\s*(?:\([ivx]+\)\s*)?)(?:(?:a|an|lawful|legal|US)\s+)*"
     r"(?:permanent\s+residents?|green\s+card\s+holders?|protected\s+(?:persons?|individuals?)|"
-    r"refugees?|asylees?|US\s+nationals?)\b|"
-    r"\bor\s+(?:(?:be|otherwise)\s+)*(?:eligible\s+(?:to\s+obtain|for)|obtain)\b"
-    r"[^.;]{0,100}\b(?:export\s+(?:control\s+)?(?:licen[cs]e|authorization)|"
-    r"authorizations?\s+from\s+the\s+US\s+Department\s+of\s+State)\b", re.I)
+    r"refugees?|asylees?|US\s+nationals?)\b|" + _EXPORT_AUTHORIZATION_ALTERNATIVE, re.I)
+_US_PERSON = r"(?:US|United\s+States)\s+persons?"
+_REQUIRED_US_PERSON = re.compile(
+    r"\b" + _US_PERSON + r"(?:\s+status)?\s+(?:(?:is|are)\s+)?(?:required|mandatory|only)\b|"
+    r"\b(?:must|shall)\s+(?:therefore\s+)?be\s+(?:either\s+)?(?:an?\s+)?[\"'“]?" + _US_PERSON + r"\b|"
+    r"\b(?:required|need)\s+to\s+be\s+(?:an?\s+)?[\"'“]?" + _US_PERSON + r"\b", re.I)
+_BARE_US_PERSON = re.compile(_US_PERSON + r"(?:\s+status)?", re.I)
 _CITIZEN_RESIDENT_STATUSES = (r"(?:a\s+)?(?:US|United\s+States)\s+citizens?\s+or\s+"
     r"(?:(?:a|US|United\s+States|lawful|legal)\s+)*"
     r"(?:permanent\s+residents?|green[-\s]+card\s+holders?)")
@@ -156,16 +163,28 @@ def restrictions(text, *, title=False):
         if (_STUDENT_VISA_DENIAL.search(clause) and not clause.endswith("?")
                 and not re.search(r"\b(?:experience|prior|previous)\b", clause, re.I)):
             hits.append({"category": "student_visa_restriction", "evidence": clause[:600]})
+        # A mandatory US-person condition is still closed to F-1 applicants
+        # when its definition lists residents, refugees and asylees. Those
+        # statuses are not the same as an open export-license alternative.
+        required_us_person = bool(
+            (_REQUIRED_US_PERSON.search(clause)
+             or (required_section and _BARE_US_PERSON.fullmatch(clause)))
+            and not clause.endswith("?") and not _NEGATED.search(clause)
+            and not re.search(r"\bno\s+" + _US_PERSON + r"\b|\b(?:not|never)\s+only\b", clause, re.I)
+            and not _NONDISCRIMINATION.search(clause) and not _DISCLOSURE.search(clause)
+            and not re.search(_EXPORT_AUTHORIZATION_ALTERNATIVE, clause, re.I))
+        if required_us_person:
+            hits.append({"category": "citizenship", "evidence": clause[:600]})
         # A closed employment list of citizens OR residents still excludes the
         # candidate's student status. Do not mistake it for an open export-
         # authorization alternative, or make this decision from keywords alone.
         exclusive_employment = bool(_EXCLUSIVE_EMPLOYMENT_STATUSES.search(clause)
                 and not re.search(r"\b(?:not|never)\s+only\b", clause, re.I)
                 and not _NONDISCRIMINATION.search(clause) and not _DISCLOSURE.search(clause))
-        if exclusive_employment:
+        if exclusive_employment and not required_us_person:
             hits.append({"category": "citizenship", "evidence": clause[:600]})
         for kind, pattern in [("citizenship", _CITIZEN), ("security_clearance", _CLEARANCE), ("polygraph", _POLYGRAPH)]:
-            if kind == "citizenship" and exclusive_employment:
+            if kind == "citizenship" and (exclusive_employment or required_us_person):
                 continue  # The closed employment requirement was recorded above.
             # A customer's clearance is not a requirement on this applicant.
             # Retain other conditions in the same clause for normal screening.
