@@ -12,6 +12,23 @@ distinguish this mode from historical broad authorization. The default portal
 gate remains enabled; only the active delegated window and separate overnight
 runtime gate permit this exception. Ending the window restores per-draft review.
 
+The portal creates an eight-hour window. A fresh explicit chat request to turn
+on autonomy and submit overnight may create the same bounded window, retaining
+the actual message as `source: "explicit_user_message"` and
+`action: "enable_autonomy"`. It must not be recorded as a portal click. Both paths
+use `MULTI_SCOPE`, `candidate_job_policy: "existing_and_new_verified_drafts"`, and
+an explicit list of reviewed submission boards. Current reviewed submission
+adapters are Ashby and Greenhouse; a recognized Workday URL does not grant
+Workday submission capability. Historical spreadsheet matches and exact-job
+exclusions still block duplicates. No window renews itself.
+
+Local Browser Use recovery is separately opt-in through
+`JHB_BROWSER_RECONNECT_ENABLED=1`. A failed read-only health check may retry the
+official CLI only against the configured loopback WebSocket whose browser ID
+still matches Chrome's `DevToolsActivePort`. Recovery holds the browser lane,
+uses a bounded timeout and five-minute cooldown, and never navigates, closes
+tabs, launches a different profile, or falls back to another browser endpoint.
+
 **Historical narrow mode.** The default local policy requires a candidate Approve click
 for each exact draft through the portal. `JHB_REQUIRE_PORTAL_APPROVAL=1` rejects
 the broad authority described below, even if its environment flag is enabled.
