@@ -56,6 +56,21 @@ def test_full_state_primary_does_not_override_conflicting_office():
         "offices": [{"location": "London, United Kingdom"}]}) is None
 
 
+@pytest.mark.parametrize("office,expected", [
+    ("Mountain View, CA", "United States"),
+    ("Example HQ - Mountain View, CA", "United States"),
+    ("San Francisco, CA", None), ("Mountain View, BC", None),
+    ("Mountain View", None), ("Canada - Mountain View, CA", "Canada"),
+])
+def test_abbreviated_office_needs_exact_full_state_primary(office, expected):
+    assert job_context._same_region_office("Mountain View, California (HQ)", office) == (
+        "United States" if expected == "United States" else None)
+    country = job_context.greenhouse_country({"location": {"name": "Mountain View, California (HQ)"},
+        "offices": [{"location": office}]})
+    assert country == ("United States" if expected == "United States" else None)
+    assert job_context._same_region_office("Mountain View, CA", office) is None
+
+
 def test_fetch_validates_identity_and_uses_fixed_unauthenticated_get():
     calls = []
     def opener(request, **kwargs):

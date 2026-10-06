@@ -223,7 +223,17 @@ def country_context(text):
     return found[0]
 
 
-def _us_region_location(label):
+_US_REGIONS = dict(pair.split(":") for pair in (
+    "AL:Alabama|AK:Alaska|AZ:Arizona|AR:Arkansas|CA:California|CO:Colorado|CT:Connecticut|DE:Delaware|FL:Florida|"
+    "HI:Hawaii|ID:Idaho|IL:Illinois|IN:Indiana|IA:Iowa|KS:Kansas|KY:Kentucky|LA:Louisiana|ME:Maine|MD:Maryland|"
+    "MA:Massachusetts|MI:Michigan|MN:Minnesota|MS:Mississippi|MO:Missouri|MT:Montana|NE:Nebraska|NV:Nevada|"
+    "NH:New Hampshire|NJ:New Jersey|NM:New Mexico|NY:New York|NC:North Carolina|ND:North Dakota|OH:Ohio|"
+    "OK:Oklahoma|OR:Oregon|PA:Pennsylvania|RI:Rhode Island|SC:South Carolina|SD:South Dakota|TN:Tennessee|"
+    "TX:Texas|UT:Utah|VT:Vermont|VA:Virginia|WA:Washington|WV:West Virginia|WI:Wisconsin|WY:Wyoming|DC:District of Columbia"
+).split("|"))
+
+
+def _us_region_place(label):
     """An exact city/full-state posting location establishes US jurisdiction.
 
     Bare cities, abbreviations such as CA, and Georgia (also a country) do not.
@@ -234,13 +244,26 @@ def _us_region_location(label):
     match = re.fullmatch(r"([A-Za-z][A-Za-z .'-]+),\s*([A-Za-z ]+?)(?:\s*\((?:HQ|Headquarters)\))?", label.strip(), re.I)
     if not match or match[1].strip().casefold() in {"remote", "anywhere", "multiple locations"}:
         return None
-    states = set(("Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|"
-                  "Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|"
-                  "Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|"
-                  "New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|"
-                  "Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|"
-                  "Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia").casefold().split("|"))
-    return "United States" if match[2].strip().casefold() in states else None
+    code = next((code for code, name in _US_REGIONS.items() if name.casefold() == match[2].strip().casefold()), None)
+    return (match[1].strip().casefold(), code) if code else None
+
+
+def _us_region_location(label):
+    return "United States" if _us_region_place(label) else None
+
+
+def _same_region_office(primary, office):
+    """An abbreviated office must repeat the primary's exact city and state.
+
+    A full state in the primary supplies jurisdiction; an unknown city/CA alone
+    still supplies none. A visible employer HQ prefix is only a display label.
+    """
+    place = _us_region_place(primary)
+    if not place or not isinstance(office, str):
+        return None
+    city, code = place
+    pattern = r"(?:[A-Za-z0-9 .]+ (?:HQ|Headquarters) - )?" + re.escape(city) + r",\s*" + code
+    return "United States" if re.fullmatch(pattern, office.strip(), re.I) else None
 
 
 def greenhouse_country(data):
@@ -260,7 +283,8 @@ def greenhouse_country(data):
         return primary
     if not isinstance(offices, list) or any(not isinstance(office, dict) for office in offices):
         return None
-    countries = {country_context(office.get("location")) or _us_region_location(office.get("location")) for office in offices}
+    countries = {country_context(office.get("location")) or _us_region_location(office.get("location"))
+                 or _same_region_office(label, office.get("location")) for office in offices}
     if None in countries or len(countries) != 1:
         return None
     country = next(iter(countries))
