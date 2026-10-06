@@ -86,16 +86,39 @@ def test_due_retry_precedes_exhausted_history_and_does_not_inherit_its_evidence(
     assert health()["technical_issues"][0]["job_hashes"] == [f"{2:064x}"]
 
 
-def test_backoff_becomes_actionable_only_when_normal_retry_is_due(setup, monkeypatch):
+def test_far_future_retry_only_becomes_repairable_inside_bounded_horizon(setup, monkeypatch):
     _, _, now = setup
-    failure(setup, attempts=2, available_at=now + 30)
+    failure(setup, attempts=2, available_at=now + 601)
     calls = []
     monkeypatch.setattr(monitor.time, "time", lambda: now)
     assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "healthy"
-    monkeypatch.setattr(monitor.time, "time", lambda: now + 30)
+    assert health()["deferred_application_issues"][0]["defer_reason"] == "retry_backoff"
+    monkeypatch.setattr(monitor.time, "time", lambda: now + 1)
     assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "validated"
     assert len(calls) == 4
     assert health()["deferred_application_issues"] == []
+
+
+@pytest.mark.parametrize("seconds_until_due", [1, 299, 300, 600])
+def test_repair_during_backoff_never_claims_early_or_changes_queue_timing(setup, monkeypatch, seconds_until_due):
+    _, _, now = setup
+    failure(setup, attempts=2, available_at=now + seconds_until_due)
+    monkeypatch.setattr(monitor.time, "time", lambda: now)
+    with sqlite3.connect(config.DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        # The queue's real SELECT requires its full schema even when no retry
+        # is due. Exercise normal claim rather than mocking its timing guard.
+        connection.execute("ALTER TABLE applications ADD COLUMN job_json TEXT NOT NULL DEFAULT '{}'")
+        queue.initialize(connection)
+        before = dict(connection.execute("SELECT * FROM applications").fetchone())
+        assert queue.claim(connection) is None
+        calls = []
+        assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "validated"
+        assert len(calls) == 4
+        assert queue.claim(connection) is None
+        assert dict(connection.execute("SELECT * FROM applications").fetchone()) == before
+        assert before["attempts"] == 2
+        assert before["available_at"] == now + seconds_until_due
 
 
 def change_when_worker_locked(monkeypatch, change):

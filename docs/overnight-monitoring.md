@@ -69,9 +69,12 @@ the authorization window do not qualify. Log scanning seeds its initial cursor
 at the current end of each log and reads bounded new tails; it extracts known
 exception classes without copying raw messages into prompts.
 
-Preparation evidence must also belong to a current, due, unleased `retry` row
-below the normal three-attempt cap. Exhausted failures, nonclaimable rows and
-retries still in backoff remain visible in `deferred_application_issues`, with
+Preparation evidence must also belong to a current, unleased `retry` row below
+the normal three-attempt cap, due now or within the normal 600-second maximum
+backoff. Repairs may run before that retry is due so a faster worker does not
+consume its final attempt first; they never claim early or change queue timing.
+Exhausted failures, nonclaimable rows and retries beyond that bounded horizon
+remain visible in `deferred_application_issues`, with
 their reasons and original evidence; they do not start a repair or renew the
 retry budget. A shared error fingerprint does not mix those historical job
 identities into an actionable job's repair prompt. The supervisor rechecks

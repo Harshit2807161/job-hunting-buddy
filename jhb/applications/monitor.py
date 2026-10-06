@@ -36,6 +36,9 @@ MAX_REPAIRS = 8
 # Match the normal preparation queue's default retry budget. A code repair
 # cannot reset that budget or make a terminal failed row claimable.
 MAX_PREPARATION_ATTEMPTS = 3
+# pipeline.py schedules technical retries at 300 then 600 seconds. Repair may
+# run during that bounded backoff; it never claims early or changes queue time.
+MAX_PREPARATION_BACKOFF_SECONDS = 600
 INTERVAL_SECONDS = 300
 TECHNICAL_KINDS = {
     "TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
@@ -198,7 +201,7 @@ def _preclick_issues(connection, tables, auth, issues):
 
 
 def _application_defer_reason(row, now):
-    """Require current queue proof of a due retry; diagnostics alone are not work."""
+    """Require a remaining near-term retry; diagnostics alone are not work."""
     row = dict(row)
     if not {"state", "attempts", "available_at", "lease_until"} <= row.keys():
         return "missing_queue_evidence"
@@ -212,7 +215,7 @@ def _application_defer_reason(row, now):
         return "missing_queue_evidence"
     if row["lease_until"] is not None:
         return "retained_lease"
-    if row["available_at"] > now:
+    if row["available_at"] > now + MAX_PREPARATION_BACKOFF_SECONDS:
         return "retry_backoff"
     return None
 
