@@ -618,7 +618,8 @@ def dispatch(request, helpers):
                           'type': 'combobox' if item['role'] == 'combobox' else 'select' if item['tag'] == 'SELECT' else item['type']}
             if choices is not None:
                 descriptor['options'] = [{'label': label} for label in choices]
-            if not question_matches(descriptor, proof, require_catalog=kind != 'combobox' or choices is not None):
+            if not question_matches(descriptor, proof, require_catalog=kind != 'combobox' or choices is not None,
+                                    native_owned_only=True):
                 raise ValueError("Derived answer question context changed")
 
         check_derived_context()  # Before focus, menu dismissal, typing or upload.

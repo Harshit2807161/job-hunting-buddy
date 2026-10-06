@@ -232,7 +232,10 @@ def _reviewed_probe_answers(request, packet, attempt, approved):
                if str(r.get("key", "")).startswith("standing.observed.")]
     from .education_categories import projection, scoped
     categories = [r for r in packet.get("filled", []) if projection(r)]
-    if not derived and not categories:
+    from .observed_question import bases_valid, guarded
+    profiles = [r for r in packet.get("filled", [])
+                if str(r.get("key", "")).startswith("custom.profile.") and guarded(r["key"], r)]
+    if not derived and not categories and not profiles:
         return approved
     binding = attempt.get("review_binding")
     if not binding and request.get("authorization_path"):
@@ -263,6 +266,22 @@ def _reviewed_probe_answers(request, packet, attempt, approved):
     if _facts(book, job, role) != binding.get("facts_sha256"):
         raise ValueError("Reviewed catalog facts changed")
     catalog, probes = booklet.for_role(book, role, job=job), dict(approved)
+    if profiles:
+        from .questions import _scope
+        from .worker import _scoped_custom_answers
+        saved_profiles = _scoped_custom_answers(book, job, _scope(job))
+        for row in profiles:
+            saved = saved_profiles.get(row["key"], {})
+            if (not guarded(row["key"], saved) or saved.get("status") != "verified"
+                    or saved.get("value") != row.get("value") or saved.get("source") != row.get("source")
+                    or saved.get("field_ref") != row.get("ref") or not bases_valid(saved, catalog)):
+                raise ValueError("Derived profile differs from its reviewed base facts")
+            probes[row["key"]] = saved
+            for key in saved["source"]["basis_values"]:
+                if key in probes and (probes[key].get("value") != catalog[key]["value"]
+                                      or probes[key].get("status") != "verified" or not probes[key].get("source")):
+                    raise ValueError("Derived profile conflicts with a retained base fact")
+                probes[key] = catalog[key]
     for row in categories:
         saved = book.get("custom_answers", {}).get(row.get("key"), {})
         if (not str(row.get("key", "")).startswith("custom.") or not projection(saved)
@@ -384,7 +403,9 @@ def _checks(request, helpers, packet, attempt):
         # probe_answers contains only facts validated against this exact review
         # binding by _reviewed_probe_answers; retained values remain immutable.
         from .education_categories import projection
-        key = key_for_field(field, probe_answers if normalize(field['label']) in PROFILE_QUESTIONS or projection(record) else approved)
+        from .observed_question import guarded
+        key = key_for_field(field, probe_answers if normalize(field['label']) in PROFILE_QUESTIONS or projection(record)
+                            or guarded(record['key'], record) and record['key'].startswith('custom.profile.') else approved)
         catalog = re.fullmatch(r"standing\.catalog\.(\d+)\.(school|major)", record["key"])
         catalog_ref = f"{'discipline' if catalog and catalog[2] == 'major' else 'school'}--{catalog[1]}" if catalog else None
         catalog_match = catalog and field["ref"] == catalog_ref

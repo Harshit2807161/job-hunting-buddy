@@ -80,6 +80,34 @@ def test_legacy_record_without_observation_keeps_existing_policy():
     assert observed_question.fill_field(field(), KEY, values[KEY]) == field()
 
 
+@pytest.mark.parametrize('change', ['missing', 'changed', 'unverified', 'unsourced', 'invalid_bases'])
+def test_guarded_profile_cannot_survive_loss_of_current_base_fact(change):
+    values = answers()
+    if change == 'missing': del values['eligibility.authorized_us']
+    elif change == 'changed': values['eligibility.authorized_us']['value'] = False
+    elif change == 'unverified': values['eligibility.authorized_us']['status'] = 'needs_input'
+    elif change == 'unsourced': values['eligibility.authorized_us']['source'] = None
+    else: values[KEY]['source']['basis_values'] = None
+    assert planner.key_for_field(field(), values) is None
+    snapshot = {'url': URL, 'fields': [{**field(), 'options': []}]}
+    native_question_context.enrich_sync(snapshot, {'url': URL}, values,
+        lambda f: pytest.fail('Missing verified basis must not authorize a native catalog probe'))
+
+
+def test_external_annotations_are_not_fabricated_in_native_descriptor():
+    control = field()
+    control.update(country_context='united states', max_length=120)
+    proof = deepcopy(control)
+    native = {key: value for key, value in control.items() if key not in {'country_context', 'max_length'}}
+    assert not observed_question.matches(native, proof)
+    assert observed_question.matches(native, proof, native_owned_only=True)
+    for key, value in [('country_context', 'Canada'), ('max_length', 40)]:
+        changed = {**control, key: value}
+        assert not observed_question.matches(changed, proof)
+    native['description'] = 'You must start immediately.'
+    assert not observed_question.matches(native, proof, native_owned_only=True)
+
+
 def test_complete_narrative_proof_keeps_original_question_and_writing_constraints():
     control = {**field(), 'label': 'Why Synthetic Company?', 'type': 'textarea', 'required': False, 'options': []}
     item = record(control); item['value'] = 'A synthetic grounded paragraph.'

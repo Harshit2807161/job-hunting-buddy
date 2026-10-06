@@ -29,7 +29,7 @@ def _choices(options):
     return labels if len(labels) == len(set(labels)) else None
 
 
-def matches(field, observed, *, require_catalog=True):
+def matches(field, observed, *, require_catalog=True, native_owned_only=False):
     """Compare owned meaning exactly; ignore only incidental native option IDs."""
     if (not isinstance(observed, dict) or any(key not in observed for key in DESCRIPTOR_KEYS)
             or not isinstance(observed["description"], str)
@@ -37,13 +37,28 @@ def matches(field, observed, *, require_catalog=True):
             or field.get("description_truncated", False) is not False
             or type(field.get("required")) is not bool
             or any(observed[key] != field.get(key) for key in ("ref", "label", "type", "required"))
-            or observed["description"] != field.get("description", "")
-            or observed.get("country_context") != field.get("country_context")
+            or observed["description"] != field.get("description", "")):
+        return False
+    # These annotations are validated by planning/final binding. Greenhouse's
+    # native parser does not observe them, so never copy proof values into DOM
+    # evidence merely to make the native check pass.
+    if not native_owned_only and (
+            observed.get("country_context") != field.get("country_context")
             or observed.get("max_length", observed.get("maxlength")) != field.get("max_length", field.get("maxlength"))):
         return False
     expected = _choices(observed["options"])
     actual = _choices(field.get("options", []))
     return expected is not None and (not require_catalog or actual is not None and expected == actual)
+
+
+def bases_valid(record, answers):
+    """Declared source snapshots cannot replace missing current verified facts."""
+    bases = record.get("source", {}).get("basis_values")
+    if not isinstance(bases, dict):
+        return False
+    return all(isinstance(key, str) and isinstance(answers.get(key), dict)
+               and answers[key].get("status") == "verified" and bool(answers[key].get("source"))
+               and answers[key].get("value") == value for key, value in bases.items())
 
 
 def fill_field(field, key, record):

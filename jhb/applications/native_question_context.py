@@ -38,14 +38,15 @@ def _known_record(field, answers):
     return False
 
 
-def _guided_record(field, record, key=""):
+def _guided_record(field, record, key="", answers=None):
     if normalize(str(record.get('question') or '')) != normalize(field['label']):
         return False
     if record.get('field_ref') and record['field_ref'] != field.get('ref'):
         return False
-    from .observed_question import guarded, matches
+    from .observed_question import bases_valid, guarded, matches
     if guarded(key, record):
         return (record.get('status') == 'verified'
+                and (not key.startswith('custom.profile.') or bases_valid(record, answers or {}))
                 and matches(field, record['source']['observed_question'], require_catalog=False))
     from .question_metadata import public_response_context_matches
     return public_response_context_matches(field, record)
@@ -63,7 +64,7 @@ def _fields(snapshot, job, answers):
                   and needs_catalog(field, answers)]
     else:
         fields = [field for field in snapshot.get('fields', []) if field.get('type') in {'combobox', 'select'}
-                  and (_known_record(field, answers) or any(_guided_record(field, record, key)
+                  and (_known_record(field, answers) or any(_guided_record(field, record, key, answers)
                        for key, record in answers.items() if key.startswith('custom.')))]
     if not fields:
         return []
