@@ -57,6 +57,10 @@ Observed mechanics retained in `workday_runtime.py`:
   text are not selections. A uniquely owned, valid, already retained chip may
   be verified without reopening the catalog. Selected-item listboxes are not
   search-result popups. Ambiguous popup ownership remains a mechanics handoff.
+  Search and full browse lists can coexist: a visible browse list is not proof
+  that a search matched. Enter may commit a highlighted result. Prefer an exact
+  observed option and native click, then inspect the actual retained chip.
+  Preserve the original degree when applying a candidate-approved major fallback.
 - Required radio state may be on the radio group's owned `aria-required`
   wrapper rather than each input. Do not treat these factual questions as
   optional, or copy requiredness from a neighboring group. An exact observed
@@ -67,11 +71,17 @@ Observed mechanics retained in `workday_runtime.py`:
   saving or inspecting the native review. A later year edit can change a month. A verified YYYY-MM date supplies month/year,
   and does not authorize an invented day. Preserve expected education dates
   and avoid declaring an expected degree completed.
+  Tiny hidden spinbuttons require the uniquely owned visible segment display
+  and bounded native arrows; typing into the hidden input can move focus.
 - Resume inputs may have no ID. Verify the observed Resume/CV upload container
   and its exact input; a photo or unidentified upload is not a resume control.
   Check filename, approved PDF bytes, and the fresh upload receipt. Saved
   attachment cards need an independent retained-document audit before terminal
   automation is enabled.
+  FileList clearing after server upload is not permission to upload again.
+  Capture native bytes before clearing and bind the exact owned success item;
+  reject stale or replaced attachment proof. An older successful upload cannot
+  retrospectively gain a native-byte capture that did not happen.
 - A legitimate Sign In `data-automation-id="click_filter"` overlay can be the
   canonical AX button above a native sibling. Use that observed accessible
   control in the approved login form. Unrelated overlays remain handoffs.
