@@ -153,8 +153,14 @@ def _logs(state, issues):
 
 def _preclick_issues(connection, tables, auth, issues):
     """A retryable no-click attempt can need code repair without a failed draft."""
-    if (not auth or auth.get("monitoring_kind") != "legacy_submission_window"
-            or not {"applications", "authorized_submission_attempts"} <= tables):
+    if not auth or not {"applications", "authorized_submission_attempts"} <= tables:
+        return
+    # Repair consent and submission consent have separate identities. A
+    # dedicated repair window may diagnose an active submission's technical
+    # failure, but it never grants permission to retry or click Submit.
+    submission_auth = auth if auth.get("monitoring_kind") == "legacy_submission_window" else (
+        overnight.load_authorization() if auth.get("repair_authority") is True else None)
+    if not submission_auth:
         return
     columns = {row[1] for row in connection.execute("PRAGMA table_info(authorized_submission_attempts)")}
     if not {"job_hash", "authorization_id", "updated_at", "result_json", "attempt_path"} <= columns:
@@ -165,7 +171,7 @@ def _preclick_issues(connection, tables, auth, issues):
         "AND a.state='waiting_review' AND t.updated_at>=?", (overnight._timestamp(auth["authorized_at"]),))
     for row in rows:
         if (not isinstance(row["job_hash"], str) or not re.fullmatch(r"[a-f0-9]{64}", row["job_hash"])
-                or row["authorization_id"] != auth["authorization_id"]):
+                or row["authorization_id"] != submission_auth["authorization_id"]):
             continue
         try:
             path, attempt, _ = overnight._read_private(row["attempt_path"])
@@ -215,6 +221,13 @@ def snapshot(state, auth, database=None):
                 health["confirmed_submissions"] = connection.execute("SELECT COUNT(*) FROM confirmed_submissions").fetchone()[0]
             if "authorized_submission_attempts" in tables:
                 health["uncertain_submissions"] = connection.execute("SELECT COUNT(*) FROM authorized_submission_attempts WHERE state IN ('in_progress','uncertain')").fetchone()[0]
+            if "applications" in tables:
+                try:
+                    from .questions import pending
+                    health["pending_questions"] = len(pending(config.ROOT / "private" / "answer-booklet.json",
+                                                              connection=connection))
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    pass
             _preclick_issues(connection, tables, auth, issues)
             if "applications" in tables and auth:
                 for row in feedback_candidates:
@@ -242,14 +255,6 @@ def snapshot(state, auth, database=None):
                     _merge(issues, _issue("application", kind, operation, str(path.relative_to(config.ROOT)), row["job_hash"]))
         finally:
             connection.close()
-    book_path = config.ROOT / "private" / "answer-booklet.json"
-    try:
-        _, book, _ = overnight._read_private(book_path)
-        handoffs = book.get("question_handoffs", {})
-        if isinstance(handoffs, dict):
-            health["pending_questions"] = sum(isinstance(item, dict) and item.get("status") == "pending" for item in handoffs.values())
-    except (OSError, ValueError, TypeError):
-        pass
     health["new_log_error_counts"] = _logs(state, issues)
     health["technical_issues"] = list(issues.values())
     return health

@@ -411,3 +411,24 @@ def test_pressed_unknown_and_unclassified_submission_failures_never_trigger_repa
     preclick(setup, **changes)
     assert monitor.once(run=lambda *args, **kwargs: pytest.fail("ineligible pre-click repair"),
                         inspect_repository=repo)["state"] == "healthy"
+
+
+@pytest.mark.parametrize("repair,submission_enabled,expected", [(True, True, 1), (False, True, 0), (True, False, 0)])
+def test_dedicated_repair_window_observes_only_active_authorized_preclick_failures(setup, monkeypatch, repair, submission_enabled, expected):
+    path = preclick(setup)
+    original = path.read_bytes()
+    auth = {**monitor.authorization(), "authorization_id": "distinct-monitor-window", "monitoring_kind": "preparation_repair",
+            "repair_authority": repair, "submission_authority": False}
+    if not submission_enabled:
+        monkeypatch.setenv("JHB_OVERNIGHT_SUBMISSIONS_ENABLED", "0")
+    health = monitor.snapshot({"log_cursors": {}}, auth)
+    assert len(health["technical_issues"]) == expected
+    assert path.read_bytes() == original
+
+
+def test_monitor_question_count_excludes_stale_ledger_entries(setup):
+    root, _, _ = setup
+    booklet.write_private(root / "private/answer-booklet.json", {"schema_version": 1, "answers": {},
+        "roles": {"sde": {}, "ml": {}}, "custom_answers": {}, "question_handoffs": {
+            "old": {"status": "pending", "contexts": {}, "created_at": 1, "id": "old"}}})
+    assert monitor.snapshot({"log_cursors": {}}, monitor.authorization())["pending_questions"] == 0
