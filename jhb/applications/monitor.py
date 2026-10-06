@@ -503,7 +503,15 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
         if auth.get("repair_authority") is not True:
             return finish("paused" if auth.get("preparation_paused") else "observing",
                           repairs=0, technical_issues=len(health["technical_issues"]))
-        new = [item for key, item in observed.items() if key not in state["issues"]]
+        # Retain diagnostic history, but a deferred application failure must
+        # still be present in the current queue/attempt snapshot. A draft may
+        # have recovered, reached review, or been submitted while repairs were
+        # waiting for the browser worker. Log-only issues retain their backlog
+        # because the incremental log reader will not emit the same line again.
+        current_issues = {item["fingerprint"] for item in health["technical_issues"]}
+        new = [item for key, item in observed.items() if key not in state["issues"]
+               and (item["component"] not in {"application", "authorized_submission"}
+                    or key in current_issues)]
         if not new:
             return finish("healthy", repairs=0)
         attempts = sum(item.get("authorization_id") == auth["authorization_id"] for item in state["issues"].values())

@@ -174,6 +174,19 @@ def test_nonfailure_application_states_never_trigger_repair(setup, state):
     assert monitor.once(run=lambda *args, **kw: pytest.fail("unexpected repair"), inspect_repository=repo)["state"] == "healthy"
 
 
+@pytest.mark.parametrize("state", ["waiting_input", "waiting_review", "submitted", "waiting_login", "skipped"])
+def test_deferred_failure_does_not_repair_a_recovered_application(setup, state):
+    failure(setup)
+    calls = []
+    assert monitor.once(run=runner(calls), inspect_repository=lambda: repo(dirty=True))["state"] == "repository_busy"
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("UPDATE applications SET state=?", (state,))
+    assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "healthy"
+    assert calls == []
+    # Preserve historical diagnostics without treating them as active repairs.
+    assert len(monitor._state()["observed_issues"]) == 1
+
+
 def test_old_failure_and_bad_events_are_handled_without_raw_instructions(setup):
     failure(setup, age=120)
     calls = []
