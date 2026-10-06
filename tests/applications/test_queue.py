@@ -28,6 +28,48 @@ def test_canonical_identity_deduplicates_tracking_and_old_host(conn):
     assert queue.enqueue(conn, [job("https://job-boards.eu.greenhouse.io/example/jobs/1234")]) == 1
 
 
+def test_exact_claim_preserves_other_jobs_and_lease_guards(conn):
+    from jhb.applications.boards import application_hash
+    first = "https://job-boards.greenhouse.io/example/jobs/1234"
+    chosen = "https://job-boards.greenhouse.io/example/jobs/5678"
+    queue.enqueue(conn, [job(first), job(chosen, "source-b")])
+    other = dict(conn.execute("SELECT * FROM applications WHERE job_hash=?", (application_hash(first),)).fetchone())
+    item = queue.claim(conn, job_hash=application_hash(chosen))
+    assert item["job_hash"] == application_hash(chosen)
+    assert queue.claim(conn, job_hash=application_hash(chosen)) is None
+    assert dict(conn.execute("SELECT * FROM applications WHERE job_hash=?", (application_hash(first),)).fetchone()) == other
+
+
+@pytest.mark.parametrize("state", ["submitted", "waiting_review", "submission_uncertain", "discarded", "skipped", "history_hold", "waiting_input"])
+def test_exact_claim_cannot_bypass_protected_state(conn, state):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/1234")])
+    item = queue.claim(conn)
+    queue.finish(conn, item["job_hash"], state)
+    assert queue.claim(conn, job_hash=item["job_hash"]) is None
+
+
+def test_exact_claim_cannot_bypass_backoff_attempt_cap_or_eligibility(conn):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/1234")])
+    item = queue.claim(conn)
+    conn.execute("UPDATE applications SET state='retry',available_at=9999999999")
+    conn.commit()
+    assert queue.claim(conn, job_hash=item["job_hash"]) is None
+    conn.execute("UPDATE applications SET available_at=0,attempts=3")
+    conn.commit()
+    assert queue.claim(conn, job_hash=item["job_hash"]) is None
+    blocked = {**item["job"], "title": "Engineer TS/SCI w/Poly"}
+    conn.execute("UPDATE applications SET attempts=0,job_json=?", (json.dumps(blocked),))
+    conn.commit()
+    assert queue.claim(conn, job_hash=item["job_hash"]) is None
+    assert conn.execute("SELECT state FROM applications").fetchone()[0] == "skipped"
+
+
+@pytest.mark.parametrize("value", ["", "not-a-job", "' OR 1=1 --"])
+def test_exact_claim_requires_canonical_identity(conn, value):
+    with pytest.raises(ValueError):
+        queue.claim(conn, job_hash=value)
+
+
 @pytest.mark.parametrize("url", [
     "http://job-boards.greenhouse.io/example/jobs/1234",
     "https://job-boards.greenhouse.io.attacker.example/example/jobs/1234",

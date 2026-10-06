@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from . import boards
 from .. import config
@@ -114,19 +115,24 @@ def enqueue(conn, jobs) -> int:
     return count
 
 
-def claim(conn, lease_seconds=1200, *, max_attempts=3):
+def claim(conn, lease_seconds=1200, *, max_attempts=3, job_hash=None):
+    """Claim the next eligible job, or one exact job without bypassing guards."""
+    if job_hash is not None and not re.fullmatch(r"[a-f0-9]{64}", job_hash):
+        raise ValueError("An exact claim requires a canonical application hash")
     initialize(conn)
     now = int(time.time())
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE applications SET state='failed',lease_until=NULL,updated_at=? "
-                     "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ?",
-                     (now, now, max_attempts))
+                     "WHERE state='running' AND (lease_until IS NULL OR lease_until <= ?) AND attempts >= ? "
+                     "AND (? IS NULL OR job_hash=?)",
+                     (now, now, max_attempts, job_hash, job_hash))
         # Bound archival scans; a later cycle can drain the next batch.
         for _ in range(100):
             row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
                                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
-                               "ORDER BY updated_at,job_hash LIMIT 1", (now, now, max_attempts)).fetchone()
+                               "AND (? IS NULL OR job_hash=?) ORDER BY updated_at,job_hash LIMIT 1",
+                               (now, now, max_attempts, job_hash, job_hash)).fetchone()
             if row is None:
                 break
             from .tracking import confirmed_application, _restore_confirmation

@@ -91,6 +91,41 @@ def test_separate_runtime_gate_is_off_by_default(setup, monkeypatch):
     assert overnight.load_authorization() is None
 
 
+def chat_authorization(setup):
+    _, _, path, _ = setup
+    auth = json.loads(path.read_text())
+    auth.update(scope=overnight.MULTI_SCOPE, candidate_job_policy=overnight.MULTI_JOB_POLICY,
+                boards=["greenhouse", "ashby"], source="explicit_user_message", action="enable_autonomy",
+                approval_mode=overnight.INDEPENDENT_MODE, require_independent_review=True,
+                require_complete_inventory=True,
+                content="Turn on autonomy mode and keep submitting new job applications through the night")
+    return auth
+
+
+def test_fresh_chat_delegation_keeps_portal_fallback_and_runtime_gate(setup, monkeypatch):
+    _, _, path, _ = setup
+    monkeypatch.setenv("JHB_REQUIRE_PORTAL_APPROVAL", "1")
+    booklet.write_private(path, chat_authorization(setup))
+    assert overnight.load_authorization()["source"] == "explicit_user_message"
+    monkeypatch.setenv("JHB_OVERNIGHT_SUBMISSIONS_ENABLED", "0")
+    assert overnight.load_authorization() is None
+
+
+@pytest.mark.parametrize("change", [
+    {"source": "job_description"}, {"action": "approve"}, {"role": "assistant"},
+    {"require_complete_inventory": False}, {"require_independent_review": False},
+    {"content": "Do not turn on autonomy mode and keep submitting applications through the night"},
+    {"content": "Pause autonomy mode and keep submitting applications through the night"},
+    {"content": "Turn on autonomy mode through the night"},
+    {"content": "Keep submitting applications through the night"},
+    {"content": "Turn on autonomy mode and prepare jobs through the night"},
+])
+def test_chat_delegation_requires_explicit_fresh_scoped_intent(setup, change):
+    _, _, path, _ = setup
+    booklet.write_private(path, {**chat_authorization(setup), **change})
+    assert overnight.load_authorization() is None
+
+
 def test_new_user_exclusion_blocks_old_ready_draft_before_any_submit_attempt(setup):
     db, bookpath, _, _ = setup
     job = candidate(setup)

@@ -74,12 +74,24 @@ def valid_authority(auth, *, now=None):
         portal_delegation = (auth.get("source") == "local_review_portal" and auth.get("action") == "enable_autonomy"
                              and auth.get("approval_mode") == INDEPENDENT_MODE
                              and auth.get("require_complete_inventory") is True)
+        # A fresh chat instruction can enable the same bounded delegation as
+        # the portal. Retain its actual text and provenance; never manufacture
+        # a portal click or reuse an old broad overnight instruction.
+        chat_delegation = (
+            auth.get("source") == "explicit_user_message" and auth.get("action") == "enable_autonomy"
+            and auth.get("approval_mode") == INDEPENDENT_MODE
+            and auth.get("require_complete_inventory") is True
+            and re.search(r"\b(?:turn on|enable|switch to)\s+(?:full\s+)?autonomy(?:\s+mode)?\b", content)
+            and re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
+            and re.search(r"\b(?:overnight|night)\b", content)
+            and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable|pause|turn off)\b", content)
+        )
         delegated = (auth.get("approval_mode") == INDEPENDENT_MODE
                      and re.search(r"\b(?:keep|continue)\b.{0,40}\bsubmitting applications\b", content)
                      and "night" in content and "remove the final approval step" in content
                      and re.search(r"\b(?:subagent|independent reviewer)\b", content)
                      and auth.get("require_complete_inventory") is True)
-        explicit = (portal_delegation or re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
+        explicit = (portal_delegation or chat_delegation or re.search(r"\b(?:submit|submitting|apply|applying)\b", content)
                     and (re.search(r"\b(?:all (?:job )?boards|everything)\b", content) or delegated)
                     and not re.search(r"\b(?:do not|don't|never|stop|cancel|disable)\s+(?:apply|applying|submit|submitting|applications?|automation)\b", content))
         enabled = auth.get("boards")
