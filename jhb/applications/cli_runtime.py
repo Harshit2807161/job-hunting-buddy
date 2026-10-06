@@ -449,7 +449,7 @@ def dispatch(request, helpers):
         current = row_count()
         if not current:
             return {"supported": False, "reason": "No supported education section"}
-        for _ in range(max(0, count-current)):
+        def add_record():
             buttons = [n for n in ax() if n.get("role", {}).get("value") == "button"
                        and n.get("name", {}).get("value") == "Add another"]
             eligible = []
@@ -463,10 +463,28 @@ def dispatch(request, helpers):
             if len(eligible) != 1:
                 raise ValueError("Education add-record control is ambiguous")
             click(eligible[0]["backendDOMNodeId"])
+
+        def wait_for_row():
             for _ in range(10):
                 wait(0.2)
                 if row_count() == current+1:
                     break
+
+        for _ in range(max(0, count-current)):
+            add_record()
+            wait_for_row()
+            if (row_count() == current and js("document.visibilityState") == "hidden"
+                    and not woke_for_scroll and not woke_for_catalog and request.get("target_id")):
+                # A completed input did not render its row. Wake the guarded
+                # target once, then check for a delayed row before any click.
+                # Exceptions from the native click never reach this recovery.
+                woke_for_scroll = True
+                identity = greenhouse_identity(request.get("expected_url"))
+                _wake_owned_scroll(request, helpers,
+                                   lambda url: identity is not None and greenhouse_identity(url) == identity)
+                if row_count() == current:
+                    add_record()  # Fresh AX ownership and geometry, same action.
+                    wait_for_row()
             if row_count() != current+1:
                 raise ValueError("Another education row did not appear")
             current += 1

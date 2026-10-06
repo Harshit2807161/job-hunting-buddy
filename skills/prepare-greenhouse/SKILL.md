@@ -98,3 +98,9 @@ job identity and submission guard, activates that target once, validates again,
 and retries only that same backend-node scroll. It then repeats the normal
 geometry and obstruction checks before clicking. A second timeout propagates;
 an unknown click outcome must never trigger replay of the click or whole fill.
+
+If a completed Add another input leaves the education row count unchanged on a
+hidden owned tab, the runtime may wake that exact guarded job once. Re-read the
+row count first: a delayed row requires no further click. Only an unchanged
+count permits one fresh, uniquely scoped native Add another action. Changed
+counts, guards or targets and any unknown click error stop this recovery.

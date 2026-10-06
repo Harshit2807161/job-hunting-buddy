@@ -270,6 +270,16 @@ timeout, detached controls, target/job/guard changes, and an unknown delivered
 mouse-press outcome. The new automatic recovery still requires live validation;
 the motivating failure is not evidence of a successful live repair.
 
+The same live Astera form later exposed a separate education postcondition
+failure: native input completed without creating the row on a hidden tab. A
+bounded manual activation followed by a fresh row-count check and native action
+retained exactly two rows. The production education operation now performs that
+recovery once, checking for delayed rows before any repeat action. Synthetic
+fixtures cover delayed rendering without duplicate rows, changed targets and
+guards, visible-page failure, extra unexpected rows and unknown click delivery.
+The generalized automatic postcondition recovery has fixture validation; the
+successful live evidence belongs to the preceding scoped manual recovery.
+
 ### Workday modern My Information controls
 
 An explicitly authorized LSEG account was verified through its official email
