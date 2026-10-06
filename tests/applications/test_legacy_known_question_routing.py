@@ -71,7 +71,8 @@ def test_missing_source_in_legacy_education_is_not_a_dashboard_failure():
 
 
 def test_exact_saved_office_policy_routes_known_willingness_but_not_relocation_need():
-    data = book(); data["workflow_preferences"] = {"office_locations": "Explicit candidate standing office willingness"}
+    data = book(); data["workflow_preferences"] = {"office_locations": {
+        "value": True, "source": "Explicit candidate standing office willingness"}}
     record, observed = context("I am willing and able to work entirely on-site.*", "onsite", choices=["Yes", "No"])
     assert question_routing.route(data, record, observed) == question_routing.KNOWN
     data["workflow_preferences"] = {}

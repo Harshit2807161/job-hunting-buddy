@@ -75,6 +75,7 @@ def current_context(book, record, context, row, packet, *,
         if (item.get("ref") != ref
                 or booklet.normalize(str(item.get("question") or "")) != booklet.normalize(str(record.get("question") or ""))
                 or item.get("type", "text") != context.get("type", "text")
+                or booklet.normalize(str(item.get("country_context") or "")) != booklet.normalize(str(record.get("country_context") or ""))
                 or required != bool(context.get("required"))
                 or review_edit and required):
             continue
@@ -85,7 +86,17 @@ def current_context(book, record, context, row, packet, *,
                 or (item.get("description_truncated") is True or len(description) > 4096)
                 != (context.get("description_truncated") is True)):
             continue
-        if item.get("choices") and context.get("choices") and item["choices"] != context["choices"]:
-            continue
+        if (item.get("choices") or []) != (context.get("choices") or []):
+            metadata = context.get("public_question_metadata", {})
+            if not (not item.get("choices") and isinstance(metadata, dict)
+                    and context.get("choices_source") == "official_public_question_metadata"
+                    and metadata.get("source") == "official_public_question_metadata"
+                    and metadata.get("field_ref") == ref
+                    and booklet.normalize(str(metadata.get("label") or "")) == booklet.normalize(record.get("question", ""))
+                    and metadata.get("required") is required
+                    and metadata.get("choices") == context.get("choices")):
+                continue
+            # A separately attributed public descriptor can clarify an
+            # unopened control in the inbox. It is never native fill proof.
         return True
     return False

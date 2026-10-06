@@ -141,7 +141,8 @@ def test_old_final_attempt_requires_exact_durable_no_click_proof(edited, click, 
     conn, key, book, packet, qid = edited
     if previous_state == "waiting_input":
         original = json.loads(packet.read_bytes())
-        original.update(state="waiting_input", missing=[{"ref": "motivation", "question": "Why this employer?", "required": True}])
+        original.update(state="waiting_input", missing=[{"ref": "motivation", "question": "Why this employer?",
+                                                         "required": True, "type": "textarea"}])
         booklet.write_private(packet, original)
         source = booklet.load(book)
         source["question_handoffs"][qid]["contexts"][key]["required"] = True

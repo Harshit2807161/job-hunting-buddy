@@ -20,6 +20,107 @@ from . import boards, booklet, questions
 
 MAX_PACKET_BYTES = 2 * 1024 * 1024
 
+AGENT_RECOVERY_SCHEMA = """CREATE TABLE IF NOT EXISTS answer_work_recovery (
+ job_hash TEXT NOT NULL,
+ task_key TEXT NOT NULL,
+ input_sha256 TEXT NOT NULL,
+ recovered_at INTEGER NOT NULL,
+ PRIMARY KEY(job_hash,task_key,input_sha256)
+)"""
+
+
+def _work_signature(book, record, context, job):
+    """Stable relevant inputs, never packet timestamps or fabricated responses.
+
+    A failed native control gets one recovery for the same fact and choices.
+    A changed verified answer or an actual catalog change permits another try.
+    """
+    from .question_routing import catalog, observed_field, route, CANDIDATE, DOCUMENT
+    from .known_answers import enrich, catalog_basis
+    from .planner import key_for_field
+    kind = route(book, record, context, job=job)
+    if kind == CANDIDATE:
+        return None
+    field = observed_field(record, context, job=job)
+    field["options"] = [{"label": label} for label in field["choices"] if isinstance(label, str)]
+    answers = catalog(book, record, context, job=job)
+    enrich(field, job, answers)
+    key = key_for_field(field, answers)
+    if kind == DOCUMENT:
+        # Cover generation depends on the selected resume and actual job text.
+        relevant = {k: v for k, v in answers.items() if k.startswith(("role.", "documents."))}
+        description = job.get("verified_job_description", {}).get("sha256")
+    else:
+        relevant = {key: answers[key]} if key in answers else {
+            k: v for k, v in answers.items() if k == context.get("answer_key")
+            or k in {"eligibility.authorized_us", "screening.us_government_or_military_5y"}}
+        relevant.update(catalog_basis(field, answers))
+        description = None
+    facts = {k: {"value": v.get("value"), "status": v.get("status")}
+             for k, v in relevant.items() if isinstance(v, dict)}
+    for key, item in facts.items():
+        if key.startswith("documents.") and isinstance(item.get("value"), str):
+            try:
+                source = Path(item["value"])
+                if source.is_file() and source.stat().st_size <= 20 * 1024 * 1024:
+                    item["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+            except OSError:
+                pass
+    # Most native IDs are regenerated on every visit. The ledger ID already
+    # separates employer, question, country and indexed education controls.
+    field.pop("ref", None)
+    payload = {"version": 1, "kind": kind, "field": field, "facts": facts,
+               "role": context.get("selected_role"), "description": description}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return (record["id"], digest)
+
+
+def recover_agent_work(conn, book_path=booklet.DEFAULT_PATH, *, limit=100):
+    """Requeue known-answer/document work once per relevant input revision.
+
+    This is independent of explicit response recovery. It can make partial
+    progress while a genuine candidate question remains, but cannot reopen a
+    reviewed/terminal draft or manufacture an answer, approval or submission.
+    """
+    if type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError("Agent recovery limit must be between 1 and 200")
+    conn.execute(AGENT_RECOVERY_SCHEMA)
+    recovered = 0
+    with questions._locked(book_path):
+        book = booklet.load(book_path)
+        work = questions.current_work(conn)
+        candidates = {}
+        for record in book.get("question_handoffs", {}).values():
+            if record.get("status") != "pending":
+                continue
+            for job_hash, context in questions.live_contexts(book, record, work).items():
+                signature = _work_signature(book, record, context, work[job_hash]["job"])
+                if signature and not conn.execute(
+                        "SELECT 1 FROM answer_work_recovery WHERE job_hash=? AND task_key=? AND input_sha256=?",
+                        (job_hash, *signature)).fetchone():
+                    candidates.setdefault(job_hash, []).append(signature)
+        for job_hash, signatures in list(candidates.items())[:limit]:
+            if _active_authority(conn, job_hash) or not _no_terminal_click(conn, job_hash, work[job_hash]["job"]):
+                continue
+            conn.execute("SAVEPOINT recover_known_work")
+            try:
+                # The conditional update linearizes a concurrent queue claim.
+                changed = conn.execute(
+                    "UPDATE applications SET state='queued',lease_until=NULL,attempts=0,available_at=0,error_kind=NULL,"
+                    "updated_at=?,notified_at=NULL WHERE job_hash=? AND state='waiting_input' AND packet=?",
+                    (int(time.time()), job_hash, work[job_hash]["row"]["packet"])).rowcount
+                if changed:
+                    conn.executemany("INSERT OR IGNORE INTO answer_work_recovery VALUES(?,?,?,?)",
+                                     [(job_hash, *signature, int(time.time())) for signature in signatures])
+                    recovered += 1
+                conn.execute("RELEASE recover_known_work")
+            except Exception:
+                conn.execute("ROLLBACK TO recover_known_work")
+                conn.execute("RELEASE recover_known_work")
+                raise
+        conn.commit()
+    return recovered
+
 
 def _country(value):
     return booklet.normalize(str(value)) if value is not None else None
@@ -68,12 +169,15 @@ def eligible(book, job, packet):
         scope = questions._scope(job)
     except (ValueError, TypeError):
         return False
+    from .question_lifecycle import current_context
+    row = {"job_hash": job_hash, "state": "waiting_input", "job": job}
     ledger = [record for record in book.get("question_handoffs", {}).values()
-              if isinstance(record, dict) and record.get("scope") == scope and job_hash in record.get("contexts", {})]
+              if isinstance(record, dict) and record.get("scope") == scope
+              and current_context(book, record, record.get("contexts", {}).get(job_hash), row, packet)]
     from .question_routing import CANDIDATE, route
     if any(record.get("status") == "pending" and record["contexts"][job_hash].get("required")
            and not record["contexts"][job_hash].get("resolved")
-           and route(book, record, record["contexts"][job_hash]) == CANDIDATE for record in ledger):
+           and route(book, record, record["contexts"][job_hash], job=job) == CANDIDATE for record in ledger):
         return False
     explicit_responses = 0
     for item in missing:
@@ -90,7 +194,7 @@ def eligible(book, job, packet):
         if _response(book, record, job_hash):
             explicit_responses += 1
         elif (record.get("status") != "pending"
-              or route(book, record, record["contexts"][job_hash]) == CANDIDATE):
+              or route(book, record, record["contexts"][job_hash], job=job) == CANDIDATE):
             return False
     # Merely routing a technical/document task never creates a replay trigger.
     return explicit_responses > 0

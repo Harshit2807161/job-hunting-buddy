@@ -153,7 +153,9 @@ def key_for_field(field, answers):
                             or not selected or any(value not in offered for value in selected)):
                         continue
             return key
-    if label in {"your current location", "current location", "where are you currently located?"} and field.get("type") in {"text", "textarea"}:
+    if (label in {"your current location", "current location", "where are you currently located?"}
+            and (field.get("type") in {"text", "textarea"}
+                 or field.get("type") == "combobox" and label in {"your current location", "current location"})):
         location = answers.get("preferences.application_city", {})
         if location.get("status") == "verified" and location.get("source"):
             return "preferences.application_city"

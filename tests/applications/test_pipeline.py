@@ -126,8 +126,13 @@ def test_parallel_preparation_is_bounded_and_persists_new_questions(setup):
         peak = max(peak, active)
         await asyncio.sleep(0.03)
         active -= 1
-        return {"state": "waiting_input", "reason": "Needs candidate answer", "events": [], "filled": [],
-                "missing": [{"question": "Employer-specific relocation preference", "answer_key": None}]}, path.parent / "review.html"
+        packet = {"state": "waiting_input", "submitted": False, "job": candidate,
+                  "reason": "Needs candidate answer", "events": [], "filled": [],
+                  "missing": [{"question": "Employer-specific relocation preference", "answer_key": None,
+                               "ref": "office", "type": "text", "required": True}]}
+        packet_path = path.parent / candidate['dedupe_hash'] / "packet.json"
+        booklet.write_private(packet_path, packet)
+        return packet, packet_path.with_name("review.html")
     result = pipeline.run_cycle(db, path, resolver=lambda *_: None, runner=runner, application_limit=3, concurrency=2)
     assert peak == 2
     assert result["question_handoffs"] == 3

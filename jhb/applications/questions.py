@@ -182,7 +182,7 @@ def collect(job: dict, result: dict, bookpath=booklet.DEFAULT_PATH, *, observed_
             if result.get("selected_role") in {"sde", "ml"}:
                 context["selected_role"] = result["selected_role"]
             from .question_routing import route
-            context["routing"] = route(book, record, context)
+            context["routing"] = route(book, record, context, job=job)
             if record["contexts"].get(job_hash) != context:
                 record["contexts"][job_hash] = context
                 record["updated_at"] = stamp
@@ -221,9 +221,58 @@ def reconcile(job, result, bookpath=booklet.DEFAULT_PATH):
         booklet.write_private(Path(bookpath), book)
 
 
-def pending(bookpath=booklet.DEFAULT_PATH, *, unnotified=False) -> list[dict]:
+def current_work(connection):
+    """Load current private packets once for candidate inbox and recovery alike."""
+    import json
+    from .. import config
+    from . import application_discard, historical
+    from .authorized_submission import private_file
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='applications'").fetchone():
+        return {}
+    result = {}
+    for row in connection.execute("SELECT job_hash,job_json,packet,state FROM applications WHERE state='waiting_input'"):
+        try:
+            job = json.loads(row["job_json"])
+            if not row["packet"] or application_discard.discarded(config.ROOT, row["job_hash"]):
+                continue
+            if historical.match(connection, job):
+                continue
+            path = Path(row["packet"])
+            if not path.is_absolute():
+                path = config.ROOT / path
+            path = private_file(path.with_name("packet.json"))
+            if path.stat().st_size > 2 * 1024 * 1024:
+                continue
+            packet = json.loads(path.read_bytes())
+            if not isinstance(packet, dict):
+                continue
+            result[row["job_hash"]] = {"row": dict(row), "job": job, "packet": packet}
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return result
+
+
+def live_contexts(book, record, work):
+    from .question_lifecycle import current_context
+    return {key: context for key, context in record.get("contexts", {}).items()
+            if key in work and current_context(book, record, context, work[key]["row"], work[key]["packet"])}
+
+
+def pending(bookpath=booklet.DEFAULT_PATH, *, unnotified=False, connection=None) -> list[dict]:
     from .question_routing import candidate_contexts
     book = booklet.load(bookpath)
+    if connection is not None:
+        from .question_routing import CANDIDATE, route
+        work = current_work(connection)
+        result = []
+        for record in book.get("question_handoffs", {}).values():
+            if record.get("status") != "pending" or unnotified and record.get("notified_at"):
+                continue
+            contexts = {key: context for key, context in live_contexts(book, record, work).items()
+                        if route(book, record, context, job=work[key]["job"]) == CANDIDATE}
+            if contexts:
+                result.append({**record, "contexts": contexts})
+        return sorted(result, key=lambda q: (q["created_at"], q["id"]))
     return sorted(({**q, "contexts": contexts} for q in book.get("question_handoffs", {}).values()
                    if q["status"] == "pending" and (not unnotified or not q.get("notified_at"))
                    and (contexts := candidate_contexts(book, q))),
@@ -256,7 +305,7 @@ def notify_new(connection, bookpath=booklet.DEFAULT_PATH, *, send_email=False):
     """Deliver each new employer question once to the configured candidate inbox."""
     import json
     from .. import config, notify
-    records = pending(bookpath, unnotified=True)
+    records = pending(bookpath, unnotified=True, connection=connection)
     if not records:
         return 0
     payload = {"questions": records, "submitted": False}

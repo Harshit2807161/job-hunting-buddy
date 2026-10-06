@@ -273,7 +273,7 @@ class DashboardStore:
                 for qid, record in records.items():
                     context = record.get("contexts", {}).get(key)
                     if current_context(book, record, context, row, packet, allowed_states=allowed_states):
-                        current.setdefault(qid, {})[key] = context
+                        current.setdefault(qid, {})[key] = {**context, "_job": job}
         return current
 
     def pending(self, book=None, queue_states=None, *, include_review_edits=False):
@@ -285,10 +285,9 @@ class DashboardStore:
             if record.get("status") != "pending" or questions._SECRET.search(record.get("question", "")):
                 continue
             contexts = []
-            from .applications.question_routing import candidate_contexts
-            routed_contexts = candidate_contexts(book, record)
+            from .applications.question_routing import route, CANDIDATE
             for key, context in current.get(record["id"], {}).items():
-                if key not in routed_contexts:
+                if route(book, record, context, job=context.get("_job")) != CANDIDATE:
                     continue
                 contexts.append({"job_hash": key, "company": _text(context.get("company")),
                     "title": _text(context.get("title")), "url": boards.canonical_url(context.get("url")),
@@ -477,7 +476,7 @@ class DashboardStore:
                     continue
                 if record.get("status") == "answered" and context.get("routing") not in {"known_answer_fill", "document_generation"}:
                     continue
-                kind = route(current_book, record, context)
+                kind = route(current_book, record, context, job=context.get("_job"))
                 if (kind != CANDIDATE and row["state"] not in {"submitted", "skipped", "submission_uncertain", "discarded"}
                         and not any(task["ref"] == context.get("ref") for task in agent_tasks)):
                     agent_tasks.append({"question": _text(record.get("question")), "ref": _text(context.get("ref")),
@@ -1115,15 +1114,13 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     conn.commit()
                     queued = [key for key in affected if (row := conn.execute("SELECT state FROM applications WHERE job_hash=?", (key,)).fetchone())
                               and row[0] == "queued"]
-                    pending = store.book().get("question_handoffs", {}).values()
+                    current_states = dict(conn.execute("SELECT job_hash,state FROM applications"))
+                    pending = store.pending(book=store.book(), queue_states=current_states)
                     states = []
                     for key in affected:
                         row = conn.execute("SELECT state FROM applications WHERE job_hash=?", (key,)).fetchone()
-                        from .applications.question_routing import candidate_contexts
-                        current_book = store.book()
-                        remaining = sum(1 for q in pending if q.get("status") == "pending"
-                            and (context := candidate_contexts(current_book, q).get(key))
-                            and context.get("required") and not context.get("resolved"))
+                        remaining = sum(1 for q in pending for context in q["contexts"]
+                                        if context["job_hash"] == key and context["required"])
                         states.append({"job_hash": key, "state": row[0] if row else "untracked",
                                        "remaining_required_questions": remaining})
                 return {"status": "answered", "affected_jobs": affected, "resumed_jobs": queued,

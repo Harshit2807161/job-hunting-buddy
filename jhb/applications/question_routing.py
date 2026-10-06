@@ -25,7 +25,7 @@ def _shared_education(book):
         return {}  # Incomplete legacy profile metadata cannot establish facts.
     shared = {}
     for key, first in catalogs[0].items():
-        if not re.fullmatch(r"education\.\d+\.(?:school|degree|major|start_date|end_date|start_year|end_year)", key):
+        if not re.fullmatch(r"education\.\d+\.(?:school|degree|major|gpa|start_date|end_date|start_year|end_year|start_month|end_month)", key):
             continue
         records = [catalog.get(key, {}) for catalog in catalogs]
         if all(record.get("status") == "verified" and record.get("source")
@@ -35,32 +35,19 @@ def _shared_education(book):
     return shared
 
 
-def route(book, record, context):
-    """Distinguish candidate decisions from agent work using current verified facts.
-
-    A populated but incompatible native catalog remains a candidate decision.
-    An empty catalog cannot prove a stored fact is wrong: it needs native work.
-    Employer instructions and public-guided responses retain their existing gates.
-    """
-    label = record.get("question", "")
-    field = {"label": label, "ref": context.get("ref") or "", "type": context.get("type", "text"),
-             "required": context.get("required") is True, "country_context": record.get("country_context"),
-             "description": context.get("description", ""),
-             "description_truncated": context.get("description_truncated") is True,
-             "choices": context.get("choices", [])}
-    answers = dict(book.get("answers", {}))
+def catalog(book, record, context, *, job=None):
+    """Use the same verified catalog for handoff routing and native preparation."""
+    try:
+        answers = booklet.common_answers(book, job=job)
+    except (KeyError, ValueError, TypeError):
+        answers = dict(book.get("answers", {}))
     role = context.get("selected_role")
     if role in {"sde", "ml"}:
-        answers.update(booklet.for_role(book, role))
+        answers.update(booklet.for_role(book, role, job=job) if job else booklet.for_role(book, role))
     else:
+        answers = {key: item for key, item in answers.items() if not re.match(r"education\.\d+\.", key)}
         for key, item in _shared_education(book).items():
             answers.setdefault(key, item)
-    # These explicit standing policies are normally added by the worker. A
-    # legacy ledger must not turn their already-approved controls into questions.
-    policy = book.get("workflow_preferences", {})
-    if policy.get("office_locations"):
-        answers["standing.office_willingness"] = booklet.answer(
-            True, "Explicit user standing willingness to work at office/HQ locations")
     documents = book.get("job_document_answers", {}).get(context.get("job_hash"), {})
     if role in {"sde", "ml"} and documents.get("role") == role and "documents.cover_letter" in documents:
         answers["documents.cover_letter"] = documents["documents.cover_letter"]
@@ -68,6 +55,31 @@ def route(book, record, context):
                     if item.get("scope") == record.get("scope")
                     and (not item.get("job_hash") or item["job_hash"] == context.get("job_hash"))
                     and (not item.get("job_hashes") or context.get("job_hash") in item["job_hashes"])})
+    return answers
+
+
+def observed_field(record, context, *, job=None):
+    field = {"label": record.get("question", ""), "ref": context.get("ref") or "",
+             "type": context.get("type", "text"), "required": context.get("required") is True,
+             "country_context": record.get("country_context"),
+             "description": context.get("description", ""),
+             "description_truncated": context.get("description_truncated") is True,
+             "choices": context.get("choices", [])}
+    if job and not field["country_context"]:
+        booklet.annotate_work_country({"fields": [field]}, job)
+    return field
+
+
+def route(book, record, context, *, job=None):
+    """Distinguish candidate decisions from agent work using current verified facts.
+
+    A populated but incompatible native catalog remains a candidate decision.
+    An empty catalog cannot prove a stored fact is wrong: it needs native work.
+    Employer instructions and public-guided responses retain their existing gates.
+    """
+    label = record.get("question", "")
+    field = observed_field(record, context, job=job)
+    answers = catalog(book, record, context, job=job)
     # Public text can route an already-known exact Yes/No fact to the agent
     # awaiting native verification. It cannot supply a native binding or answer.
     metadata = context.get("public_question_metadata", {})
@@ -107,10 +119,10 @@ def route(book, record, context):
                 and government.get("status") == "verified" and government.get("source")
                 and government.get("value") is False):
             return KNOWN
-    return field_route(field, answers)
+    return field_route(field, answers, job=job)
 
 
-def field_route(field, answers):
+def field_route(field, answers, *, job=None):
     """Runtime interface: classify an observed field against already scoped answers."""
     from .planner import key_for_field
     from .review_inventory import candidate_wording_requested
@@ -136,13 +148,17 @@ def field_route(field, answers):
     scoped = dict(answers)
     observed = {**field, "options": field.get("options") or [
         {"label": choice} for choice in field.get("choices", []) if isinstance(choice, str)]}
-    enrich(observed, {}, scoped)
+    enrich(observed, job or {}, scoped)
     key = key_for_field(observed, scoped)
     item = scoped.get(key, {})
     if own_wording:
         from .review_inventory import candidate_response
         if not candidate_response(item):
             return CANDIDATE
+    if not own_wording and field.get("type") in {"combobox", "select", "radio", "multiselect"} and not observed["options"]:
+        from .known_answers import needs_catalog
+        if needs_catalog(observed, scoped):
+            return KNOWN  # Inspect the native catalog before asking for a known fact again.
     if item.get("status") not in {"verified", "declined"} or not item.get("source"):
         return CANDIDATE
     if item.get("status") == "declined":

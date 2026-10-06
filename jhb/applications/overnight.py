@@ -165,9 +165,22 @@ def _manifest(job, packet, book):
     role = choice.get("value") if choice.get("status") == "verified" else role_for_job(job)
     if role not in {"sde", "ml"}:
         raise ValueError("Submission needs a verified resume variant")
-    if any(q.get("status") == "pending" and q.get("contexts", {}).get(job["dedupe_hash"], {}).get("required")
-           and not q["contexts"][job["dedupe_hash"]].get("resolved")
-           for q in book.get("question_handoffs", {}).values()):
+    # The retained packet, not historical ledger entries, owns completion.
+    # Old unresolved records may refer to an earlier screen or ref; they must
+    # not veto a subsequently filled and independently audited application.
+    if any(item.get("required", True) for item in packet.get("missing", [])):
+        raise ValueError("Submission has an unresolved required question")
+    inventory = packet.get("review_inventory", {})
+    fields = inventory.get("fields", []) if isinstance(inventory, dict) else []
+    complete = inventory.get("complete") is True and bool(fields) and all(isinstance(f, dict) for f in fields)
+    if complete:
+        if any(f.get("required") and f.get("status") != "answered" for f in fields):
+            raise ValueError("Submission has an unresolved required question")
+    elif any(q.get("status") == "pending" and q.get("contexts", {}).get(job["dedupe_hash"], {}).get("required")
+             and not q["contexts"][job["dedupe_hash"]].get("resolved")
+             for q in book.get("question_handoffs", {}).values()):
+        # Compatibility packets without a complete inventory cannot establish
+        # that a pending record belongs to an obsolete screen.
         raise ValueError("Submission has an unresolved required question")
     answers = booklet.for_role(book, role)
     override = book.get("job_document_answers", {}).get(job["dedupe_hash"], {})

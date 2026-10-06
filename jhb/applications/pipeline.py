@@ -478,11 +478,13 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     replayed = replay_resolved_sources(conn)
     recovered = recover_technical_failures(conn)
     description_rechecks = recover_description_handoffs(conn)
-    from .answer_resume import recover as recover_saved_answers
+    from .answer_resume import recover as recover_saved_answers, recover_agent_work
     try:
         answered_rechecks = recover_saved_answers(conn, book_path)
+        agent_rechecks = recover_agent_work(conn, book_path)
     except (OSError, ValueError):
         answered_rechecks = 0  # Missing profile keeps its existing explicit handoff.
+        agent_rechecks = 0
     notify_source_handoffs(conn, send_email=send_email)
     summary = {"sources_checked": 0, "boards": {}, "applications_queued": replayed, "sources_replayed": replayed,
                "authenticated_sources_requeued": local_rechecks,
@@ -493,6 +495,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     summary["sources_history_blocked"] = sources_history_blocked
     summary["applications_history_blocked"] = applications_history_blocked
     summary["description_handoffs_requeued"] = description_rechecks
+    summary["known_work_requeued"] = agent_rechecks
     sources = []
     if heartbeat:
         heartbeat.update(stage="source_resolution", summary=summary)
@@ -605,7 +608,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     # answered questions. Never leave a stale outbox after successful resumption.
     try:
         from .questions import pending
-        pending_questions = pending(book_path)
+        pending_questions = pending(book_path, connection=conn)
     except (FileNotFoundError, ValueError):
         pending_questions = None
     if pending_questions is not None:

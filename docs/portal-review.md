@@ -169,6 +169,22 @@ states, receipts, approvals or browser fields. Preparation scheduling remains a
 separate guarded step. Candidate lists and emails also route contexts dynamically,
 so stale cards cannot overwrite known facts while reconciliation is pending.
 
+The pipeline now calls `answer_resume.recover_agent_work` independently of saved
+user-response recovery. It queues current known-answer and document tasks once
+per relevant input fingerprint, including actual document bytes. Regenerated
+control IDs and packet timestamps do not create unlimited retries. Changed
+verified facts or real choices can permit a new attempt. This grants preparation
+only; reviewed drafts, active approvals, uncertain attempts, exclusions,
+discards and application history remain protected.
+
+The shared `question_lifecycle.current_context` predicate binds candidate cards,
+counts, answer-save feedback and question emails to the current waiting-input
+packet's exact job, field, question, requiredness, country, help and choices.
+Filled fields, superseded packets and applications in other states are excluded.
+Historical records are retained. The current packet and complete inventory own
+submission completeness; an obsolete ledger question cannot veto a later
+independently checked review.
+
 The review also warns when a different posting at the same company has the same
 full title as a recorded confirmed application. It shows both locations and links
 the earlier portal record. Different posting IDs do not establish different

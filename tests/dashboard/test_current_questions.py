@@ -128,3 +128,19 @@ def test_pure_lifecycle_helper_requires_current_identity_and_explicit_blocking(p
     assert current_context(data, q, context, row, packet)
     assert not current_context(data, q, context, row, packet, blocked=True)
     assert (data, q, context, packet) == before
+
+
+def test_answer_feedback_uses_same_remaining_count_as_current_input_cards(portal):
+    root, conn, book, client, headers = portal
+    job, folder, _ = add_job(conn, root, state="waiting_input")
+    live = pending_question(job, book)
+    archived = pending_question(job, book, "An old employer question?", "old")
+    packet = json.loads((folder / "packet.json").read_text())
+    packet["missing"] = [item for item in packet["missing"] if item["ref"] != "old"]
+    booklet.write_private(folder / "packet.json", packet)
+    reply = client.post(f"/api/v1/questions/{live['id']}/answer", headers=headers,
+                        json={"value": True, "revision": live["updated_at"]})
+    assert reply.status_code == 200
+    assert reply.json()["applications"][0]["remaining_required_questions"] == 0
+    assert client.get("/api/v1/overview").json()["summary"]["questions"] == 0
+    assert booklet.load(book)["question_handoffs"][archived["id"]]["status"] == "pending"

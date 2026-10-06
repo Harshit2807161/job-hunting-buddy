@@ -505,7 +505,7 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     except (ValueError, RuntimeError) as inspection_error:
                         raise BrowserOperationError("Verified answer needs a native field inspection", retryable=True) from inspection_error
                 from .question_routing import CANDIDATE, field_route
-                if field_route(observed, answers) != CANDIDATE:
+                if field_route(observed, answers, job=job) != CANDIDATE:
                     raise BrowserOperationError("Verified answer needs a field repair", retryable=True) from exc
                 if field["required"]:
                     missing.append(_question(observed, key, "Observed choices need a more specific answer"))
@@ -737,7 +737,7 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
             result = {"state": fit.get("state", "unsupported"), "reason": fit["reason"], "role_fit": fit,
                       "events": [{"event": "role_fit_handoff"}], "filled": [], "missing": []}
             return result, await persist(None, directory, job, result)
-    answers = booklet.for_role(book, selected_role)
+    answers = booklet.for_role(book, selected_role, job=job)
     start_month = _verified_start_month(answers.get("preferences.start_date", {}))
     if start_month:
         answers["standing.start_month"] = start_month

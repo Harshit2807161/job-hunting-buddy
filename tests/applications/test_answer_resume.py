@@ -99,6 +99,12 @@ def test_saved_user_response_can_resume_with_remaining_worker_document_task(cont
     assert answer_resume.recover(conn, path) == 1
 
 
+def test_old_unanswered_ledger_question_does_not_block_current_saved_response(context):
+    conn, path, job, packet, packet_path, question = context
+    questions.collect(job, {"missing": [{"question": "Retired employer question", "ref": "old", "required": True}]}, path)
+    assert answer_resume.recover(conn, path) == 1
+
+
 def test_routing_worker_tasks_alone_never_triggers_answer_recovery(context):
     conn, path, job, packet, packet_path, question = context
     packet['missing'] = [{'question': 'Cover Letter', 'ref': 'cover_letter',

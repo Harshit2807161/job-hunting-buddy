@@ -25,6 +25,22 @@ explicit signature preference. User-approved school/major catalog fallbacks appl
 only after the actual answer is absent, with original education facts retained. A generic checkbox label such as Accept must include its
 associated description before it can receive an approved answer.
 
+Question routing and native filling share `booklet.common_answers` and the
+selected role catalog. Resolve observed wording, owned instructions, exact job
+country and native choices against that catalog before creating a handoff.
+An unopened dropdown, failed selection or missing generated cover letter is
+agent work; it is not evidence that the candidate needs to answer again.
+Keep the original indexed education record and distinguish present/future
+sponsorship and current/lifetime disclosures. Never widen a verified fact to
+fit a different question. A known answer can resume preparation without a new
+candidate reply; retry unchanged failed work only through bounded technical
+recovery, not an endless question/resume loop.
+
+The question ledger retains history. Candidate input belongs only to exact
+unresolved controls in the application's current waiting-input packet. Old
+login screens, discarded jobs, submitted jobs and earlier form revisions must
+not appear as current questions or block approval of a complete review.
+
 Use only the worker's approved field/key pairs. Repeated education controls map
 to their indexed education record, never all to the first institution. The worker
 adds supported education rows and observes again after filling, including fields
