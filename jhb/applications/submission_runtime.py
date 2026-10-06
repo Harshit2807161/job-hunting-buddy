@@ -230,7 +230,9 @@ def _reviewed_probe_answers(request, packet, attempt, approved):
     """
     derived = [r for r in packet.get("filled", [])
                if str(r.get("key", "")).startswith("standing.observed.")]
-    if not derived:
+    from .education_categories import projection, scoped
+    categories = [r for r in packet.get("filled", []) if projection(r)]
+    if not derived and not categories:
         return approved
     binding = attempt.get("review_binding")
     if not binding and request.get("authorization_path"):
@@ -261,6 +263,14 @@ def _reviewed_probe_answers(request, packet, attempt, approved):
     if _facts(book, job, role) != binding.get("facts_sha256"):
         raise ValueError("Reviewed catalog facts changed")
     catalog, probes = booklet.for_role(book, role, job=job), dict(approved)
+    for row in categories:
+        saved = book.get("custom_answers", {}).get(row.get("key"), {})
+        if (not str(row.get("key", "")).startswith("custom.") or not projection(saved)
+                or saved.get("value") != row.get("value") or saved.get("source") != row.get("source")
+                or saved.get("field_ref") != row.get("ref") or saved.get("proposed") is not True
+                or row.get("proposed") is not True):
+            raise ValueError("Employer category differs from its reviewed original facts")
+        probes[row["key"]] = scoped(saved, book, job)
     for row in derived:
         source = row.get("source", {})
         records = source.get("records") if isinstance(source, dict) else None
@@ -373,7 +383,8 @@ def _checks(request, helpers, packet, attempt):
         # These projections additionally recheck their original source facts.
         # probe_answers contains only facts validated against this exact review
         # binding by _reviewed_probe_answers; retained values remain immutable.
-        key = key_for_field(field, probe_answers if normalize(field['label']) in PROFILE_QUESTIONS else approved)
+        from .education_categories import projection
+        key = key_for_field(field, probe_answers if normalize(field['label']) in PROFILE_QUESTIONS or projection(record) else approved)
         catalog = re.fullmatch(r"standing\.catalog\.(\d+)\.(school|major)", record["key"])
         catalog_ref = f"{'discipline' if catalog and catalog[2] == 'major' else 'school'}--{catalog[1]}" if catalog else None
         catalog_match = catalog and field["ref"] == catalog_ref

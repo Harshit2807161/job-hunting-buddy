@@ -143,6 +143,9 @@ def key_for_field(field, answers):
                 continue
             if item.get("country_context") and item["country_context"] != field.get("country_context"):
                 continue
+            from .education_categories import projection, valid
+            if projection(item) and not valid(field, item):
+                return None  # A proposed category cannot outlive its original degree/context.
             if key.startswith("custom.profile."):
                 source = item.get("source", {})
                 if not isinstance(source, dict):

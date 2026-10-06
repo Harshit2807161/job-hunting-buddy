@@ -200,7 +200,8 @@ def _question(field, key, reason=""):
 
 def _scoped_custom_answers(book, job, scope):
     """Portal answers apply only to the application contexts the user saw."""
-    return {key: item for key, item in book.get("custom_answers", {}).items()
+    from .education_categories import scoped
+    return {key: scoped(item, book, job) for key, item in book.get("custom_answers", {}).items()
             if scope is not None and item.get("scope") == scope
             and (not item.get("job_hash") or item["job_hash"] == job["dedupe_hash"])
             and (not item.get("job_hashes") or job["dedupe_hash"] in item["job_hashes"])}

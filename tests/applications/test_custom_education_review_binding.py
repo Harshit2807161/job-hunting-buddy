@@ -11,7 +11,7 @@ from jhb.applications.booklet import write_private
 from tests.applications.test_authorized_submission import HTML, evidence, synthetic_runtime
 
 
-SOURCE = {'kind': 'employer_category_projection', 'candidate_confirmation': False,
+SOURCE = {'kind': 'synthetic_scoped_answer', 'candidate_confirmation': False,
           'actual_value': 'Synthetic original major', 'category_only': True,
           'original_source': 'Synthetic verified education record'}
 NATIVE = {'ref': 'discipline--0', 'label': 'Discipline*', 'type': 'select', 'required': True,
