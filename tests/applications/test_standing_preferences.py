@@ -181,7 +181,7 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
     asyncio.run(worker.run_job(job, book, planner_name="deterministic", artifacts=tmp_path))
     assert not any(key.startswith("standing.") for key in captured)
 
-    book["workflow_preferences"] = {"office_locations": True, "relocation": True,
+    book["workflow_preferences"] = {"office_locations": {"value": True, "source": "synthetic explicit office preference"}, "relocation": True,
                                      "career_fair_contact": True,
                                      "preferred_first_name": {"required": "use identity.first_name"}}
     asyncio.run(worker.run_job(job, book, planner_name="deterministic", artifacts=tmp_path))
@@ -192,6 +192,9 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
     assert captured["standing.location_relocation"]["value"] == "I am currently based in Example Metro, CA and am open to relocating anywhere."
     assert captured["standing.location_relocation"]["source"]["location_source"] == "synthetic application-city instruction"
     assert "Different Mailing City" not in captured["standing.location_relocation"]["value"]
+    book["workflow_preferences"]["office_locations"] = {"value": False, "source": "synthetic explicit office refusal"}
+    asyncio.run(worker.run_job(job, book, planner_name="deterministic", artifacts=tmp_path))
+    assert captured.get("standing.office_willingness", {}).get("value") is not True
 
 
 def test_school_attendance_uses_original_verified_catalog_not_dropdown_other_mapping(monkeypatch, tmp_path):

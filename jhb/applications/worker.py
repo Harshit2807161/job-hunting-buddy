@@ -763,8 +763,8 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
             "Verified original education records, independent of employer dropdown mappings")
     if policy.get("preferred_first_name", {}).get("required") == "use identity.first_name":
         answers["standing.required_preferred_name"] = answers["identity.first_name"]
-    if policy.get("office_locations"):
-        answers["standing.office_willingness"] = booklet.answer(True, "Explicit user standing willingness to work at office/HQ locations")
+    # Office willingness is already sourced by the shared catalog. A truthy
+    # policy container may hold an explicit No and must never become Yes here.
     if policy.get("career_fair_contact"):
         answers["standing.career_fair_contact"] = booklet.answer("N/A", "Explicit user standing rule: no invented career-fair contacts")
     if policy.get("relocation") and "preferences.application_city" in answers:

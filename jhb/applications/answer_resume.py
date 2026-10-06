@@ -19,6 +19,9 @@ from . import boards, booklet, questions
 
 
 MAX_PACKET_BYTES = 2 * 1024 * 1024
+# Bump only after a resolver/native-inspection repair passes its checks. It
+# re-arms previously blocked known work once, without resetting user authority.
+AGENT_WORK_VERSION = 2
 
 AGENT_RECOVERY_SCHEMA = """CREATE TABLE IF NOT EXISTS answer_work_recovery (
  job_hash TEXT NOT NULL,
@@ -69,7 +72,7 @@ def _work_signature(book, record, context, job):
     # Most native IDs are regenerated on every visit. The ledger ID already
     # separates employer, question, country and indexed education controls.
     field.pop("ref", None)
-    payload = {"version": 1, "kind": kind, "field": field, "facts": facts,
+    payload = {"version": AGENT_WORK_VERSION, "kind": kind, "field": field, "facts": facts,
                "role": context.get("selected_role"), "description": description}
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return (record["id"], digest)

@@ -105,6 +105,16 @@ def test_control_id_churn_cannot_rearm_the_same_known_work(work):
     assert answer_resume.recover_agent_work(conn, path) == 0
 
 
+def test_validated_resolver_revision_allows_one_new_recovery(work, monkeypatch):
+    conn, path, *_ = work
+    assert answer_resume.recover_agent_work(conn, path) == 1
+    conn.execute("UPDATE applications SET state='waiting_input'"); conn.commit()
+    monkeypatch.setattr(answer_resume, "AGENT_WORK_VERSION", answer_resume.AGENT_WORK_VERSION + 1)
+    assert answer_resume.recover_agent_work(conn, path) == 1
+    conn.execute("UPDATE applications SET state='waiting_input'"); conn.commit()
+    assert answer_resume.recover_agent_work(conn, path) == 0
+
+
 def test_stale_required_ledger_does_not_veto_current_complete_review(work):
     from jhb.applications.overnight import _manifest
     conn, path, job, packet, packet_path = work
