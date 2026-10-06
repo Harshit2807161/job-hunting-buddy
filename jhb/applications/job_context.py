@@ -176,6 +176,43 @@ def country_context(text):
     return found[0]
 
 
+def greenhouse_country(data):
+    """Use attached offices only when every explicit country agrees.
+
+    Greenhouse's main location may contain just a city while its exact-job
+    office records name the country. Unknown or conflicting office countries
+    cannot establish one jurisdiction, nor override a different primary one.
+    """
+    location = data.get("location", {})
+    if not isinstance(location, dict) or not isinstance(location.get("name", ""), str):
+        return None
+    label = location.get("name", "")
+    primary = country_context(label)
+    offices = data.get("offices")
+    if offices is None or offices == []:
+        return primary
+    if not isinstance(offices, list) or any(not isinstance(office, dict) for office in offices):
+        return None
+    countries = {country_context(office.get("location")) for office in offices}
+    if None in countries or len(countries) != 1:
+        return None
+    country = next(iter(countries))
+    if primary is not None:
+        return primary if primary == country else None
+    # An ambiguous/negated primary country is different from a city-only label.
+    if any(re.search(pattern, label, re.I) for pattern in _COUNTRIES.values()):
+        return None
+    # An unrecognized primary label might name an unsupported country. Only
+    # accept it as the city/region prefix of an attached office, or a generic
+    # remote/empty label; never replace an unrelated primary location.
+    normalized = re.sub(r"\s+", " ", label).strip().casefold()
+    if normalized not in {"", "remote"} and not any(
+            re.sub(r"\s+", " ", office["location"]).strip().casefold().startswith(normalized + ",")
+            for office in offices):
+        return None
+    return country
+
+
 def fetch(joburl, *, opener=None):
     """GET a validated global Greenhouse job; failures provide no metadata.
 
@@ -217,7 +254,7 @@ def fetch(joburl, *, opener=None):
         if not isinstance(location, str) or not isinstance(name, str):
             return {}
         result = {"location": location.strip(), "name": name.strip(),
-                  "country_context": country_context(location), "source_url": api_url}
+                  "country_context": greenhouse_country(data), "source_url": api_url}
         content = data.get("content")
         if isinstance(content, str) and content.strip():
             from .salary import advertised_ranges

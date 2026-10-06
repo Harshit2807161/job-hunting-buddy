@@ -274,12 +274,10 @@ def fetch_description(job, *, timeout=15):
     text = plain_text(data["content"])
     if not text.strip():
         raise ValueError("Official description contains no readable job text")
-    from .applications.job_context import country_context
-    location = data.get("location", {})
-    location = location.get("name", "") if isinstance(location, dict) else ""
+    from .applications.job_context import greenhouse_country
     return {"text": text, "source_url": url, "retrieved_at": int(time.time()),
             "sha256": hashlib.sha256(text.encode()).hexdigest(), "status": "verified",
-            "title": data.get("title", ""), "country_context": country_context(location)}
+            "title": data.get("title", ""), "country_context": greenhouse_country(data)}
 
 
 def verified_description(job):

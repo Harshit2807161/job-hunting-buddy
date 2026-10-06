@@ -97,6 +97,38 @@ def test_city_only_metadata_does_not_assume_a_country():
     assert job_context.fetch(URL, opener=lambda *a, **kw: response(data))["country_context"] is None
 
 
+@pytest.mark.parametrize("primary,offices,expected", [
+    ("San Francisco", ["San Francisco, California, United States"], "United States"),
+    ("Remote", ["Boston, United States", "New York, United States"], "United States"),
+    ("Remote, Canada", ["Toronto, Canada", "Vancouver, Canada"], "Canada"),
+    ("Remote, Canada", ["San Francisco, United States"], None),
+    ("Remote", ["Toronto, Canada", "San Francisco, United States"], None),
+    ("San Francisco", ["San Francisco, United States", "London"], None),
+    ("Remote, United States", ["San Francisco"], None),
+    ("San Francisco", ["San Francisco"], None),
+    ("San Francisco", [], None),
+    ("USA / Canada", ["San Francisco, United States"], None),
+    ("Remote outside Canada", ["Toronto, Canada"], None),
+    ("Berlin, Germany", ["San Francisco, United States"], None),
+    ("Remote, Germany", ["San Francisco, United States"], None),
+])
+def test_exact_job_office_country_requires_unanimous_explicit_metadata(monkeypatch, primary, offices, expected):
+    from types import SimpleNamespace
+    from jhb import eligibility
+    data = {"id": 123, "title": "Synthetic Engineer", "location": {"name": primary},
+            "offices": [{"location": location} for location in offices],
+            "content": "<p>Develop application software.</p>"}
+    assert job_context.fetch(URL, opener=lambda *a, **kw: response(data))["country_context"] == expected
+    monkeypatch.setattr(eligibility.urllib.request, "build_opener",
+                        lambda *a: SimpleNamespace(open=lambda *a, **kw: response(data)))
+    assert eligibility.fetch_description({"url": URL})["country_context"] == expected
+
+
+@pytest.mark.parametrize("offices", [{"location": "USA"}, [None], [{"name": "USA"}], [{"location": ["USA"]}]])
+def test_malformed_attached_offices_cannot_establish_country(offices):
+    assert job_context.greenhouse_country({"location": {"name": "Remote"}, "offices": offices}) is None
+
+
 def test_redirected_response_metadata_is_rejected():
     class Redirected(io.BytesIO):
         def geturl(self):
