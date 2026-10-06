@@ -300,6 +300,39 @@ def test_workday_unowned_experience_progress_text_does_not_create_records():
             call("records", kind="education", count=1)
 
 
+@pytest.mark.parametrize("end_legend", ["To (Actual or Expected)", "To (Completed only)"])
+def test_workday_year_only_education_uses_original_index_and_explicit_expected_context(end_legend):
+    from jhb.applications.booklet import answer
+    from jhb.applications.planner import key_for_field
+    rows = []
+    for index, dom_index in enumerate((6, 15)):
+        rows.append(f'<input id=education-{dom_index}--schoolName aria-label=School>')
+        for suffix, legend in (("firstYearAttended", "From"), ("lastYearAttended", end_legend)):
+            base = f'education-{dom_index}--{suffix}'
+            rows.append(f'''<div data-fkit-id="{base}"><fieldset><legend>{legend}</legend>
+              <input role=spinbutton aria-label=Year id="{base}-dateSectionYear-input"></fieldset></div>''')
+    with fixture_runtime(''.join(rows)) as (call, inspect, helpers, lane):
+        fields = {f["ref"]: f for f in call("observe")["fields"]}
+        answers = {"education.0.start_year": answer("2025", "Synthetic expected MS"),
+                   "education.0.end_year": answer("2026", "Synthetic expected MS"),
+                   "education.1.start_year": answer("2021", "Synthetic completed BS"),
+                   "education.1.end_year": answer("2025", "Synthetic completed BS")}
+        assert len(fields) == 6
+        for index in (0, 1):
+            start = fields[f'start-year--{index}']
+            assert key_for_field(start, answers) == f'education.{index}.start_year'
+            assert call('fill', field=start, value=answers[f'education.{index}.start_year']['value'])['verified'] is True
+            if end_legend == "To (Actual or Expected)":
+                end = fields[f'end-year--{index}']
+                assert key_for_field(end, answers) == f'education.{index}.end_year'
+                assert call('fill', field=end, value=answers[f'education.{index}.end_year']['value'])['verified'] is True
+            else:
+                end = next(f for f in fields.values() if f['ref'].startswith('workday-year:') and f['education_index'] == index)
+                assert key_for_field(end, answers) is None
+        with pytest.raises(ValueError, match='four-digit year'):
+            call('fill', field=fields['start-year--0'], value='2025-09')
+
+
 def test_workday_hidden_renderer_wakes_only_owned_guarded_tab_before_safe_press():
     with fixture_runtime() as (call, inspect, helpers, lane):
         snapshot = call("observe")

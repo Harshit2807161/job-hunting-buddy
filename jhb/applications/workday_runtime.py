@@ -66,20 +66,31 @@ FIELDS = r"""(()=>{
   const suffix=e.id.split('--').slice(1).join('--');
   const education={schoolName:'school',degree:'degree',fieldOfStudy:'discipline',gradeAverage:'gpa'};
   if(ed>=0&&education[suffix])ref=education[suffix]+'--'+ed;
-  let date=null;
+  let date=null,date_required=false;
   const segmented=e.id.match(/^(.*)-(dateSectionMonth|dateSectionYear|dateSectionDay)-input$/);
   if(segmented){
    const base=segmented[1];if(dates.has(base))continue;dates.add(base);
    const part=s=>document.getElementById(base+'-dateSection'+s+'-input');
-   if(!part('Month')||!part('Year'))continue;
-   kind='date';date={base,day:!!part('Day')};ref='workday-date:'+base;
-   if(ed>=0&&/--(startDate|endDate)$/.test(base))ref=(base.endsWith('--startDate')?'start_date':'end_date')+'--'+ed;
-   title=base.endsWith('--startDate')?'Start date':base.endsWith('--endDate')?'End date':title;
+   const owner=e.closest('[data-fkit-id]'),owned=owner?.getAttribute('data-fkit-id')===base;
+   const legend=owned?owner.querySelector('fieldset > legend'):null;
+   date_required=!!legend&&[...legend.querySelectorAll('abbr')].some(a=>a.innerText.trim()==='*');
+   if(!part('Month')||!part('Year')){
+    const column=base.endsWith('--firstYearAttended')?'start':base.endsWith('--lastYearAttended')?'end':null;
+    if(ed<0||segmented[2]!=='dateSectionYear'||part('Month')||part('Day')||!column||!legend)continue;
+    kind='number';date={base,year_only:true};ref='workday-year:'+base;title=legend.innerText.trim()+' year';
+    if((column==='start'&&legend.innerText.trim()==='From')||(column==='end'&&legend.innerText.trim()==='To (Actual or Expected)')){
+     ref=column+'-year--'+ed;title=(column==='start'?'Start':'End')+' date year';
+    }
+   }else{
+    kind='date';date={base,day:!!part('Day')};ref='workday-date:'+base;
+    if(ed>=0&&/--(startDate|endDate)$/.test(base))ref=(base.endsWith('--startDate')?'start_date':'end_date')+'--'+ed;
+    title=base.endsWith('--startDate')?'Start date':base.endsWith('--endDate')?'End date':title;
+   }
   }
   const columns={jobTitle:'title',companyName:'company',location:'location',roleDescription:'summary',currentlyWorkHere:'current'};
   let record_column=ed>=0?({schoolName:'school',degree:'degree',fieldOfStudy:'major',gradeAverage:'gpa'}[suffix]||null):exp>=0?(columns[suffix]||null):null;
   if(date&&(ed>=0||exp>=0))record_column=date.base.endsWith('--startDate')?'start_date':date.base.endsWith('--endDate')?'end_date':null;
-  fields.push({ref,actual_id:e.id,file_index,label:title,type:kind,widget:catalog?'catalog':'native',required:e.required||file_required||e.getAttribute('aria-required')==='true'||/\bRequired\s*$/.test(e.getAttribute('aria-label')||''),
+  fields.push({ref,actual_id:e.id,file_index,label:title,type:kind,widget:catalog?'catalog':'native',required:e.required||file_required||date_required||e.getAttribute('aria-required')==='true'||/\bRequired\s*$/.test(e.getAttribute('aria-label')||''),
    education_index:ed>=0?ed:null,experience_index:exp>=0?exp:null,date,
    record_kind:ed>=0?'education':exp>=0?'experience':null,record_index:ed>=0?ed:exp>=0?exp:null,record_column,
    separate_phone_country:e.id==='phoneNumber--phoneNumber'&&!!document.getElementById('phoneNumber--countryPhoneCode'),
@@ -406,6 +417,14 @@ def dispatch(request, helpers):
     if operation == "describe":
         return {"choices": [o["label"] for o in field.get("options", [])], "type": field["type"]}
     value = request["value"]
+    if field["type"] == "number" and (field.get("date") or {}).get("year_only"):
+        if not isinstance(value, str) or not re.fullmatch(r"[1-9]\d{3}", value):
+            raise ValueError("Workday year-only education control requires an approved four-digit year")
+        type_value(node_for_field(field), value, segmented=True)
+        retained = read(field)
+        if not retained or retained.get("value") != value or retained.get("invalid"):
+            raise ValueError("Workday year-only education control did not retain its approved year")
+        return {"verified": True}
     if field["type"] == "radio":
         matches = [o for o in field["options"] if option_matches(o["label"], value, field_label=field["label"])]
         if len(matches) != 1:
