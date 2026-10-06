@@ -225,6 +225,13 @@ def key_for_field(field, answers):
         return "preferences.relocation"
     for key, aliases in ALIASES.items():
         if label in aliases and key in answers:
+            if key == "role.education" and (field.get("type") not in {"text", "textarea"}
+                    or field.get("record_kind") == "education"
+                    or str(field.get("ref", "")).startswith("ashby:_systemfield_education_history:control:")):
+                # A repeated education row may expose its aggregate heading
+                # before the adapter recognizes the inner school/date labels.
+                # The whole resume section cannot answer any such control.
+                return None
             if key == "eligibility.sponsorship_future":
                 from .known_answers import catalog_basis
                 if not catalog_basis(field, answers):

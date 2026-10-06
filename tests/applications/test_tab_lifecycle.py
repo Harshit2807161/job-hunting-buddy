@@ -194,9 +194,11 @@ def test_capacity_stops_before_new_target_but_allows_existing_reuse(owned,monkey
         owner.new_tab(OTHER)
     assert browser.new_calls==before and browser.created==[target]
     assert owner.new_tab(URL)==target and browser.new_calls==before
-    # Reusing the user's own blank cannot add an owned tab or claim that blank.
+    # A personal blank must not bypass the occupied application budget.
     browser.tabs['user']['url']='about:blank';browser.switch('user')
-    assert owner.new_tab(OTHER)=='user' and 'user' not in owner.tabs
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab(OTHER)
+    assert browser.tabs['user']['url']=='about:blank' and 'user' not in owner.tabs
 
 
 def test_default_pool_preserves_five_drafts_and_one_readonly_source_slot(owned):
@@ -212,6 +214,98 @@ def test_default_pool_preserves_five_drafts_and_one_readonly_source_slot(owned):
     with pytest.raises(TabCapacityReached):
         owner.new_tab(SOURCE.replace('1234567890', '9876543210'), purpose='source_readonly')
     assert not browser.closed
+
+
+def restored(browser, target, url):
+    browser.tabs[target] = {'targetId': target, 'url': url, 'body': 'Retained user draft', 'nodes': []}
+
+
+def test_restored_ats_targets_consume_capacity_without_becoming_owned(owned, monkeypatch):
+    owner, browser, root = owned
+    monkeypatch.setenv('JHB_MAX_OWNED_TABS', '3')
+    restored(browser, 'restored-one', URL)
+    restored(browser, 'restored-two', OTHER)
+    assert owner._count(owner.refresh()) == 2
+    assert owner.tabs == {} and not owner.path.exists()
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab('https://job-boards.greenhouse.io/example/jobs/123')
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    assert owner._count(owner.refresh()) == 3
+    assert owner.new_tab(URL) == 'restored-one'  # reuse remains possible at capacity
+    assert list(owner.tabs) == [source]
+    assert owner.cleanup() == [] and not browser.closed
+    assert 'restored-one' not in json.loads(owner.path.read_text())['tabs']
+
+
+def test_duplicate_unowned_job_tabs_each_consume_a_slot_and_remain_ambiguous(owned):
+    owner, browser, _ = owned
+    restored(browser, 'first', URL)
+    restored(browser, 'second', URL)
+    assert owner._count(owner.refresh()) == 2
+    with pytest.raises(ValueError, match='Multiple exact job tabs'):
+        owner.new_tab(URL)
+    assert not browser.new_calls and not browser.closed and not owner.tabs
+
+
+def test_personal_and_non_job_tabs_do_not_consume_application_budget(owned):
+    owner, browser, _ = owned
+    for index, url in enumerate(['https://www.google.com/', 'https://mail.google.com/',
+                                 'https://example.test/jobs/123', 'https://jobs.ashbyhq.com/example',
+                                 'https://www.linkedin.com/jobs/view/9876543210/']):
+        restored(browser, f'personal-{index}', url)
+    assert owner._count(owner.refresh()) == 0
+    target = owner.new_tab(URL)
+    assert owner._count(owner.refresh()) == 1  # owned and recognized are not counted twice
+    assert list(owner.tabs) == [target]
+
+
+def test_retargeted_draft_counts_without_transferring_old_ownership(owned):
+    owner, browser, _ = owned
+    old = owner.new_tab(URL)
+    browser.tabs.pop(old)
+    restored(browser, 'restored', URL)
+    owner.refresh()
+    assert owner.tabs[old]['state'] == 'departed'
+    assert owner._count(owner.refresh()) == 1
+    assert owner.new_tab(URL) == 'restored' and 'restored' not in owner.tabs
+    assert not browser.closed
+
+
+def test_unclaimed_ats_popup_is_not_double_charged_for_readonly_source(owned, monkeypatch):
+    owner, browser, _ = owned
+    monkeypatch.setenv('JHB_MAX_OWNED_TABS', '2')
+    restored(browser, 'unclaimed', URL)
+    owner.unclaimed['unclaimed'] = {'state': 'active', 'url': URL}
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    assert owner._count(owner.refresh()) == 2
+    assert source in owner.tabs and 'unclaimed' not in owner.tabs
+    assert not browser.closed
+
+
+def test_borrowed_ats_targets_block_native_apply_before_a_new_destination(owned, monkeypatch):
+    owner, browser, _ = owned
+    monkeypatch.setenv('JHB_MAX_OWNED_TABS', '2')
+    restored(browser, 'one', URL)
+    restored(browser, 'two', OTHER)
+    with pytest.raises(TabCapacityReached):
+        owner.before_apply_click()
+    assert owner._apply_clicked is False and not browser.new_calls and not browser.closed
+
+
+def test_ten_restored_jobs_leave_one_draft_and_one_source_slot_at_cap_twelve(owned, monkeypatch):
+    owner, browser, _ = owned
+    monkeypatch.setenv('JHB_MAX_OWNED_TABS', '12')
+    for index in range(10):
+        restored(browser, f'restored-{index}', f'https://job-boards.greenhouse.io/example/jobs/{index+1}')
+    target = owner.new_tab(URL)
+    source = owner.new_tab(SOURCE, purpose='source_readonly')
+    assert owner._count(owner.refresh()) == 12
+    assert owner.new_tab(URL) == target and owner.new_tab(SOURCE, purpose='source_readonly') == source
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab(OTHER)
+    with pytest.raises(TabCapacityReached):
+        owner.new_tab(SOURCE.replace('1234567890', '9876543210'), purpose='source_readonly')
+    assert len(owner.tabs) == 2 and not browser.closed
 
 
 def test_capacity_before_native_apply_preserves_readonly_cleanup_witness(owned):

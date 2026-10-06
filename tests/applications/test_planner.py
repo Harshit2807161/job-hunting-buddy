@@ -102,3 +102,41 @@ def test_repeated_controls_cannot_receive_conflicting_bindings():
     binding = {"ref": "email", "answer_key": "identity.email"}
     with pytest.raises(ValueError, match="duplicate"):
         validate_plan({"bindings": [binding, binding], "next_ref": None, "reason": "duplicate"}, snapshot, answers)
+
+
+@pytest.mark.parametrize('kind', ['combobox', 'select', 'multiselect', 'radio', 'checkbox', 'date', 'number'])
+def test_education_section_cannot_fill_structured_controls(kind):
+    answers = {'role.education': booklet.answer('Synthetic University; MSc, expected 2027', 'synthetic resume')}
+    snapshot = {'fields': [{'ref': 'education-inner', 'label': 'Education History', 'type': kind}], 'buttons': []}
+    assert deterministic_plan(snapshot, answers)['bindings'] == []
+    with pytest.raises(ValueError, match='reinterpret'):
+        validate_plan({'bindings': [{'ref': 'education-inner', 'answer_key': 'role.education'}],
+                       'next_ref': None, 'reason': 'Aggregate section is not a native choice'}, snapshot, answers)
+
+
+@pytest.mark.parametrize('metadata', [
+    {'ref': 'ashby:_systemfield_education_history:control:1'},
+    {'ref': 'row', 'record_kind': 'education'},
+])
+def test_education_section_cannot_fill_structured_text_row(metadata):
+    answers = {'role.education': booklet.answer('Synthetic education section', 'synthetic resume')}
+    snapshot = {'fields': [{'label': 'Education History', 'type': 'text', **metadata}], 'buttons': []}
+    assert deterministic_plan(snapshot, answers)['bindings'] == []
+
+
+@pytest.mark.parametrize('kind', ['text', 'textarea'])
+def test_education_summary_prose_remains_supported(kind):
+    answers = {'role.education': booklet.answer('Synthetic education section', 'synthetic resume')}
+    snapshot = {'fields': [{'ref': 'summary', 'label': 'Education History', 'type': kind}], 'buttons': []}
+    assert validate_plan(deterministic_plan(snapshot, answers), snapshot, answers)['bindings'] == [
+        {'ref': 'summary', 'answer_key': 'role.education'}]
+
+
+def test_scoped_exact_inner_education_answer_remains_supported():
+    ref = 'ashby:_systemfield_education_history:control:0'
+    answers = {'role.education': booklet.answer('Whole education section', 'synthetic resume'),
+               'custom.school': {**booklet.answer('Synthetic University', 'explicit scoped candidate response'),
+                                 'question': 'Education History', 'field_ref': ref}}
+    snapshot = {'fields': [{'ref': ref, 'label': 'Education History', 'type': 'combobox'}], 'buttons': []}
+    assert validate_plan(deterministic_plan(snapshot, answers), snapshot, answers)['bindings'] == [
+        {'ref': ref, 'answer_key': 'custom.school'}]

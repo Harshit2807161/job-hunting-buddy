@@ -22,7 +22,7 @@ from .booklet import normalize, write_private
 DISPATCHERS = {"jhb.applications.cli_runtime", "jhb.applications.manual_runtime",
                "jhb.applications.submission_runtime", "jhb.applications.linkedin_runtime",
                "jhb.applications.workday_runtime"}
-CAPACITY_MESSAGE = "Worker-owned browser tab capacity reached"
+CAPACITY_MESSAGE = "Application browser tab capacity reached"
 PNG = b"\x89PNG\r\n\x1a\n"
 TERMINAL = re.compile(r"(?:submit(?: application)?|apply(?: now)?|send application|finish application)", re.I)
 EMPTY_TECHNICAL_KINDS = {"browser_transport", "browser_mechanics", "TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError"}
@@ -150,9 +150,21 @@ class OwnedTabs:
             self.save()
         return live
 
+    def _application_targets(self, live):
+        # A restored/user-created exact ATS tab occupies browser capacity even
+        # without creation proof. Counting never records ownership or permits
+        # cleanup. Distinct tabs for the same job each occupy one slot.
+        return {target for target, tab in live.items()
+                if (identity := boards.job_identity(tab.get("url"))) is not None
+                and identity[0] != "linkedin"}
+
+    def _charged_targets(self, live):
+        owned = {target for target, row in self.tabs.items()
+                 if target in live and row.get("state") in {"active", "close_unconfirmed"}}
+        return owned | self._application_targets(live)
+
     def _count(self, live):
-        return sum(target in live and row.get("state") in {"active", "close_unconfirmed"}
-                   for target, row in self.tabs.items())
+        return len(self._charged_targets(live))
 
     def before_apply_click(self):
         live = self.refresh()
@@ -215,12 +227,17 @@ class OwnedTabs:
             return matching[0]["targetId"]
         if len(matching) > 1:
             raise ValueError("Multiple exact job tabs need disambiguation")
-        count = self._count(before)
+        charged = self._charged_targets(before)
         if purpose == "source_readonly":
             # Unknown popups remain preserved and consume capacity. A read of
             # an existing exact source tab adds no tab; a fresh source needs one.
-            count += sum(target in before and row.get("state") == "active" and target not in self.tabs
-                         for target, row in self.unclaimed.items())
+            charged |= {target for target, row in self.unclaimed.items()
+                        if target in before and row.get("state") == "active"}
+        # Reusing an uncharged personal blank still adds one application slot.
+        # Only an already charged blank can be repurposed without increasing
+        # the occupied application/source budget.
+        current_blank = current.get("targetId") if _blank(current.get("url")) else None
+        added = 0 if current_blank in charged else 1
         if purpose in {"source", "source_readonly"}:
             source_count = sum(target in before and row.get("state") in {"active", "close_unconfirmed"}
                                and row.get("purpose") in {"source", "source_readonly"}
@@ -230,14 +247,15 @@ class OwnedTabs:
             if source_count >= min(1, max(0, _cap()-1)):
                 raise TabCapacityReached(CAPACITY_MESSAGE)
         if purpose == "application":
-            draft_count = sum(target in before and row.get("state") in {"active", "close_unconfirmed"}
-                              and row.get("purpose") == "application" for target, row in self.tabs.items())
+            drafts = self._application_targets(before) | {
+                target for target, row in self.tabs.items() if target in before
+                and row.get("state") in {"active", "close_unconfirmed"} and row.get("purpose") == "application"}
             # Reserve one of the existing slots for authenticated read-only
             # source routing. Existing drafts and exact-tab reuse stay intact.
-            if draft_count >= max(1, _cap()-1) and not (current.get("targetId") and _blank(current.get("url"))):
+            if len(drafts) + (0 if current_blank in drafts else 1) > max(1, _cap()-1):
                 raise TabCapacityReached(CAPACITY_MESSAGE)
-        reserve = 2 if purpose == "source" else 1
-        if count + reserve > _cap() and not (current.get("targetId") and _blank(current.get("url"))):
+        reserve = added + (1 if purpose == "source" else 0)
+        if len(charged) + reserve > _cap():
             raise TabCapacityReached(CAPACITY_MESSAGE)
         returned = self.helpers["new_tab"](url)
         target = returned.get("targetId") if isinstance(returned, dict) else returned
