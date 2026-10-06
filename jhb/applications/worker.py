@@ -42,7 +42,7 @@ def _record_attempt_feedback(job, result, attempt_token, packet):
 
 def failure_result(exc, actions=None, *, job=None):
     """Classify transport/mechanics separately from unknown answers, without secrets."""
-    from .cli_browser import BrowserOperationError
+    from .cli_browser import BrowserOperationError, MECHANICAL_ERRORS
     if (isinstance(exc, BrowserOperationError) and getattr(exc, "condition", None) == "browser_capacity"
             and getattr(exc, "mutation_started", None) is False):
         return {"state": "failed", "reason": "Waiting for browser tab capacity",
@@ -60,6 +60,9 @@ def failure_result(exc, actions=None, *, job=None):
     observed = getattr(actions, "last_failure", None)
     if observed:
         event.update({k: observed[k] for k in ("operation", "kind", "elapsed_seconds") if k in observed})
+        detail = observed.get("mechanical_error")
+        if isinstance(detail, str) and detail in MECHANICAL_ERRORS:
+            event["mechanical_error"] = detail
     result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
               "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
     progress = getattr(actions, "_preparation_progress", None)

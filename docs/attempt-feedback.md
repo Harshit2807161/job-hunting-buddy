@@ -86,3 +86,10 @@ idempotence, concurrent writes, malformed evidence, stale-attempt suppression,
 known/unknown classification, terminal uncertainty and authorization timing.
 It does not exercise candidate accounts, Browser Use connection, an ATS provider
 or a real final submission.
+
+The transport, preparation packet and immutable feedback retain
+`mechanical_error` only when it is a member of the fixed `MECHANICAL_ERRORS`
+allowlist. This identifies the failed native predicate (for example, an ambiguous
+education control) without retaining arbitrary page or exception text. Each
+boundary validates the enum again; it does not alter retry budgets or authorize
+browser actions.

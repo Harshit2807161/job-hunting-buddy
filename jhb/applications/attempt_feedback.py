@@ -153,6 +153,12 @@ def build(job, result, *, attempt_token, stage="preparation", packet_path=None, 
         "verification_required": bool(result.get("verification")) or result.get("state") in {"waiting_login", "waiting_captcha"},
         "evidence_paths": sorted(set(refs))[:20],
     }
+    # Preserve only fixed runtime enums, never arbitrary exception/page text.
+    from .cli_browser import MECHANICAL_ERRORS
+    detail = next((row.get("mechanical_error") for row in reversed(events)
+                   if row.get("event") == "technical_failure"), None)
+    if isinstance(detail, str) and detail in MECHANICAL_ERRORS:
+        record["mechanical_error"] = detail
     record["recovery_recommendation"] = _recommendation(record)
     return record
 

@@ -199,6 +199,8 @@ class BrowserUseCLI:
                         raise BrowserCapacityError(message)
                     self.last_failure = {"operation": operation,
                                          "kind": "browser_mechanics" if message in MECHANICAL_ERRORS else "invalid_operation"}
+                    if message in MECHANICAL_ERRORS:
+                        self.last_failure["mechanical_error"] = message
                     raise BrowserOperationError(message, retryable=message in MECHANICAL_ERRORS)
                 if operation != "discard_application_tab" and isinstance(response, dict) and job_hash:
                     application_discard.remember_target(ROOT, job_hash, response.get("target_id") or self.target_id,
