@@ -119,6 +119,40 @@ def valid_proof(proof, *, url, field, key, sha256, receipt):
             and type(proof.get("size")) is int and 0 < proof["size"] <= 10_000_000)
 
 
+def retained_upload(helpers, field, url, path, existing, observed, expression):
+    """Reuse an exact verified native/server attachment across worker instances.
+
+    The worker's in-memory receipt cache is disposable. Re-selecting the same
+    native File may emit no change event, so it cannot establish a new server ID.
+    Read and validate the retained byte proof instead; never trust a filename.
+    """
+    if not isinstance(existing, dict) or not existing.get("proof"):
+        return None
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if existing.get("filename") != path.name or existing.get("sha256") != digest:
+        return None  # A different approved document follows the normal upload path.
+    proof, receipt = existing["proof"], existing.get("receipt")
+    if (not valid_proof(proof, url=url, field=field, key=document_key(field), sha256=digest, receipt=receipt)
+            or proof.get("filename") != path.name):
+        raise ValueError("Ashby existing upload proof does not match the approved document")
+    server = (observed or {}).get("saved_file") or {}
+    if (not observed or observed.get("field_path") != proof["field_path"]
+            or observed.get("other_invalid") is not False or observed.get("native_file_count") != 1
+            or server.get("typename") != "File" or server.get("id") != proof["saved_file_id"]
+            or server.get("filename") != path.name or observed.get("displayed_filename") != path.name):
+        raise ValueError("Ashby saved attachment changed after verified upload")
+    expected = {"name": path.name, "size": len(raw), "sha256": digest}
+    if (proof["size"] != len(raw) or native_bytes(helpers, expression) != expected
+            or path.read_bytes() != raw):
+        raise ValueError("Ashby uploaded bytes differ from the approved document")
+    if (boards.job_identity(helpers["js"]("location.href")) != boards.job_identity(url)
+            or helpers["js"]("window.__jhbGuard===true") is not True):
+        raise ValueError("Ashby upload identity changed")
+    return {"verified": True, "filename": path.name, "upload_receipt": receipt,
+            "sha256": digest, "cached": True, "ashby_upload_proof": copy.deepcopy(proof)}
+
+
 def restored_state(packet, field, state, url):
     """Hydrate a restored upload only from its previously verified byte proof.
 

@@ -569,6 +569,10 @@ def dispatch(request, helpers):
             from . import ashby_uploads
             before = ashby_uploads.saved_file(helpers, field) if scope["board"] == "ashby" else None
             existing = js("(()=>{const e="+expr+";return e?{filename:e.files?.[0]?.name,receipt:e.__jhbUploadReceipt,sha256:e.__jhbUploadSha256,proof:e.__jhbAshbyUploadProof}:null})()")
+            if scope["board"] == "ashby":
+                retained = ashby_uploads.retained_upload(helpers, field, js("location.href"), path, existing, before, expr)
+                if retained:
+                    return retained
             if (request.get("upload_receipt") and existing and existing.get("receipt") == request["upload_receipt"]
                     and existing.get("sha256") == digest and existing.get("filename") == path.name):
                 proof = existing.get("proof")

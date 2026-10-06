@@ -84,7 +84,7 @@ def test_verified_bytes_and_new_server_id_survive_remount_without_refill(tmp_pat
         assert project(result,observation)['filled'][0]['ashby_upload_proof']==proof
 
 
-@pytest.mark.parametrize('change',['server_id','filename','field_path','wrong_job','wrong_ref','semantic_key',
+@pytest.mark.parametrize('change',['server_id','filename','proof_filename','field_path','wrong_job','wrong_ref','semantic_key',
                                   'hash','receipt','missing_proof','duplicate_row','local_bytes','aria_invalid','custom_error'])
 def test_restored_attachment_never_uses_filename_only_or_crosses_bindings(tmp_path,change):
     with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
@@ -92,6 +92,7 @@ def test_restored_attachment_never_uses_filename_only_or_crosses_bindings(tmp_pa
         row=packet['filled'][0]
         if change=='server_id':page.evaluate("fileProps.savedFile.id='aaaaaaaa-bbbb-cccc-dddd-999999999999'")
         elif change=='filename':page.evaluate("fileProps.savedFile.filename='same-looking.pdf'")
+        elif change=='proof_filename':row['ashby_upload_proof']['filename']='different.pdf'
         elif change=='field_path':row['ashby_upload_proof']['field_path']='another-owner'
         elif change=='wrong_job':row['ashby_upload_proof']['job_identity'][1]='different-company'
         elif change=='wrong_ref':row['ashby_upload_proof']['field_ref']='other-file'
@@ -112,10 +113,69 @@ def test_restored_attachment_never_uses_filename_only_or_crosses_bindings(tmp_pa
 @pytest.mark.parametrize('existing',[False,True])
 def test_failed_save_or_unchanged_server_id_cannot_create_durable_proof(tmp_path,existing):
     with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
-        if existing:call('fill',field=field,value=str(pdf))
+        if existing:
+            call('fill',field=field,value=str(pdf))
+            page.locator('input').evaluate('e=>delete e.__jhbAshbyUploadProof')
         page.evaluate('window.failSave=true')
         with pytest.raises(ValueError,match='server did not acknowledge'):
             call('fill',field=field,value=str(pdf))
+        assert page.evaluate('submissions')==0
+
+
+def test_new_worker_reuses_verified_native_upload_without_reselecting_file(tmp_path):
+    with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
+        uploaded=call('fill',field=field,value=str(pdf))
+        page.evaluate('window.failSave=true')  # An unchanged selection cannot save a new server ID.
+        before=page.content();calls.clear()
+        retained=call('fill',field=field,value=str(pdf))  # Fresh worker has no upload_receipt cache.
+        assert retained=={**uploaded,'cached':True}
+        assert page.content()==before and page.evaluate('[uploads,submissions]')==[1,0]
+        assert 'DOM.setFileInputFiles' not in calls and not any(c.startswith('Input.') for c in calls)
+
+
+@pytest.mark.parametrize('change',['server_id','filename','proof_filename','field_path','wrong_job','wrong_ref','semantic_key',
+                                  'hash','receipt','size','native_bytes','aria_invalid','guard'])
+def test_new_worker_rejects_changed_attachment_binding_without_replacing_user_file(tmp_path,monkeypatch,change):
+    with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
+        call('fill',field=field,value=str(pdf))
+        if change=='server_id':page.evaluate("fileProps.savedFile.id='aaaaaaaa-bbbb-cccc-dddd-999999999999'")
+        elif change=='filename':page.evaluate("fileProps.savedFile.filename='another.pdf'")
+        elif change=='proof_filename':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.filename='different.pdf'")
+        elif change=='field_path':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.field_path='different-owner'")
+        elif change=='wrong_job':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.job_identity[1]='different-company'")
+        elif change=='wrong_ref':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.field_ref='other-file'")
+        elif change=='semantic_key':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.document_key='documents.cover_letter'")
+        elif change=='hash':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.sha256='0'.repeat(64)")
+        elif change=='receipt':page.locator('input').evaluate("e=>e.__jhbUploadReceipt='different-receipt'")
+        elif change=='size':page.locator('input').evaluate("e=>e.__jhbAshbyUploadProof.size++")
+        elif change=='native_bytes':monkeypatch.setattr(ashby_uploads,'native_bytes',lambda *a:{'name':pdf.name,'size':pdf.stat().st_size,'sha256':'0'*64})
+        elif change=='aria_invalid':page.locator('input').evaluate("e=>e.setAttribute('aria-invalid','true')")
+        elif change=='guard':page.evaluate('window.__jhbGuard=false')
+        before=page.content();calls.clear()
+        with pytest.raises(ValueError):call('fill',field=field,value=str(pdf))
+        assert page.content()==before and page.evaluate('[uploads,submissions]')==[1,0]
+        assert 'DOM.setFileInputFiles' not in calls
+
+
+def test_new_approved_document_still_uses_upload_and_new_server_identity(tmp_path):
+    with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
+        original=call('fill',field=field,value=str(pdf))
+        role_dir=tmp_path/'another-role';role_dir.mkdir()
+        replacement=role_dir/pdf.name
+        replacement.write_bytes(pdf.read_bytes()+b'\n% revised synthetic document')
+        calls.clear();updated=call('fill',field=field,value=str(replacement))
+        assert updated['sha256']!=original['sha256']
+        assert updated['ashby_upload_proof']['saved_file_id']!=original['ashby_upload_proof']['saved_file_id']
+        assert 'DOM.setFileInputFiles' in calls and page.evaluate('[uploads,submissions]')==[2,0]
+
+
+def test_same_path_changed_bytes_cannot_reuse_old_receipt_when_server_id_does_not_change(tmp_path):
+    with fixture(tmp_path) as (page,helpers,calls,call,field,pdf):
+        uploaded=call('fill',field=field,value=str(pdf))
+        pdf.write_bytes(pdf.read_bytes()+b'\n% changed in place')
+        with pytest.raises(ValueError,match='server did not acknowledge'):
+            call('fill',field=field,value=str(pdf))
+        assert uploaded['sha256']!=hashlib.sha256(pdf.read_bytes()).hexdigest()
         assert page.evaluate('submissions')==0
 
 

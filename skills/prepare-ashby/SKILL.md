@@ -151,6 +151,11 @@ an empty native FileList can be checked against this existing proof only while
 the same server attachment ID and source bytes remain unchanged. A displayed
 filename or opaque server ID first seen after remount cannot create that proof.
 Never reupload a candidate's retained attachment merely to recover verification.
+On a fresh worker retry, the temporary upload cache may be empty even while the
+native File and its saved attachment proof remain intact. Verify the native
+bytes, approved PDF, exact job/field/document binding and unchanged server ID;
+then reuse that original receipt. Selecting the same file again may emit no
+change event and cannot establish a new server-save acknowledgment.
 Report live CLI validation separately from synthetic fixture checks. See
 [adapter evaluation](../../docs/board-adapter-evaluation.md) for observed board
 coverage and current limits.
