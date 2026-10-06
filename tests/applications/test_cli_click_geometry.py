@@ -136,14 +136,15 @@ def test_persistent_obstruction_never_clicks_and_bounds_wheel_attempts(wheel):
 
 
 @pytest.mark.parametrize("settle", [False, True])
-def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkeypatch, settle):
-    """Model scroll-triggered reflow plus realistic helper/input latency."""
+@pytest.mark.parametrize("sample_delay_ms", [0, 300])
+def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkeypatch, settle, sample_delay_ms):
+    """Schedule one real DOM reflow after the first captured target geometry."""
     from playwright.sync_api import sync_playwright
     from jhb import config
     from jhb.applications import cli_runtime
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(config.ROOT / ".local-browsers"))
     html = '''<!doctype html><html lang="en"><title>Synthetic reflow</title>
-    <style>body{margin:0}.gap{height:2500px}.target{transition:transform 180ms linear}
+    <style>body{margin:0}.gap{height:2500px}
     .target.moved{transform:translateY(180px)}</style>
     <div class="gap"></div><form id="application"><div class="target">
     <label for="certify">Synthetic explicit consent</label><input id="certify" type="checkbox">
@@ -151,8 +152,6 @@ def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkey
     <script>window.changed=false;window.submissions=0;window.checks=0;
     document.getElementById('application').onsubmit=e=>{e.preventDefault();window.submissions++};
     document.getElementById('certify').onchange=()=>window.checks++;
-    addEventListener('scroll',()=>{if(!window.changed&&scrollY>0){window.changed=true;
-      setTimeout(()=>document.querySelector('.target').classList.add('moved'),35)}});
     </script></html>'''
     if not settle:
         def immediate(backend, cdp, wait, click_at_xy):
@@ -171,19 +170,33 @@ def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkey
         url = "https://job-boards.greenhouse.io/synthetic-fixture/jobs/6789"
         page.goto(url)
         session = page.context.new_cdp_session(page)
-        def delayed_click(x, y):
-            page.wait_for_timeout(100)
-            page.mouse.click(x, y)
+        scrolled_backend, sampled_quads = None, []
         def transport(method, **params):
-            # Runtime now sends native input through the CLI's CDP transport.
-            # Model latency at the actual press boundary, preserving the
-            # scroll/reflow race this regression protects against.
-            if method == "Input.dispatchMouseEvent" and params.get("type") == "mousePressed":
-                page.wait_for_timeout(100)
-            return session.send(method, params)
+            nonlocal scrolled_backend
+            target_sample = method == "DOM.getBoxModel" and params.get("backendNodeId") == scrolled_backend
+            if target_sample and not sampled_quads and sample_delay_ms:
+                page.wait_for_timeout(sample_delay_ms)
+            result = session.send(method, params)
+            if method == "DOM.scrollIntoViewIfNeeded" and scrolled_backend is None:
+                scrolled_backend = params["backendNodeId"]
+            if target_sample:
+                sampled_quads.append(result["model"]["content"])
+                if len(sampled_quads) == 1:
+                    # Complete the pending synthetic reflow only AFTER CDP
+                    # captured old coordinates. Wall-clock delay before that
+                    # sample cannot let the old click accidentally succeed.
+                    # Geometry, hit tests and native input still use Chromium.
+                    attrs = session.send("DOM.describeNode", {"backendNodeId": scrolled_backend})["node"]["attributes"]
+                    assert dict(zip(attrs[0::2], attrs[1::2]))["id"] == "certify"
+                    page.evaluate("""() => {
+                        window.changed = true;
+                        document.querySelector('#certify').closest('.target').classList.add('moved');
+                        return document.querySelector('#certify').getBoundingClientRect().y;
+                    }""")
+            return result
         helpers = {"cdp": transport,
                    "js": page.evaluate, "wait": lambda seconds: page.wait_for_timeout(seconds*1000),
-                   "click_at_xy": delayed_click, "list_tabs": lambda: [{"url": url, "targetId": "fixture-tab"}],
+                   "click_at_xy": page.mouse.click, "list_tabs": lambda: [{"url": url, "targetId": "fixture-tab"}],
                    "switch_tab": lambda target: None, "current_tab": lambda: {"targetId": "fixture-tab"}}
         try:
             cli_runtime.dispatch({"operation": "open", "url": url}, helpers)
@@ -195,6 +208,13 @@ def test_delayed_reflow_misses_immediate_click_but_settled_click_succeeds(monkey
                 with pytest.raises(ValueError, match="Checkbox did not retain"):
                     cli_runtime.dispatch(request, helpers)
             assert page.locator("#certify").is_checked() is settle
+            assert page.evaluate("window.changed") is True
+            assert page.evaluate("scrollY") > 0
+            if settle:
+                assert len(sampled_quads) >= 4
+                assert sampled_quads[-1][1] - sampled_quads[0][1] == pytest.approx(180)
+            else:
+                assert len(sampled_quads) == 1
             assert page.evaluate("window.checks") == int(settle)
             assert page.evaluate("window.submissions") == 0
             assert requests == [url]
