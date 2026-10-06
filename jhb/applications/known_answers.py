@@ -298,6 +298,14 @@ def _prompt(field):
     return re.sub(r" \((?:mark all that apply|select one)\)$", "", _label(field))
 
 
+def _office_willingness_question(label):
+    """One bounded question family shared by native inspection and selection."""
+    days = r"(?:[1-5]|one|two|three|four|five) days(?: per | a )week"
+    schedule = r"(?:"+days+r"|on (?:mondays|tuesdays|wednesdays|thursdays|fridays)(?: and (?:mondays|tuesdays|wednesdays|thursdays|fridays))? \([1-5] days/week\))"
+    return bool(re.fullmatch(r"are you (?:able|willing) to work (?:"+days+r" )?(?:from|in) our [a-z ,.-]+ office(?: "+schedule+r")?\?", label)
+        or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?")
+
+
 def catalog_basis(field, answers):
     """Complete verified prerequisites for inspecting a known native catalog.
 
@@ -350,6 +358,16 @@ def catalog_basis(field, answers):
         item = require("standing.current_education_gpa")
         match = re.fullmatch(r"(\d(?:\.\d+)?)\s*/\s*4(?:\.0+)?", str(item.get("value"))) if item else None
         if not match or not 0 <= float(match[1]) <= 4:
+            return {}
+    elif _office_willingness_question(label):
+        office, relocation = require("standing.office_willingness"), require("preferences.relocation")
+        if not office or office["value"] is not True or not relocation or relocation["value"] is not True:
+            return {}
+    elif (label in {_DISCOVERY, "how did you hear about this job?", "how did you hear about us?", "how did you hear about this role?"}
+          or answers.get("standing.discovery_source", {}).get("company_question")
+          and label == normalize(str(answers["standing.discovery_source"]["company_question"]))):
+        source = require("standing.discovery_source")
+        if not source or not isinstance(source["value"], str) or not source["value"].strip():
             return {}
     elif label in _DISCLOSURES:
         if not _disclosure_context(field):
@@ -512,10 +530,7 @@ def _common_projection(field, job, answers):
     office = _verified(answers, "standing.office_willingness")
     relocation = _verified(answers, "preferences.relocation")
     if select and office and office["value"] is True and relocation and relocation["value"] is True:
-        days = r"(?:[1-5]|one|two|three|four|five) days(?: per | a )week"
-        schedule = r"(?:"+days+r"|on (?:mondays|tuesdays|wednesdays|thursdays|fridays)(?: and (?:mondays|tuesdays|wednesdays|thursdays|fridays))? \([1-5] days/week\))"
-        willingness = (re.fullmatch(r"are you (?:able|willing) to work (?:"+days+r" )?(?:from|in) our [a-z ,.-]+ office(?: "+schedule+r")?\?", label)
-            or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?")
+        willingness = _office_willingness_question(label)
         if willingness:
             return chosen({"yes"}, {"standing.office_willingness": office, "preferences.relocation": relocation},
                           "Explicit office and relocation willingness; no assertion of current residence or immediate work eligibility")
