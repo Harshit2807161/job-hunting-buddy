@@ -135,6 +135,15 @@ FIELD_DATA = r"""(()=>{
    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.label,value:o.value,disabled:o.disabled})):[]}));})()"""
 
 
+def phone_country_value(value, field):
+    """Translate a country alias only for a freshly observed phone widget."""
+    if (field.get("phone_country") is True and field.get("ref", field.get("id")) == "country"
+            and isinstance(value, str)
+            and normalize(value) in {"united states", "united states of america", "usa", "us", "u.s.", "u.s.a."}):
+        return "United States"
+    return value
+
+
 def option_matches(label, value, *, field_id="", field_label=""):
     """Closed, auditable display translations; no fuzzy screening answers."""
     label = normalize(label)
@@ -614,6 +623,11 @@ def dispatch(request, helpers):
                 raise ValueError("Native select did not retain the approved answer")
             return {"verified": True, "selected": selected["label"]}
         if kind == "combobox":
+            # A caller's saved metadata is not ownership proof. Reinspect the
+            # native phone wrapper before translating an explicit country alias.
+            native = [item for item in js(FIELD_DATA) if item["id"] == ref]
+            if len(native) == 1:
+                value = phone_country_value(value, native[0])
             before = control_value(ref)
             if ref == "country" and value == "United States" and before and "iti__us" in before["countryCode"]:
                 return {"verified": True, "selected": "United States (+1)"}

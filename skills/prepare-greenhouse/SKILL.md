@@ -85,3 +85,9 @@ dropdown with a bounded describe operation, then close it without changing the
 retained value. Public API descriptions and choices can clarify the question in
 the portal; they do not establish native choices, live retention, or readiness.
 The final audit repeats the owned native check for those approved responses.
+
+For the phone widget's country selector, verified US country spellings may be
+displayed as `United States (+1)`. Translate only after fresh DOM inspection
+confirms the selector belongs to the phone input; keep the candidate's original
+answer and provenance. Repeat that ownership-aware translation during retained
+answer audits. A generic country or citizenship field does not inherit this rule.

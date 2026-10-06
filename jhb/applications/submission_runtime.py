@@ -345,9 +345,12 @@ def _checks(request, helpers, packet, attempt):
             valid = isinstance(value, bool) and state["checked"] == value
         elif kind in {"combobox", "select"}:
             expected_choice = value["choice"] if board != "greenhouse" and isinstance(value, dict) and set(value) == {"query", "choice"} else value
+            if board == "greenhouse":
+                from .cli_runtime import phone_country_value
+                expected_choice = phone_country_value(expected_choice, field)
             choice_ref = "candidate-location" if field.get("widget") == "lever-location" else field["ref"]
             valid = option_matches(state["selected"], expected_choice, field_id=choice_ref, field_label=field["label"])
-            if field["ref"] == "country" and value == "United States" and "iti__us" in state.get("countryCode", ""):
+            if field["ref"] == "country" and expected_choice == "United States" and "iti__us" in state.get("countryCode", ""):
                 valid = True
         elif kind in {"radio", "multiselect"} and board in {"ashby", "workable", "lever"}:
             values = value if isinstance(value, list) else [value]
