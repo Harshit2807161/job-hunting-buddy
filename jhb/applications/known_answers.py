@@ -51,13 +51,14 @@ def _choices(field):
 
 
 def contact_location(field):
-    return (_label(field) in {"location", "home location"} and field.get("type") == "combobox"
+    return (_label(field) in {"location", "home location", "where are you currently located?"} and field.get("type") == "combobox"
             and field.get("ref") == "ashby:_systemfield_location:control:0")
 
 
 def plain_contact_location(field):
     """Only the observed standard contact question has this standing mapping."""
     hints = {"location": {"", "city, state, and country"},
+             "where are you currently located?": {""},
              "home location": {"the city you currently live in. start typing and select from the list."}}
     return (contact_location(field)
             and normalize(field.get("description") or "") in hints.get(_label(field), set())
@@ -258,6 +259,209 @@ def _graduate(answers, today):
     return None
 
 
+# Country-relative questions need posting context, never the candidate's address.
+RELATIVE_AUTHORIZATION = frozenset({
+    "are you authorized to work in the country where the job is located?",
+    "are you legally authorized to work in the country where the job is located?",
+    "are you legally authorized to work in the country in which this job is located?",
+})
+RELATIVE_SPONSORSHIP = frozenset({
+    "will you now or in the future require sponsorship for employment visa status in this country?",
+    "will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?",
+})
+_GRADUATION_LABELS = frozenset({"what is your expected graduation date?",
+    "what is your expected graduation month & year?", "what is your expected graduation month and year?"})
+_START_LABELS = frozenset({"when are you available to start work?", "when can you start a new role?",
+                         "how soon are you able to start a new role?"})
+_DISCLOSURES = {
+    "how would you describe your gender identity?": "disclosure.gender",
+    "how would you describe your sexual orientation?": "disclosure.sexual_orientation",
+    "sexual orientation": "disclosure.sexual_orientation",
+    "do you identify as transgender?": "disclosure.transgender",
+    "are you a veteran or active member of the united states armed forces?": "disclosure.veteran",
+    "do you have a disability or chronic condition (physical, visual, auditory, cognitive, mental, emotional, or other) that substantially limits one or more of your major life activities, including mobility, communication (seeing, hearing, speaking), and learning?": "disclosure.disability",
+    "race": "disclosure.race",
+}
+
+
+def _prompt(field):
+    return re.sub(r" \((?:mark all that apply|select one)\)$", "", _label(field))
+
+
+def needs_catalog(field, answers):
+    """A verified fact selects a bounded native inspection, not an answer."""
+    label = _prompt(field)
+    keys = []
+    if label in _GRADUATION_LABELS:
+        keys = ["education.expected_graduation_date"]
+    elif label in _START_LABELS:
+        keys = ["preferences.start_date"]
+    elif label in RELATIVE_AUTHORIZATION:
+        keys = ["eligibility.authorized_us", "eligibility.authorized_canada", "eligibility.authorized_uk"]
+    elif label in RELATIVE_SPONSORSHIP:
+        keys = ["eligibility.sponsorship"]
+    elif label in {"what is your current gpa", "what is your current gpa?"}:
+        keys = ["standing.current_education_gpa"]
+    elif label in _DISCLOSURES:
+        keys = [_DISCLOSURES[label]]
+    return any(_verified(answers, key) for key in keys)
+
+
+def _month_choice_bounds(text):
+    """Parse only explicit month/year points and inclusive month ranges."""
+    from calendar import month_abbr, month_name
+    text = normalize(text).replace("\u2013", "-").replace("\u2014", "-")
+    names = {name.casefold(): index for index in range(1, 13)
+             for name in (month_name[index], month_abbr[index])}
+    names["sept"] = 9
+    month = "(" + "|".join(sorted(names, key=len, reverse=True)) + ")"
+    match = re.fullmatch(month+r" (\d{4})", text)
+    if match:
+        year, start = int(match[2]), names[match[1]]
+        try:
+            return date(year, start, 1), date(year, start, monthrange(year, start)[1])
+        except ValueError:
+            return None
+    match = re.fullmatch(month+r"(?: (\d{4}))?\s*[-/]\s*"+month+r" (\d{4})", text)
+    if match:
+        year1, year2 = int(match[2] or match[4]), int(match[4])
+        try:
+            first, last = date(year1, names[match[1]], 1), date(year2, names[match[3]], monthrange(year2, names[match[3]])[1])
+        except ValueError:
+            return None
+        return (first, last) if first <= last else None
+    return None
+
+
+def _common_projection(field, job, answers):
+    label, kind, choices = _prompt(field), field.get("type"), _choices(field)
+    if field.get("description_truncated"):
+        return None
+    select = kind in {"radio", "combobox", "select", "multiselect"}
+    def result(value, records, criterion):
+        return value, {"records": records, "criterion": criterion}
+    def chosen(labels, records, criterion):
+        matches = [c for c in choices if normalize(c) in labels]
+        if len(matches) == 1:
+            return result(matches if kind == "multiselect" else matches[0], records, criterion)
+        return None
+    if label in _GRADUATION_LABELS | _START_LABELS:
+        key = "education.expected_graduation_date" if label in _GRADUATION_LABELS else "preferences.start_date"
+        item = _verified(answers, key)
+        bounds = _bounds(item.get("value")) if item else None
+        if not bounds:
+            return None
+        records = {key: item}
+        if label in _GRADUATION_LABELS:
+            current = _verified(answers, "standing.current_education_school")
+            source = current.get("source", {}) if current else {}
+            original = source.get("original_record", {}) if isinstance(source, dict) else {}
+            end = _bounds(original.get("end_date"))
+            if original.get("expected") is not True or not end or not (end[0] <= bounds[0] <= bounds[1] <= end[1]):
+                return None
+            records["standing.current_education_school"] = current
+        if kind in {"text", "date"}:
+            return result(item["value"], records, "Exact verified availability/expected graduation; no earned-degree claim")
+        if select:
+            matches = [c for c in choices if (interval := _month_choice_bounds(c)) and interval[0] <= bounds[0] <= bounds[1] <= interval[1]]
+            if len(matches) == 1:
+                return result(matches if kind == "multiselect" else matches[0], records, "Unique observed explicit month range contains the complete verified date bounds")
+        return None
+    if label == "what degree and major are you pursuing?" and kind in {"text", "textarea"}:
+        degree, major = (_verified(answers, key) for key in ("standing.current_education_degree", "standing.current_education_major"))
+        if degree and major and all(isinstance(i["value"], str) for i in (degree, major)):
+            return result(f"{degree['value']} in {major['value']}", {"standing.current_education_degree": degree,
+                "standing.current_education_major": major}, "Original verified current degree and major, not employer catalog fallback")
+    if label in {"what is your current gpa", "what is your current gpa?"}:
+        item = _verified(answers, "standing.current_education_gpa")
+        match = re.fullmatch(r"(\d(?:\.\d+)?)\s*/\s*4(?:\.0+)?", str(item.get("value"))) if item else None
+        if match and 0 <= float(match[1]) <= 4:
+            gpa = float(match[1])
+            if kind in {"text", "number"}:
+                return result(match[1], {"standing.current_education_gpa": item}, "Verified current GPA on an explicit 4.0 scale")
+            matches = []
+            for choice in choices if select else []:
+                interval = re.fullmatch(r"(\d(?:\.\d+)?)\s*[-–]\s*(\d(?:\.\d+)?)", choice)
+                if interval and 0 <= float(interval[1]) <= gpa <= float(interval[2]) <= 4:
+                    matches.append(choice)
+            if len(matches) == 1:
+                return result(matches if kind == "multiselect" else matches[0], {"standing.current_education_gpa": item},
+                              "Unique observed GPA interval; no conversion from a different grading scale")
+        return None
+    country = normalize(str(field.get("country_context") or ""))
+    if label in RELATIVE_AUTHORIZATION and select:
+        suffix = {"united states": "us", "canada": "canada", "united kingdom": "uk"}.get(country)
+        key = "eligibility.authorized_" + suffix if suffix else None
+        item = _verified(answers, key) if key else None
+        if item and type(item.get("value")) is bool:
+            yes = item["value"]
+            labels = {"yes" if yes else "no", "yes, i am currently legally authorized to work in the country where the jobs is located." if yes else
+                      "no, i am not currently legally authorized to work in the country where the job is located."}
+            return chosen(labels, {key: item}, "Verified authorization for the explicit posting country; no any-employer, visa, or citizenship claim")
+    sponsor_label = label.replace("u.s.", "united states")
+    if select and (label in RELATIVE_SPONSORSHIP or sponsor_label == "will you now or in the future require visa sponsorship to work in the united states?"):
+        explicit_us = sponsor_label.endswith("in the united states?")
+        if not (country == "united states" or explicit_us and country in {"", "united states"}):
+            return None
+        item = _verified(answers, "eligibility.sponsorship")
+        if not item or type(item.get("value")) is not bool:
+            return None
+        records = {"eligibility.sponsorship": item}
+        simple = chosen({"yes" if item["value"] else "no"}, records, "Verified combined present-or-future US sponsorship")
+        if simple:
+            return simple
+        if item["value"] is False:
+            return chosen({"no, i do not and will not require immigration sponsorship to legally work in the country where the job is located."}, records, "Explicit combined No covers both periods")
+        now, future = (_verified(answers, "eligibility.sponsorship_"+part) for part in ("now", "future"))
+        timing = "now" if now and now["value"] is True else "in the future" if now and now["value"] is False and future and future["value"] is True else None
+        if timing:
+            records.update({"eligibility.sponsorship_"+part: item for part, item in (("now", now), ("future", future)) if item})
+            return chosen({f"yes, i will require immigration sponsorship {timing} to legally work in the country where the job is located."}, records, "Separate verified timing facts; combined True alone cannot distinguish now from future")
+        return None
+    if select and label in _DISCLOSURES:
+        key = _DISCLOSURES[label];item = _verified(answers, key)
+        if not item or field.get("description"):
+            return None  # Unfamiliar owned qualifications need their own binding.
+        value = item["value"];records = {key: item}
+        if key == "disclosure.gender":
+            labels = {"male": {"male", "man"}, "female": {"female", "woman"}}.get(normalize(str(value)), {normalize(str(value))})
+        elif key == "disclosure.sexual_orientation":
+            labels = {"heterosexual", "straight", "heterosexual / straight", "heterosexual/straight"} if normalize(str(value)) in {"heterosexual", "straight", "heterosexual / straight", "heterosexual/straight"} else {normalize(str(value))}
+        elif key == "disclosure.veteran":
+            service = _verified(answers, "screening.us_government_or_military_5y")
+            if value is not False or not service or service["value"] is not False:
+                return None  # Veteran status alone does not exclude active service.
+            records["screening.us_government_or_military_5y"] = service
+            labels = {"no", "no, i am not a veteran or active member"}
+        elif key == "disclosure.race":
+            hispanic = _verified(answers, "disclosure.hispanic")
+            labels = {normalize(str(value))}
+            if hispanic and hispanic["value"] is False:
+                records["disclosure.hispanic"] = hispanic
+                labels.add(normalize(str(value))+" (not hispanic or latino)")
+        elif type(value) is bool:
+            labels = {"yes" if value else "no"}
+        else:
+            return None
+        return chosen(labels, records, "Observed disclosure wording matched only to explicit verified self-identification")
+    office = _verified(answers, "standing.office_willingness")
+    relocation = _verified(answers, "preferences.relocation")
+    if select and office and office["value"] is True and relocation and relocation["value"] is True:
+        days = r"(?:[1-5]|one|two|three|four|five) days(?: per | a )week"
+        schedule = r"(?:"+days+r"|on (?:mondays|tuesdays|wednesdays|thursdays|fridays)(?: and (?:mondays|tuesdays|wednesdays|thursdays|fridays))? \([1-5] days/week\))"
+        willingness = (re.fullmatch(r"are you (?:able|willing) to work (?:"+days+r" )?(?:from|in) our [a-z ,.-]+ office(?: "+schedule+r")?\?", label)
+            or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?")
+        if willingness:
+            return chosen({"yes"}, {"standing.office_willingness": office, "preferences.relocation": relocation},
+                          "Explicit office and relocation willingness; no assertion of current residence or immediate work eligibility")
+        if (label == "please select all office locations of interest." and kind == "multiselect"
+                and normalize(job.get("work_country") or "") == "united states"):
+            allowed = {"san francisco", "mountain view", "seattle", "new york", "boston", "austin"}
+            if choices and all(normalize(c) in allowed for c in choices):
+                return result(list(choices), {"standing.office_willingness": office, "preferences.relocation": relocation}, "All actually offered US offices under explicit relocation willingness")
+    return None
+
+
 def enrich(field, job, answers, *, as_of=None):
     """Add one observed-choice derivation, preserving ambiguous factual answers."""
     today = as_of or datetime.now(ZoneInfo("America/Los_Angeles")).date()
@@ -270,7 +474,10 @@ def enrich(field, job, answers, *, as_of=None):
     value, evidence = None, None
     from .ashby_education import derive as education_derivation
     education = education_derivation(field, answers, as_of=today)
-    if education:
+    common = _common_projection(field, job, answers)
+    if common:
+        value, evidence = common
+    elif education:
         value, evidence = education
     elif has_conditional_instruction(field) and field.get("type") in {"radio", "select", "combobox"}:
         description = field.get("description")

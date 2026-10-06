@@ -23,6 +23,9 @@ def _known_record(field, answers):
     Inspecting the full catalog does not widen a fact's scope: a current
     disability answer, for example, cannot establish past medical history.
     """
+    from .known_answers import needs_catalog
+    if needs_catalog(field, answers):
+        return True
     label = normalize(field.get('label') or '')
     for key in KNOWN_DISCLOSURES:
         record = answers.get(key, {})

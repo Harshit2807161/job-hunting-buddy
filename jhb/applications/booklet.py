@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import date
-from calendar import monthrange
+from calendar import monthrange, month_name
 from pathlib import Path
 
 from ..config import ROOT
@@ -137,10 +137,69 @@ def _education_year(value):
     return value[:4]
 
 
+def common_answers(book: dict, job=None) -> dict:
+    """Same sourced, role-independent facts for workers and question routing.
+
+    This builds an ephemeral catalog; it never edits the candidate booklet.
+    Job-specific documents and narrative answers remain outside this catalog.
+    """
+    values = dict(book.get("answers", {}))
+    records = book.get("education_records", [])
+    _education_answers(values, records)
+    _reusable_profile_facts(values, book, None, records, [])
+    policy = book.get("workflow_preferences", {})
+    office = policy.get("office_locations")
+    if isinstance(office, dict):
+        if office.get("value") is True and office.get("source"):
+            values["standing.office_willingness"] = answer(True, office["source"])
+    elif (isinstance(office, str) and re.match(r"yes\b", normalize(office))
+          and re.search(r"\b(?:office|onsite|on-site|hybrid)\b", normalize(office))):
+        values["standing.office_willingness"] = answer(True, {"policy": office,
+            "method": "explicit_saved_office_willingness"})
+    salary = policy.get("salary_expectation", {})
+    if (salary.get("source") and salary.get("rule") == "arithmetic midpoint of advertised base salary range"):
+        values["standing.salary_policy"] = answer(True, salary["source"])
+    if job:
+        source = {"simplify": "Simplify", "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor",
+                  "jobspy:linkedin": "LinkedIn", "jobspy:indeed": "Indeed", "jobspy:glassdoor": "Glassdoor"}.get(job.get("source"))
+        if source:
+            values["standing.discovery_source"] = answer(source, {"method": "recorded_phase1_discovery",
+                "source": job["source"], "source_url": job.get("source_url", job.get("url"))})
+            if job.get("company"):
+                values["standing.discovery_source"]["company_question"] = f"How did you hear about {job['company']}?"
+    return values
+
+
+def _education_answers(values, records):
+    for index, record in enumerate(records):
+        if record.get("status") == "verified":
+            for field in ("school", "degree", "major", "gpa", "start_date", "end_date"):
+                if field in record:
+                    values[f"education.{index}.{field}"] = answer(record[field], record["source"])
+                    if index == 0:
+                        values["education."+field] = values[f"education.{index}.{field}"]
+            for column in ("start", "end"):
+                date_key = column + "_date"
+                original = record.get(date_key)
+                year = _education_year(original)
+                if year is not None and record.get("source"):
+                    values[f"education.{index}.{column}_year"] = answer(year, {
+                        "rule": "Calendar year extracted from verified original education date",
+                        "derived_from": f"education.{index}.{date_key}", "original_date": original,
+                        "original_source": record["source"], "expected": record.get("expected"),
+                    })
+                bounds = _education_bound(original)
+                if bounds and isinstance(original, str) and re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", original) and record.get("source"):
+                    values[f"education.{index}.{column}_month"] = answer(month_name[bounds.month], {
+                        "rule": "Calendar month from the indexed original education date",
+                        "derived_from": f"education.{index}.{date_key}", "original_date": original,
+                        "original_source": record["source"], "expected": record.get("expected")})
+
+
 def for_role(book: dict, role: str) -> dict:
     if role not in {"sde", "ml"}:
         raise ValueError("Choose sde or ml explicitly for ambiguous jobs")
-    values = {**book["answers"], **book["roles"][role]}
+    values = {**common_answers(book), **book["roles"][role]}
     # Broad skills prompts retain the full chosen resume skill list. Include
     # its coursework only when the candidate explicitly requested this policy;
     # never borrow skills/courses from the other role or an unverified source.
@@ -156,23 +215,6 @@ def for_role(book: dict, role: str) -> dict:
                 {"skills": skills["source"], "coursework": education["source"],
                  "policy": policy.get("source", "explicit candidate coursework preference")})
     records = book.get("education_records", [])
-    for index, record in enumerate(records):
-        if record.get("status") == "verified":
-            for field in ("school", "degree", "major", "start_date", "end_date"):
-                if field in record:
-                    values[f"education.{index}.{field}"] = answer(record[field], record["source"])
-                    if index == 0:
-                        values["education."+field] = values[f"education.{index}.{field}"]
-            for column in ("start", "end"):
-                date_key = column + "_date"
-                original = record.get(date_key)
-                year = _education_year(original)
-                if year is not None and record.get("source"):
-                    values[f"education.{index}.{column}_year"] = answer(year, {
-                        "rule": "Calendar year extracted from verified original education date",
-                        "derived_from": f"education.{index}.{date_key}", "original_date": original,
-                        "original_source": record["source"], "expected": record.get("expected"),
-                    })
     experiences = experience_records(book, role)
     for index, record in enumerate(experiences):
         for field in ("company", "title", "location", "start_date", "end_date", "summary", "current"):
@@ -223,7 +265,7 @@ def _reusable_profile_facts(values, book, role, records, experiences):
     # if the verified catalog has multiple candidates.
     if len(current) == 1:
         record = current[0]
-        for column in ("school", "degree"):
+        for column in ("school", "degree", "major", "gpa"):
             if isinstance(record.get(column), str) and record[column].strip():
                 values["standing.current_education_" + column] = answer(record[column], {
                     "method": "verified_expected_education_record", "expected": True,
@@ -438,6 +480,8 @@ def annotate_work_country(snapshot, job):
         "will you now or will you in the future require employment visa sponsorship?",
         "i will now or in the future need assistance with a work visa.",
     }
+    from .known_answers import RELATIVE_AUTHORIZATION, RELATIVE_SPONSORSHIP
+    labels.update(RELATIVE_AUTHORIZATION | RELATIVE_SPONSORSHIP)
     for field in snapshot.get("fields", []):
         if not field.get("country_context") and normalize(field["label"]) in labels:
             field["country_context"] = country

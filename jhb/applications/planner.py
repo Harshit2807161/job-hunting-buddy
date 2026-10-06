@@ -116,6 +116,13 @@ def key_for_field(field, answers):
         # An exact known instruction takes precedence over historical general
         # answers; unfamiliar notes require an explicit context-bound response.
         return observed_known_key(field, answers) or context_response_key(field, answers)
+    education_month = re.fullmatch(r"(start|end)-month--(\d+)", field["ref"])
+    if (education_month and field.get("type") in {"combobox", "select"}
+            and label == education_month[1] + " date month"):
+        key = f"education.{education_month[2]}.{education_month[1]}_month"
+        item = answers.get(key, {})
+        if item.get("status") == "verified" and item.get("source"):
+            return key
     education_year = re.fullmatch(r"(start|end)-year--(\d+)", field["ref"])
     for key, item in answers.items():
         if key.startswith("custom.") and normalize(item.get("question", "")) == label:
@@ -146,7 +153,7 @@ def key_for_field(field, answers):
                             or not selected or any(value not in offered for value in selected)):
                         continue
             return key
-    if label in {"your current location", "current location"}:
+    if label in {"your current location", "current location", "where are you currently located?"} and field.get("type") in {"text", "textarea"}:
         location = answers.get("preferences.application_city", {})
         if location.get("status") == "verified" and location.get("source"):
             return "preferences.application_city"
@@ -184,7 +191,7 @@ def key_for_field(field, answers):
         key = f"education.{education_year[2]}.{education_year[1]}_year"
         if key in answers:
             return key
-    if (label in {"how did you hear about this job?", "how did you hear about us?"}
+    if (label in {"how did you hear about this job?", "how did you hear about us?", "how did you hear about this role?"}
             and answers.get("screening.referral", {}).get("status") != "verified"
             and "standing.discovery_source" in answers):
         return "standing.discovery_source"
@@ -309,11 +316,12 @@ def key_for_field(field, answers):
             and "standing.office_willingness" in answers):
         return "standing.office_willingness"
     if label in {"when is your earliest available start date?", "ideal start date in office",
-                 "what is your earliest available start date?", "what is your ideal start date?"} and "preferences.start_date" in answers:
+                 "what is your earliest available start date?", "what is your ideal start date?",
+                 "when can you start a new role?", "how soon are you able to start a new role?"} and "preferences.start_date" in answers:
         return "preferences.start_date"
     if label in {"your current location", "current location"} and "preferences.application_city" in answers:
         return "preferences.application_city"
-    if label in {"desired salary", "salary expectations", "what are your yearly salary expectations?", "what are your salary expectations?", "what are your base salary expectations?"} and "preferences.salary" in answers:
+    if label in {"desired salary", "salary expectations", "what are your yearly salary expectations?", "what are your salary expectations?", "what are your base salary expectations?", "what is the annual salary or range you are targeting?"} and "preferences.salary" in answers:
         return "preferences.salary"
     education = re.fullmatch(r"are you currently attending or a recent graduate of (?:the )?(.+)\?", label)
     if education:
@@ -352,6 +360,7 @@ def _observed_profile_key(field, answers):
     mappings = {
         "university": "standing.current_education_school",
         "current university": "standing.current_education_school",
+        "which university will you graduate from?": "standing.current_education_school",
         "where was your last internship?": "standing.latest_internship",
         "what are some ai specific technologies you are comfortable with?": "standing.ai_technologies",
     }
