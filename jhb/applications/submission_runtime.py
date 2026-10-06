@@ -335,7 +335,11 @@ def _checks(request, helpers, packet, attempt):
                                      **({"country_context": field["country_context"]} if field.get("country_context") else {})}]}
             continue
         record = matches[0]
-        key = key_for_field(field, approved)
+        from .known_answers import PROFILE_QUESTIONS
+        # These projections additionally recheck their original source facts.
+        # probe_answers contains only facts validated against this exact review
+        # binding by _reviewed_probe_answers; retained values remain immutable.
+        key = key_for_field(field, probe_answers if normalize(field['label']) in PROFILE_QUESTIONS else approved)
         catalog = re.fullmatch(r"standing\.catalog\.(\d+)\.(school|major)", record["key"])
         catalog_ref = f"{'discipline' if catalog and catalog[2] == 'major' else 'school'}--{catalog[1]}" if catalog else None
         catalog_match = catalog and field["ref"] == catalog_ref

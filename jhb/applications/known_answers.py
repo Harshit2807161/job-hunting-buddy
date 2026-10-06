@@ -97,6 +97,8 @@ def contact_location_basis(answers):
 def _signature(field):
     observation = {"ref": field.get("ref"), "label": _label(field), "type": field.get("type"),
                    "choices": _choices(field), "country_context": field.get("country_context")}
+    if _label(field) in PROFILE_QUESTIONS:
+        observation["required"] = field.get("required")
     from .ashby_education import school_control
     if ((_label(field) == "state/country of residence" and field.get("type") == "combobox")
             or contact_location(field) or school_control(field)):
@@ -152,6 +154,11 @@ def key_for_field(field, answers):
     item = _verified(answers, key)
     if (item and isinstance(item.get("source"), dict)
             and item["source"].get("observation_sha256") == signature):
+        if label in PROFILE_QUESTIONS:
+            current = _profile_projection(field, answers)
+            if (not current or current[0] != item.get("value")
+                    or current[1]["records"] != item["source"].get("records")):
+                return None  # A changed source record invalidates the old projection.
         return key
     return None
 
@@ -293,6 +300,17 @@ RELATIVE_SPONSORSHIP = frozenset({
 })
 _GRADUATION_LABELS = frozenset({"what is your expected graduation date?",
     "what is your expected graduation month & year?", "what is your expected graduation month and year?"})
+PROFILE_QUESTIONS = frozenset({
+    "what is your current/most recent employer?",
+    "please list the city and state/province that you are located in today.",
+    "if you are not located in one of the above hubs, are you willing to relocate?",
+    "please select your graduation month", "please select your graduation year",
+    "please select your current or most recent university.",
+    "have you had a previous work experience in software engineering?",
+})
+PROFILE_CATALOG_QUESTIONS = frozenset({"please select your graduation month",
+    "please select your graduation year", "please select your current or most recent university."})
+_UNIVERSITY = "please select your current or most recent university."
 _START_LABELS = frozenset({"when are you available to start work?", "when can you start a new role?",
                          "how soon are you able to start a new role?",
                          "if offered a position, what is your ideal start-date?"})
@@ -337,6 +355,110 @@ def _office_willingness_question(label):
         or label == "this position requires 4 days a week in office, including thursdays in our mountain view, ca headquarters and the remaining 3 days in either mountain view or our san francisco, ca office. are you able to meet this requirement?")
 
 
+def _profile_basis(field, answers):
+    """Exact unqualified questions, bound to complete verified source records."""
+    label, kind = _label(field), field.get("type")
+    description = normalize(field.get("description") or "")
+    permitted = {""} | ({"if your university is not listed, please select ‘other.’",
+                           "if your university is not listed, please select 'other.'",
+                           'if your university is not listed, please select "other."'} if label == _UNIVERSITY else set())
+    if (label not in PROFILE_QUESTIONS or field.get("description_truncated")
+            or description not in permitted):
+        return {}
+    if label in PROFILE_CATALOG_QUESTIONS:
+        if kind not in {"combobox", "select"}:
+            return {}
+        from .ashby_education import school_basis
+        current = school_basis(answers)
+        if not current:
+            return {}
+        records = {"standing.current_education_school": current}
+        if label != _UNIVERSITY:
+            expected = _verified(answers, "education.expected_graduation_date")
+            bounds = _bounds(expected.get("value")) if expected else None
+            end = _bounds(current["source"]["original_record"].get("end_date"))
+            if not bounds or not end or not end[0] <= bounds[0] <= bounds[1] <= end[1]:
+                return {}
+            # A year-only date cannot supply a graduation month.
+            if label.endswith("month") and bounds[0].month != bounds[1].month:
+                return {}
+            records["education.expected_graduation_date"] = expected
+        return records
+    if label.startswith("please list the city"):
+        item = _verified(answers, "preferences.application_city")
+        return ({"preferences.application_city": item} if kind == "text" and item
+                and isinstance(item.get("value"), str) and item["value"].strip() else {})
+    if label.startswith("if you are not located"):
+        item = _verified(answers, "preferences.relocation")
+        return ({"preferences.relocation": item} if kind == "radio" and item
+                and type(item.get("value")) is bool else {})
+    if kind != ("text" if label.startswith("what is your current/") else "radio"):
+        return {}
+    records = {}
+    indexes = sorted({m[1] for key in answers if (m := re.fullmatch(r"experience\.(\d+)\..+", key))})
+    for index in indexes:
+        row = {column: _verified(answers, f"experience.{index}.{column}")
+               for column in ("company", "title", "start_date", "end_date", "current")}
+        if (not all(row.values()) or any(item["source"] != row["company"]["source"] for item in row.values())
+                or any(not isinstance(row[col]["value"], str) or not row[col]["value"].strip() for col in ("company", "title"))
+                or type(row["current"]["value"]) is not bool):
+            return {}
+        start, end = _bounds(row["start_date"]["value"]), _bounds(row["end_date"]["value"])
+        today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+        if (not start or start[0] > today
+                or row["current"]["value"] and row["end_date"]["value"] != ""
+                or not row["current"]["value"] and (not end or end[1] >= today or end[0] < start[0])):
+            return {}
+        records.update({f"experience.{index}.{column}": item for column, item in row.items()})
+    return records
+
+
+def _profile_projection(field, answers):
+    records = _profile_basis(field, answers)
+    if not records:
+        return None
+    label, choices = _label(field), _choices(field)
+    value = None
+    if label.startswith("what is your current/"):
+        indexes = {key.split(".")[1] for key in records}
+        current = [i for i in indexes if records[f"experience.{i}.current"]["value"]]
+        if len(current) > 1:
+            return None
+        if current:
+            latest = current
+        else:
+            ends = {i: _bounds(records[f"experience.{i}.end_date"]["value"]) for i in indexes}
+            newest = max(bound[1] for bound in ends.values())
+            latest = [i for i, bound in ends.items() if bound[1] == newest]
+        if len(latest) == 1:
+            value = records[f"experience.{latest[0]}.company"]["value"]
+    elif label.startswith("have you had a previous"):
+        if any(key.endswith(".title") and re.search(r"\bsoftware (?:development )?(?:engineer|developer)\b", item["value"], re.I)
+               for key, item in records.items()):
+            matched = [choice for choice in choices if normalize(choice) == "yes"]
+            value = matched[0] if len(matched) == 1 else None
+        # Omission from a resume never establishes No to employment history.
+    elif label.startswith("please list the city"):
+        value = records["preferences.application_city"]["value"]
+    elif label.startswith("if you are not located"):
+        matched = [choice for choice in choices if normalize(choice) == ("yes" if records["preferences.relocation"]["value"] else "no")]
+        value = matched[0] if len(matched) == 1 else None
+    elif label == _UNIVERSITY:
+        from .cli_runtime import option_matches
+        school = records["standing.current_education_school"]["value"]
+        matched = [choice for choice in choices if option_matches(choice, school, field_id="school--0")]
+        value = matched[0] if len(matched) == 1 else None
+        # An incomplete catalog cannot prove absence, so never infer Other.
+    else:
+        from calendar import month_name
+        bound = _bounds(records["education.expected_graduation_date"]["value"])[0]
+        desired = month_name[bound.month] if label.endswith("month") else str(bound.year)
+        matched = [choice for choice in choices if normalize(choice) == normalize(desired)]
+        value = matched[0] if len(matched) == 1 else None
+    return ((value, {"records": records, "criterion": "Exact observed profile question projected from verified original records; no qualification or authorization expansion"})
+            if value is not None else None)
+
+
 def catalog_basis(field, answers):
     """Complete verified prerequisites for inspecting a known native catalog.
 
@@ -346,6 +468,8 @@ def catalog_basis(field, answers):
     if field.get("description_truncated"):
         return {}
     label, records = _prompt(field), {}
+    if label in PROFILE_CATALOG_QUESTIONS:
+        return _profile_basis(field, answers)
     if plain_contact_location(field):
         basis = contact_location_basis(answers)
         return ({"preferences.application_city": basis[3], "identity.state": basis[1],
@@ -462,6 +586,8 @@ def _common_projection(field, job, answers):
     label, kind, choices = _prompt(field), field.get("type"), _choices(field)
     if field.get("description_truncated"):
         return None
+    if label in PROFILE_QUESTIONS:
+        return _profile_projection(field, answers)
     select = kind in {"radio", "combobox", "select", "multiselect"}
     def result(value, records, criterion):
         return value, {"records": records, "criterion": criterion}

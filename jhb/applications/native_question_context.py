@@ -49,11 +49,18 @@ def _guided_record(field, record):
 
 def _fields(snapshot, job, answers):
     identity = boards.job_identity(job.get('application_url') or job.get('url'))
-    if not identity or identity[0] != 'greenhouse':
+    if not identity or identity[0] not in {'greenhouse', 'ashby'}:
         return []
-    fields = [field for field in snapshot.get('fields', []) if field.get('type') in {'combobox', 'select'}
-              and (_known_record(field, answers) or any(_guided_record(field, record)
-                   for key, record in answers.items() if key.startswith('custom.')))]
+    from .known_answers import PROFILE_CATALOG_QUESTIONS, needs_catalog
+    if identity[0] == 'ashby':
+        fields = [field for field in snapshot.get('fields', [])
+                  if field.get('type') in {'combobox', 'select'}
+                  and normalize(field.get('label', '')) in PROFILE_CATALOG_QUESTIONS
+                  and needs_catalog(field, answers)]
+    else:
+        fields = [field for field in snapshot.get('fields', []) if field.get('type') in {'combobox', 'select'}
+                  and (_known_record(field, answers) or any(_guided_record(field, record)
+                       for key, record in answers.items() if key.startswith('custom.')))]
     if not fields:
         return []
     if boards.job_identity(snapshot.get('url')) != identity:
