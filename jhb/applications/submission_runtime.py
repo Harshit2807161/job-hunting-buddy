@@ -173,6 +173,61 @@ def _review_matches(request, attempt, snapshot):
             and review.get("authorization_id") == attempt["authorization_id"] and review.get("job_hash") == attempt["job_hash"])
 
 
+def _reviewed_probe_answers(request, packet, attempt, approved):
+    """Restore only review-bound prerequisites for read-only native catalogs.
+
+    Approved values remain the separate binding/retention catalog. A derived
+    answer alone cannot establish the facts needed to reopen a closed menu.
+    """
+    derived = [r for r in packet.get("filled", [])
+               if str(r.get("key", "")).startswith("standing.observed.")]
+    if not derived:
+        return approved
+    binding = attempt.get("review_binding")
+    if not binding and request.get("authorization_path"):
+        from .overnight import PORTAL_SCOPE
+        raw = private_file(request["authorization_path"]).read_bytes()
+        authority = json.loads(raw)
+        if (authority.get("scope") == PORTAL_SCOPE
+                and hashlib.sha256(raw).hexdigest() == attempt.get("authorization_id")
+                and authority.get("job_hash") == attempt.get("job_hash")):
+            binding = authority.get("binding")
+    if not binding:
+        return approved  # Legacy evidence cannot acquire a new fact source.
+    from . import booklet
+    from .approvals import _facts
+    job, role = packet.get("job", {}), binding.get("selected_role")
+    packet_file = private_file(binding.get("packet_path", ""))
+    raw_packet = packet_file.read_bytes()
+    if (role not in {"sde", "ml"} or role != packet.get("selected_role", job.get("selected_role"))
+            or str(packet_file) != attempt.get("packet_path")
+            or binding.get("packet_sha256") != attempt.get("packet_sha256")
+            or hashlib.sha256(raw_packet).hexdigest() != binding.get("packet_sha256")
+            or json.loads(raw_packet) != packet
+            or job.get("dedupe_hash") != attempt.get("job_hash")
+            or boards.application_hash(job.get("url")) != attempt.get("job_hash")
+            or boards.job_identity(job.get("url")) != boards.job_identity(attempt.get("application_url"))):
+        raise ValueError("Native catalog facts do not bind this reviewed job and role")
+    book = booklet.load(private_file(binding.get("book_path", "")))
+    if _facts(book, job, role) != binding.get("facts_sha256"):
+        raise ValueError("Reviewed catalog facts changed")
+    catalog, probes = booklet.for_role(book, role, job=job), dict(approved)
+    for row in derived:
+        source = row.get("source", {})
+        records = source.get("records") if isinstance(source, dict) else None
+        if (not isinstance(source, dict) or source.get("method") != "verified_observed_form_derivation"
+                or row["key"] != "standing.observed." + str(source.get("observation_sha256"))
+                or not isinstance(records, dict) or not records):
+            raise ValueError("Derived answer lacks reviewed base facts")
+        for key, record in records.items():
+            if (not isinstance(record, dict) or record.get("status") != "verified"
+                    or not record.get("source") or catalog.get(key) != record):
+                raise ValueError("Derived answer differs from its reviewed base facts")
+            if key not in probes:
+                probes[key] = record
+    return probes
+
+
 def _checks(request, helpers, packet, attempt):
     if packet.get("review_mode") == "candidate_current_form":
         from .live_review import observe, project
@@ -233,7 +288,8 @@ def _checks(request, helpers, packet, attempt):
                 return {"state": "waiting_review", "reason": "Application questions changed after review; review the updated form",
                         "click_started": False}
     from .native_question_context import enrich_sync
-    enrich_sync(snapshot, packet.get("job", {}), approved,
+    probe_answers = _reviewed_probe_answers(request, packet, attempt, approved)
+    enrich_sync(snapshot, packet.get("job", {}), probe_answers,
                 lambda field: _board_dispatch({"operation": "describe", "field": field,
                     "target_id": request["target_id"], "expected_url": attempt["application_url"]},
                     helpers, attempt["application_url"]))
