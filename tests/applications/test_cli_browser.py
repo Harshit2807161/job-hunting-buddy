@@ -110,6 +110,64 @@ def test_cli_timeout_reaps_process_before_releasing_lane(monkeypatch, tmp_path):
     assert client.last_failure["operation"] == "observe"
 
 
+@pytest.mark.parametrize("storage", ["writable", "unavailable", "symlink"])
+def test_fill_timeout_retains_bounded_private_output_without_replay(monkeypatch, tmp_path, storage):
+    monkeypatch.setattr("jhb.applications.cli_browser.ROOT", tmp_path)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
+    executable = tmp_path / "synthetic-stalled-cli"
+    executable.write_text(
+        f"#!{sys.executable}\nimport sys,time\n"
+        "sys.stdout.write('x'*140000+'synthetic stdout tail\\n');sys.stdout.flush()\n"
+        # Even a success-looking result cannot resolve a timed-out operation.
+        f"print({MARKER!r}+'{{\"verified\":true}}',flush=True)\n"
+        "sys.stderr.write('y'*140000+'synthetic stderr tail\\n');sys.stderr.flush()\n"
+        "time.sleep(30)\n"
+    )
+    executable.chmod(0o700)
+    spawned, real_popen = [], subprocess.Popen
+    def spawn(*args, **kwargs):
+        assert kwargs["env"].get("JHB_REPAIR_PROCESS_TOKEN") == os.environ.get("JHB_REPAIR_PROCESS_TOKEN")
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+    monkeypatch.setattr("jhb.applications.cli_browser.subprocess.Popen", spawn)
+    if storage == "unavailable":
+        def fail_write(*args, **kwargs):
+            raise OSError("Synthetic diagnostic storage failure")
+        monkeypatch.setattr("jhb.applications.booklet.write_private", fail_write)
+    elif storage == "symlink":
+        (tmp_path / "private").mkdir()
+        (tmp_path / "unrelated").mkdir()
+        (tmp_path / "private" / "browser-errors").symlink_to(tmp_path / "unrelated")
+    client = BrowserUseCLI(executable=str(executable), timeout=1)
+    with pytest.raises(TimeoutError, match="^Browser Use CLI operation timed out$") as error:
+        asyncio.run(client.invoke("fill", field={"ref": "degree--0", "type": "combobox"}, value="Synthetic degree"))
+    assert len(spawned) == 1 and spawned[0].returncode is not None
+    with pytest.raises(ProcessLookupError):
+        os.kill(spawned[0].pid, 0)
+    assert client.last_failure["kind"] == "timeout"
+    assert client.last_failure["operation"] == "fill"
+    assert "synthetic stdout" not in json.dumps(client.last_failure)
+    assert "synthetic stderr" not in json.dumps(client.last_failure)
+    assert not vars(error.value)  # Private output must not escape on the exception.
+    if storage == "writable":
+        from pathlib import Path
+        path = Path(client.last_failure["diagnostic_path"])
+        assert path.parent == tmp_path / "private" / "browser-errors"
+        assert path.stat().st_mode & 0o777 == 0o600
+        diagnostic = json.loads(path.read_text())
+        assert diagnostic["operation"] == "fill"
+        assert diagnostic["timed_out"] is True
+        assert diagnostic["returncode"] == spawned[0].returncode
+        assert len(diagnostic["stdout"]) == len(diagnostic["stderr"]) == 131072
+        assert diagnostic["stdout"].endswith(MARKER+'{"verified":true}\n')
+        assert diagnostic["stderr"].endswith("synthetic stderr tail\n")
+    else:
+        assert "diagnostic_path" not in client.last_failure
+        if storage == "symlink":
+            assert not list((tmp_path / "unrelated").iterdir())
+
+
 def test_async_cancellation_waits_for_child_cleanup(monkeypatch, tmp_path):
     monkeypatch.setattr("jhb.applications.cli_browser.ROOT", tmp_path)
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
@@ -144,6 +202,7 @@ def test_lane_wait_is_bounded_and_never_starts_second_process(monkeypatch, tmp_p
         monkeypatch.setattr(BrowserUseCLI, "_run", lambda *a: pytest.fail("Started without lane"))
         with pytest.raises(TimeoutError, match="lane timed out"):
             BrowserUseCLI(timeout=0.1).call("observe")
+    assert not (tmp_path / "private" / "browser-errors").exists()
 
 
 def test_upload_cache_is_per_client_target_path_and_contents(monkeypatch, tmp_path):

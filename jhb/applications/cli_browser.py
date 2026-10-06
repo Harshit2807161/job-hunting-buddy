@@ -87,18 +87,19 @@ class BrowserUseCLI:
             except ProcessLookupError:
                 pass
         try:
-            process.communicate(timeout=1)
+            return process.communicate(timeout=1)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.communicate(timeout=2)
+            return process.communicate(timeout=2)
 
     def _run(self, script, env, deadline, cancelled):
         process = subprocess.Popen([self.executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
         first = True
+        timeout_error = None
         try:
             while True:
                 if cancelled.is_set():
@@ -112,10 +113,19 @@ class BrowserUseCLI:
                     return subprocess.CompletedProcess([self.executable], process.returncode, stdout, stderr)
                 except subprocess.TimeoutExpired:
                     first = False
+        except TimeoutError as exc:
+            timeout_error = exc
+            raise
         finally:
             # Reap before releasing the global browser lane, even on timeout,
             # cancellation or a parser exception. Never echo captured content.
-            self._stop(process)
+            stdout, stderr = self._stop(process)
+            if timeout_error is not None:
+                # Keep the bounded tails from the reaped child. A partial result
+                # cannot resolve the timeout or authorize replaying the action.
+                timeout_error._browser_cli_diagnostic = {
+                    "returncode": process.returncode, "timed_out": True,
+                    "stdout": stdout[-131072:], "stderr": stderr[-131072:]}
 
     def call(self, operation: str, *, _cancelled=None, _before_run=None, **payload):
         started = time.monotonic()
@@ -186,9 +196,19 @@ class BrowserUseCLI:
                 _before_run()  # Revalidate saved evidence after acquiring the browser lane.
             cancellation_check()
             result = self._run(script, env, deadline, cancelled)
-        except (TimeoutError, RuntimeError):
+        except (TimeoutError, RuntimeError) as exc:
             self.last_failure = {"operation": operation, "kind": "cancelled" if cancelled.is_set() else "timeout",
                                  "elapsed_seconds": round(time.monotonic()-started, 3)}
+            captured = exc.__dict__.pop("_browser_cli_diagnostic", None)
+            if captured is not None:
+                from .booklet import write_private
+                diagnostic = ROOT / "private" / "browser-errors" / f"{time.time_ns()}.json"
+                try:
+                    write_private(diagnostic, {"operation": operation, **captured})
+                except (OSError, ValueError):
+                    pass  # Storage failure must not mask the original timeout.
+                else:
+                    self.last_failure["diagnostic_path"] = str(diagnostic)
             raise
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
