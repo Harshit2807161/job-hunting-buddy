@@ -25,6 +25,41 @@ DISPATCHERS = {"jhb.applications.cli_runtime", "jhb.applications.manual_runtime"
 CAPACITY_MESSAGE = "Worker-owned browser tab capacity reached"
 PNG = b"\x89PNG\r\n\x1a\n"
 TERMINAL = re.compile(r"(?:submit(?: application)?|apply(?: now)?|send application|finish application)", re.I)
+EMPTY_TECHNICAL_KINDS = {"browser_transport", "browser_mechanics", "TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError"}
+
+# Only the observed native Greenhouse form is supported. Never interpret an
+# unknown widget, opaque frame or an incomplete page as proof of emptiness.
+EMPTY_GREENHOUSE_FORM = r"""(() => {
+ const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
+ const forms=[...document.querySelectorAll('form.application--form#application-form')];
+ const form=forms.length===1?forms[0]:null;
+ const controls=form?[...form.querySelectorAll('input,textarea,select,[contenteditable=true]')]:[];
+ const interactive=controls.filter(e=>visible(e)&&!['hidden','button','submit','reset','file'].includes(e.type));
+ const hasValues=controls.filter(e=>!['hidden','button','submit','reset','file'].includes(e.type)).some(e=>e.type==='checkbox'||e.type==='radio'?e.checked:
+   !!String(e.isContentEditable?e.innerText:e.value||'').trim());
+ const checked=!!form&&form.querySelectorAll('input:checked,[aria-checked=true]').length>0;
+ const customValues=!!form&&[...form.querySelectorAll('.select__single-value,.select__multi-value,[role=option][aria-selected=true]')]
+   .some(e=>visible(e)&&!!e.textContent.trim());
+ const attachments=!!form&&(controls.some(e=>e.type==='file'&&(e.files.length||e.value))||
+   [...form.querySelectorAll('.file-upload__filename,a[download]')].some(e=>!!e.textContent.trim())||
+   [...form.querySelectorAll('.file-upload')].some(e=>!!e.__jhbUploadReceipt));
+ const unknownControls=!!form&&[...form.querySelectorAll('[role=textbox],[role=combobox],[role=slider]')]
+   .some(e=>visible(e)&&!e.matches('input,textarea,select,[contenteditable=true]'));
+ const frames=[...document.querySelectorAll('iframe')].filter(visible);
+ const unknownFrames=frames.some(e=>{try{const u=new URL(e.src);return !(e.closest('.grecaptcha-badge')&&
+   u.protocol==='https:'&&['www.google.com','www.recaptcha.net'].includes(u.hostname)&&
+   /^\/recaptcha\/(api2|enterprise)\/anchor$/.test(u.pathname));}catch{return true}});
+ const dialogs=[...document.querySelectorAll('dialog[open],[role=dialog],[aria-modal=true],[role=listbox]')].some(visible);
+ const validation=!!form&&[...form.querySelectorAll('[aria-invalid=true],[role=alert],.error-message,.field-error')]
+   .some(e=>visible(e)&&(e.getAttribute('aria-invalid')==='true'||!!e.textContent.trim()));
+ const authChallenge=[...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible)||
+   /verify (?:that )?you are human|complete (?:the )?security check|verify your (?:identity|email)/i.test(document.body?.innerText||'');
+ const shadowControls=!!form&&[...form.querySelectorAll('*')].some(e=>e.shadowRoot&&visible(e));
+ return {schema_version:1,url:location.href,ready:document.readyState==='complete',
+   known_form:!!form&&['first_name','last_name','email'].every(id=>form.querySelector('input#'+id)),
+   control_count:interactive.length,has_values:hasValues,checked,custom_values:customValues,attachments,
+   unknown_controls:unknownControls,unknown_frames:unknownFrames,dialogs,validation,auth_challenge:authChallenge,shadow_controls:shadowControls};
+})()"""
 
 
 class TabCapacityReached(ValueError):
@@ -479,6 +514,116 @@ class OwnedTabs:
                 self.helpers["switch_tab"](original)
         return closed
 
+    def _empty_technical_evidence(self, row, target):
+        """Prove a captured technical attempt has no retained or terminal work."""
+        from . import capture, historical
+        try:
+            identity = row.get("job_identity")
+            if (row.get("state") != "active" or row.get("purpose") != "application"
+                    or not identity or identity[0] != "greenhouse" or not row.get("review_directory")):
+                return None
+            directory = Path(row["review_directory"])
+            packet_path, raw = _private(directory / "packet.json", self.root)
+            image, shot = _private(directory / "browser.png", self.root)
+            packet = json.loads(raw); job = packet.get("job", {}); job_hash = boards.application_hash(job.get("url"))
+            if (not job_hash or job_hash != job.get("dedupe_hash") or list(boards.job_identity(job.get("url")) or ()) != identity
+                    or packet.get("state") != "failed" or packet.get("retryable") is not True
+                    or packet.get("error_kind") not in EMPTY_TECHNICAL_KINDS or packet.get("filled") != []
+                    or packet.get("submitted") is not False or packet.get("runtime_click_started")
+                    or packet.get("capture", {}).get("method") != "browser_use_cli"
+                    or packet.get("capture", {}).get("target_id") != target or not capture.valid(packet, shot)):
+                return None
+            inventory = packet.get("review_inventory", {}).get("fields")
+            questions = packet.get("review_questions", [])
+            if (not isinstance(inventory, list) or not isinstance(questions, list)
+                    or any(not isinstance(f, dict) or f.get("status") not in {"blank", "declined"}
+                           for f in inventory + questions)):
+                return None
+            # File markers may precede a database insert after a crash.
+            for folder in ("application-approvals", "authorized-submissions", "application-discards"):
+                marker = self.root / "private" / folder / (job_hash + ".json" if folder == "application-discards" else job_hash)
+                if marker.exists() or marker.is_symlink():
+                    return None
+            db = self.root / "data" / "jobs.sqlite3"
+            if not db.is_file() or db.is_symlink() or any(p.is_symlink() for p in db.parents):
+                return None
+            with closing(sqlite3.connect(db.resolve().as_uri()+"?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if not {"applications", "application_approvals", "authorized_submission_attempts", "confirmed_submissions"} <= tables:
+                    return None
+                saved = conn.execute("SELECT * FROM applications WHERE job_hash=?", (job_hash,)).fetchone()
+                if (not saved or saved["state"] not in {"retry", "failed"} or not saved["packet"]
+                        or Path(saved["packet"]).parent != packet_path.parent
+                        or saved["error_kind"] not in {packet["error_kind"], None}
+                        or saved["state"] == "retry" and saved["error_kind"] != packet["error_kind"]
+                        or list(boards.job_identity(json.loads(saved["job_json"]).get("url")) or ()) != identity
+                        or any(conn.execute(f"SELECT 1 FROM {table} WHERE job_hash=?", (job_hash,)).fetchone()
+                               for table in ("application_approvals", "authorized_submission_attempts"))
+                        or historical.match(conn, job, root=self.root)):
+                    return None
+                queue_revision = hashlib.sha256(json.dumps(dict(saved), sort_keys=True).encode()).hexdigest()
+            return {"job_hash": job_hash, "target_id": target, "queue_revision": queue_revision,
+                    "packet_path": str(packet_path), "packet_sha256": hashlib.sha256(raw).hexdigest(),
+                    "screenshot_path": str(image), "screenshot_sha256": hashlib.sha256(shot).hexdigest()}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, sqlite3.Error):
+            return None
+
+    def cleanup_empty_technical(self):
+        """Park only a fresh, genuinely empty technical attempt; preserve work."""
+        live = self.refresh()
+        if any(target in live and row.get("state") == "active" for target, row in self.unclaimed.items()):
+            return []
+        closed = []
+        try:
+            original = self.helpers["current_tab"]().get("targetId")
+        except Exception:
+            return []
+        try:
+            for target, row in self.tabs.items():
+                if (target not in live or list(boards.job_identity(live[target].get("url")) or ()) != row.get("job_identity")):
+                    continue
+                evidence = self._empty_technical_evidence(row, target)
+                if not evidence:
+                    continue
+                self.helpers["switch_tab"](target)
+                if self.helpers["current_tab"]().get("targetId") != target:
+                    continue
+                observed = self.helpers["js"](EMPTY_GREENHOUSE_FORM)
+                flags = ("has_values", "checked", "custom_values", "attachments", "unknown_controls", "unknown_frames",
+                         "dialogs", "validation", "auth_challenge", "shadow_controls")
+                if (not isinstance(observed, dict) or observed.get("schema_version") != 1
+                        or observed.get("ready") is not True or observed.get("known_form") is not True
+                        or type(observed.get("control_count")) is not int or observed["control_count"] < 3
+                        or observed.get("url") != live[target]["url"]
+                        or any(observed.get(key) is not False for key in flags)
+                        or self._empty_technical_evidence(row, target) != evidence):
+                    continue
+                # Keep the last read next to the official close. Human edits or
+                # site validation appearing during evidence checks cancel it.
+                if (self.helpers["js"](EMPTY_GREENHOUSE_FORM) != observed
+                        or self._empty_technical_evidence(row, target) != evidence):
+                    continue
+                path = self.root / "private" / "browser-empty-attempt-cleanup" / f"{time.time_ns()}-{evidence['job_hash']}.json"
+                proof = {"schema_version": 1, "reason": "empty_captured_technical_attempt", "recorded_at": time.time(),
+                         **evidence, "live_observation": {k: v for k, v in observed.items() if k != "url"},
+                         "observed_url_sha256": hashlib.sha256(observed["url"].encode()).hexdigest(), "state": "close_requested"}
+                write_private(path, proof)
+                success = self.close(target, "empty_captured_technical_attempt", expected_url=observed["url"])
+                write_private(path, {**proof, "state": "closed" if success else "close_unconfirmed"})
+                if success:
+                    closed.append(target)
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+            pass  # Unknown or changed evidence preserves the target.
+        finally:
+            if original and original not in closed:
+                try:
+                    if original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
+                        self.helpers["switch_tab"](original)
+                except RuntimeError:
+                    pass
+        return closed
+
     def record_popup(self, request, result, before):
         if result.get("state") != "destination":
             return
@@ -568,8 +713,9 @@ def dispatch_owned(request, helpers, dispatcher, *, dispatcher_name, root=None):
         return {"closed_targets": owner.cleanup_verified_source(request)}
     if operation in {"open", "resolve", "resolve_link", "cleanup_tabs"}:
         closed = owner.cleanup()
+        closed += owner.cleanup_empty_technical()
         if operation == "cleanup_tabs":
-            return {"closed_targets": closed, "capacity": _cap(), "mutations": "owned_receipt_tabs_only"}
+            return {"closed_targets": closed, "capacity": _cap(), "mutations": "owned_receipts_or_proven_empty_technical_attempts"}
     scoped = dict(helpers)
     purpose = ("source_readonly" if operation == "resolve_link" else "source") if dispatcher_name == "jhb.applications.linkedin_runtime" else "application"
     scoped["new_tab"] = lambda url="about:blank": owner.new_tab(url, purpose=purpose)
