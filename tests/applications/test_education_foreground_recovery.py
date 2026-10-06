@@ -56,6 +56,6 @@ def test_only_failed_hidden_education_postcondition_wakes_once_and_never_duplica
             expected_clicks=2 if mode in {'background','still_missing'} else 0 if mode=='unknown_click' else 1
             assert page.evaluate('window.clicks')==expected_clicks
             assert len(scrolls)==(2 if mode in {'background','still_missing'} else 1)
-            assert activations==(['owned'] if mode in {'background','delayed','changed_after_activation','guard_after_activation','extra_delayed_rows','still_missing'} else [])
+            assert activations==(['owned'] if mode in {'background','delayed','changed_after_activation','guard_after_activation','guard_changed','extra_delayed_rows','still_missing'} else [])
             assert page.evaluate('window.submissions')==0
         finally:browser.close()

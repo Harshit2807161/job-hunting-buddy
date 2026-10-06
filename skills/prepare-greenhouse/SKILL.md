@@ -93,11 +93,14 @@ answer and provenance. Repeat that ownership-aware translation during retained
 answer audits. A generic country or citizenship field does not inherit this rule.
 
 A `DOM.scrollIntoViewIfNeeded` timeout before a native click can mean an owned
-background tab has stopped rendering. The runtime validates the exact target,
-job identity and submission guard, activates that target once, validates again,
-and retries only that same backend-node scroll. It then repeats the normal
-geometry and obstruction checks before clicking. A second timeout propagates;
-an unknown click outcome must never trigger replay of the click or whole fill.
+background tab has stopped rendering. The runtime first validates the exact
+attached target and job URL through browser-level target metadata, then activates
+that target once. It checks the current renderer URL and submission guard after
+waking, followed by another target check, before retrying only that same
+backend-node scroll. A paused renderer is not queried before activation, and
+waking alone never authorizes input. The normal geometry and obstruction checks
+still precede clicking. A second timeout propagates; an unknown click outcome
+must never trigger replay of the click or whole fill.
 
 If a completed Add another input leaves the education row count unchanged on a
 hidden owned tab, the runtime may wake that exact guarded job once. Re-read the

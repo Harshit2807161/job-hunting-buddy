@@ -32,18 +32,25 @@ def _wake_owned_scroll(request, helpers, matches_url):
     if not target or not expected or not matches_url(expected):
         raise ValueError("Owned application tab changed during recovery")
 
-    def validate():
+    def validate_target():
+        # The official helper resolves Target.getTargetInfo in the browser
+        # process. Renderer JS can itself time out while this owned tab sleeps;
+        # requiring it before activation would deadlock the documented recovery.
         current = helpers["current_tab"]()
-        if (current.get("targetId") != target or not matches_url(current.get("url"))
-                or not matches_url(helpers["js"]("location.href"))):
+        if current.get("targetId") != target or not matches_url(current.get("url")):
             raise ValueError("Owned application tab changed during recovery")
-        if helpers["js"]("window.__jhbGuard === true") is not True:
-            raise ValueError("Application submission guard changed during scroll recovery")
 
-    validate()
+    validate_target()
     helpers["activate_tab"](target)
     helpers["wait"](0.5)
-    validate()
+    validate_target()
+    # Waking grants no input authority. Recheck the live renderer URL and guard
+    # before the caller can retry its one native scroll or inspect fresh geometry.
+    if not matches_url(helpers["js"]("location.href")):
+        raise ValueError("Owned application tab changed during recovery")
+    if helpers["js"]("window.__jhbGuard === true") is not True:
+        raise ValueError("Application submission guard changed during scroll recovery")
+    validate_target()  # A stale session must not silently reattach during JS.
 
 
 def _settled_click(backend, cdp, wait, click_at_xy):

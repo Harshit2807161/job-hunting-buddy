@@ -57,11 +57,26 @@ def fixture(board):
 @pytest.mark.parametrize("board", ["greenhouse", "ashby"])
 @pytest.mark.parametrize("mode", ["normal", "recover", "repeat_timeout", "target_changed", "job_changed",
                                   "guard_changed", "target_after_activation", "guard_after_activation",
-                                  "click_timeout", "non_timeout"])
+                                  "click_timeout", "non_timeout", "renderer_paused",
+                                  "renderer_after_activation_timeout", "renderer_job_after_activation",
+                                  "target_after_renderer_check"])
 def test_native_scroll_recovery_is_owned_bounded_and_never_replays_clicks(board, mode):
     with fixture(board) as (page, helpers, dispatch, request, state, events, activations):
-        raw = helpers["cdp"]
+        raw, raw_js = helpers["cdp"], helpers["js"]
         scrolls, presses = [], []
+        renderer_calls_during_recovery = []
+        def js(expression):
+            if scrolls and mode in {"renderer_paused", "renderer_after_activation_timeout",
+                                    "renderer_job_after_activation", "target_after_renderer_check"}:
+                renderer_calls_during_recovery.append((expression, bool(activations)))
+                if not activations or mode == "renderer_after_activation_timeout":
+                    raise TimeoutError("Synthetic paused renderer")
+                if expression == "location.href" and mode == "renderer_job_after_activation":
+                    return "https://example.invalid/unrelated-renderer"
+                if expression == "window.__jhbGuard === true" and mode == "target_after_renderer_check":
+                    state["targetId"] = "unrelated-tab"
+            return raw_js(expression)
+        helpers["js"] = js
         def transport(method, **params):
             events.append(method)
             if method == "DOM.scrollIntoViewIfNeeded":
@@ -84,7 +99,7 @@ def test_native_scroll_recovery_is_owned_bounded_and_never_replays_clicks(board,
             if mode == "target_after_activation": state["targetId"] = "another-tab"
             if mode == "guard_after_activation": page.evaluate("window.__jhbGuard=false")
         helpers["activate_tab"] = activate
-        if mode in {"normal", "recover"}:
+        if mode in {"normal", "recover", "renderer_paused"}:
             result = dispatch(request, helpers)
             if board == "greenhouse":
                 assert result["rows"] == 2
@@ -99,11 +114,14 @@ def test_native_scroll_recovery_is_owned_bounded_and_never_replays_clicks(board,
                 dispatch(request, helpers)
             assert page.evaluate("window.commits") == 0
             assert len(presses) == int(mode == "click_timeout")
-        retry = mode in {"recover", "repeat_timeout"}
+        retry = mode in {"recover", "repeat_timeout", "renderer_paused"}
         assert len(scrolls) == (2 if retry else 1)
         if retry: assert scrolls[0] == scrolls[1]
         assert activations == (["owned-tab"] if mode in {
-            "recover", "repeat_timeout", "target_after_activation", "guard_after_activation"} else [])
+            "recover", "repeat_timeout", "target_after_activation", "guard_after_activation", "guard_changed",
+            "renderer_paused", "renderer_after_activation_timeout", "renderer_job_after_activation",
+            "target_after_renderer_check"} else [])
+        assert all(activated for _, activated in renderer_calls_during_recovery)
         assert page.evaluate("window.submissions") == 0
 
 
