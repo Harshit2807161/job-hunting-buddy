@@ -35,6 +35,8 @@ class BrowserCapacityError(BrowserOperationError):
 
 MECHANICAL_ERRORS = {
     "Observed control has invalid click geometry", "Observed control has no clickable area",
+    "Observed control geometry is unavailable before input",
+    "Owned dropdown option is unavailable after rerender",
     "Observed control is obstructed at its click position",
     "Observed control remains obstructed after scrolling", "Observed control did not settle in the viewport",
     "Observed field is no longer available", "Education add-record control is ambiguous",

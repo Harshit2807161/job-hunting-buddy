@@ -6,6 +6,7 @@ values, which are not represented by the combobox input's empty value.
 """
 from __future__ import annotations
 
+import ast
 import json
 import math
 import re
@@ -17,6 +18,21 @@ from .browser import GUARD_SCRIPT
 from .booklet import normalize
 from .planner import safe_next
 from .queue import greenhouse_identity, is_greenhouse
+
+
+class PreInputGeometryUnavailable(ValueError):
+    """An exact CDP geometry rejection occurred before this click sent input."""
+
+
+def _box_model_unavailable(exc):
+    error = exc.args[0] if exc.args else None
+    if isinstance(error, str) and len(error) <= 512:
+        try:
+            error = ast.literal_eval(error)
+        except (SyntaxError, ValueError):
+            return False
+    return (isinstance(error, dict) and error.get("code") == -32000
+            and error.get("message") == "Could not compute box model.")
 
 
 def _native_scroll_timeout(method, params, exc):
@@ -57,11 +73,18 @@ def _settled_click(backend, cdp, wait, click_at_xy):
     """Click only after bounded, viewport-relative CDP geometry has settled."""
     cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
     previous, stable, wheel_attempts, obstructed = None, 0, 0, False
+    def box_model():
+        try:
+            return cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
+        except RuntimeError as exc:
+            if wheel_attempts == 0 and _box_model_unavailable(exc):
+                raise PreInputGeometryUnavailable("Observed control geometry is unavailable before input") from exc
+            raise
     for _ in range(20):
         # A completed scroll request does not guarantee a completed reflow or
         # animation triggered by that scroll. Observe several rendered frames.
         wait(0.05)
-        quad = cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
+        quad = box_model()
         if len(quad) != 8 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in quad):
             raise ValueError("Observed control has invalid click geometry")
         stable = stable+1 if previous is not None and max(abs(a-b) for a, b in zip(quad, previous)) <= 1 else 0
@@ -77,7 +100,7 @@ def _settled_click(backend, cdp, wait, click_at_xy):
             cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
             previous, stable = None, 0
             continue
-        final = cdp("DOM.getBoxModel", backendNodeId=backend)["model"]["content"]
+        final = box_model()
         if len(final) != 8 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in final):
             raise ValueError("Observed control has invalid click geometry")
         if max(abs(a-b) for a, b in zip(final, quad)) > 1:
@@ -764,7 +787,43 @@ def dispatch(request, helpers):
                     raise ValueError("Dropdown catalog is still loading")
                 raise ValueError("Stored answer is absent from dropdown options" if not match else "Stored answer matches multiple dropdown options")
             label = match[0].get("name", {}).get("value", "")
-            click(match[0]["backendDOMNodeId"])
+            retained_before_choice = control_value(ref)
+            try:
+                click(match[0]["backendDOMNodeId"])
+            except PreInputGeometryUnavailable:
+                # A catalog can replace its option nodes after AX matching.
+                # Recover only this pre-input rejection, never an input error
+                # or the entire fill. Keep the opened control and its value.
+                def validate_choice_owner():
+                    expected = greenhouse_identity(request.get("expected_url"))
+                    owned = helpers["current_tab"]()
+                    if (not expected or not request.get("target_id")
+                            or owned.get("targetId") != request["target_id"]
+                            or greenhouse_identity(owned.get("url")) != expected
+                            or greenhouse_identity(js("location.href")) != expected):
+                        raise ValueError("Owned application tab changed during recovery")
+                    if js("window.__jhbGuard === true") is not True:
+                        raise ValueError("Application submission guard changed during option recovery")
+                    current_field = [item for item in js(FIELD_DATA) if item["id"] == ref]
+                    semantic_keys = ("id", "label", "type", "role", "required", "description", "description_truncated")
+                    if (len(native) != 1 or len(current_field) != 1
+                            or any(current_field[0].get(key) != native[0].get(key) for key in semantic_keys)):
+                        raise ValueError("Owned dropdown changed during option recovery")
+                    if (find(field) != backend or retained_before_choice is None
+                            or control_value(ref) != retained_before_choice):
+                        raise ValueError("Owned dropdown changed during option recovery")
+                    current = helpers["current_tab"]()
+                    if (current.get("targetId") != request["target_id"]
+                            or greenhouse_identity(current.get("url")) != expected):
+                        raise ValueError("Owned application tab changed during recovery")
+                validate_choice_owner()
+                fresh = [node for node in options_for(field)
+                         if node.get("name", {}).get("value", "") == label
+                         and option_matches(label, value, field_id=ref, field_label=field["label"])]
+                if len(fresh) != 1:
+                    raise ValueError("Owned dropdown option is unavailable after rerender")
+                validate_choice_owner()
+                click(fresh[0]["backendDOMNodeId"])  # One retry; exceptions propagate.
             wait(0.2)
             after = control_value(ref)
             if ref == "country" and value == "United States" and after and "iti__us" in after["countryCode"] and not after["invalid"]:

@@ -102,6 +102,14 @@ waking alone never authorizes input. The normal geometry and obstruction checks
 still precede clicking. A second timeout propagates; an unknown click outcome
 must never trigger replay of the click or whole fill.
 
+An option can rerender between accessibility matching and its geometry read.
+Only the exact CDP box-model-unavailable rejection before that click sends any
+input permits one fresh observation of the same owned dropdown. The target, job,
+guard, control and retained value must remain unchanged, and exactly one option
+must still match both the original label and approved value. Recheck geometry
+before the single retry. Missing or ambiguous options and any uncertain input
+outcome remain mechanical handoffs; never replay the whole fill.
+
 If a completed Add another input leaves the education row count unchanged on a
 hidden owned tab, the runtime may wake that exact guarded job once. Re-read the
 row count first: a delayed row requires no further click. Only an unchanged
