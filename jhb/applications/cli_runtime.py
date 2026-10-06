@@ -604,6 +604,24 @@ def dispatch(request, helpers):
     if operation == "fill":
         field, value = request["field"], request["value"]
         ref, kind = field["ref"], field["type"]
+        from .observed_question import FILL_PROOF, matches as question_matches
+        proof = field.get(FILL_PROOF)
+
+        def check_derived_context(*, choices=None):
+            if FILL_PROOF not in field:
+                return
+            current = [item for item in js(FIELD_DATA) if item['id'] == ref]
+            if len(current) != 1:
+                raise ValueError("Derived answer question context changed")
+            item = current[0]
+            descriptor = {**item, 'ref': item['id'],
+                          'type': 'combobox' if item['role'] == 'combobox' else 'select' if item['tag'] == 'SELECT' else item['type']}
+            if choices is not None:
+                descriptor['options'] = [{'label': label} for label in choices]
+            if not question_matches(descriptor, proof, require_catalog=kind != 'combobox' or choices is not None):
+                raise ValueError("Derived answer question context changed")
+
+        check_derived_context()  # Before focus, menu dismissal, typing or upload.
         if kind == "file":
             path = Path(str(value))
             if not path.is_file() or path.suffix.casefold() != ".pdf":
@@ -731,6 +749,17 @@ def dispatch(request, helpers):
                 keypress("ArrowDown")
                 wait(0.2)
                 options = options_for(field)
+            if FILL_PROOF in field:
+                try:
+                    for _ in range(12):
+                        if options:
+                            break
+                        wait(0.25)
+                        options = options_for(field)
+                    check_derived_context(choices=[n.get('name', {}).get('value', '') for n in options])
+                except ValueError:
+                    keypress("Escape")  # Close only the menu this fill opened.
+                    raise
             match = [n for n in options if option_matches(n.get("name", {}).get("value", ""), value, field_id=ref, field_label=field["label"])]
             if not match:
                 query = ("Yes" if value else "No") if isinstance(value, bool) else (str(value).split(",")[0] if ref == "candidate-location" else str(value))
@@ -794,6 +823,12 @@ def dispatch(request, helpers):
                     raise ValueError("Dropdown catalog is still loading")
                 raise ValueError("Stored answer is absent from dropdown options" if not match else "Stored answer matches multiple dropdown options")
             label = match[0].get("name", {}).get("value", "")
+            if FILL_PROOF in field:
+                try:
+                    check_derived_context(choices=[n.get('name', {}).get('value', '') for n in options_for(field)])
+                except ValueError:
+                    keypress("Escape")
+                    raise
             retained_before_choice = control_value(ref)
             try:
                 click(match[0]["backendDOMNodeId"])
@@ -819,6 +854,8 @@ def dispatch(request, helpers):
                     if (find(field) != backend or retained_before_choice is None
                             or control_value(ref) != retained_before_choice):
                         raise ValueError("Owned dropdown changed during option recovery")
+                    if FILL_PROOF in field:
+                        check_derived_context(choices=[n.get('name', {}).get('value', '') for n in options_for(field)])
                     current = helpers["current_tab"]()
                     if (current.get("targetId") != request["target_id"]
                             or greenhouse_identity(current.get("url")) != expected):

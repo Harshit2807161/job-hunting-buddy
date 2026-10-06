@@ -1,5 +1,12 @@
 # Job-board adapter evaluation
 
+Derived custom answers with complete observed-question provenance now require
+the unchanged owned question during planning and Greenhouse native filling.
+Synthetic Chromium regressions cover changed work-authorization qualifiers,
+trial terms, candidate-only wording and choices before answer selection.
+Legacy records without this provenance retain their existing policies. This
+guard has fixture evidence only; it is not additional live adapter validation.
+
 The discovery pipeline classifies multiple ATS providers. The current registry
 enables preparation for Greenhouse, Ashby, Workable and Lever. Workday, LinkedIn
 Easy Apply, SmartRecruiters and iCIMS retain explicit limitations and are not

@@ -79,6 +79,13 @@ def completed_cs_degree_answer(education_records, *, as_of=None):
 
 def key_for_field(field, answers):
     label = normalize(field["label"])
+    from .observed_question import guarded, matches
+    for key, item in answers.items():
+        if (guarded(key, item)
+                and (item.get("field_ref") == field.get("ref") or normalize(item.get("question", "")) == label)
+                and not matches(field, item["source"]["observed_question"])):
+            # Do not turn a changed scoped question into a generic fallback.
+            return None
     from .review_inventory import candidate_response, candidate_wording_requested
     from .question_metadata import public_response_allowed
     for key, item in answers.items():

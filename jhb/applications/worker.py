@@ -523,7 +523,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                                 and document_hash != record["resume_selection_sha256"]):
                             from .cli_browser import BrowserOperationError
                             raise BrowserOperationError("Selected resume bytes changed before upload")
-                retained = await actions.fill(field, record["value"])
+                from .observed_question import fill_field
+                retained = await actions.fill(fill_field(field, key, record), record["value"])
                 document_proof = {}
                 upload_receipt = retained.get("upload_receipt") if isinstance(retained, dict) else None
                 if document_hash and isinstance(retained, dict) and retained.get("verified") is True:

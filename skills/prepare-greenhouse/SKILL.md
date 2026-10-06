@@ -86,6 +86,14 @@ retained value. Public API descriptions and choices can clarify the question in
 the portal; they do not establish native choices, live retention, or readiness.
 The final audit repeats the owned native check for those approved responses.
 
+An agent-derived custom answer carrying a complete `source.observed_question`
+must keep the exact reference, label, type, requiredness, owned help and native
+choice labels used to review it. New immediate-work restrictions, trial terms,
+candidate-only wording or a changed catalog invalidate the binding; never fall
+back to a generic Yes. Closed dropdowns need fresh owned catalog inspection.
+Greenhouse checks that context before input and again before selecting an option.
+This context proof does not supply missing facts or candidate confirmation.
+
 Greenhouse replaces a resume or cover-letter input with an `uploaded:` control
 after upload. Use the current control for review; preserve the earlier receipt
 as history. The inventory reconciler may merge these references only when one
