@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,12 +21,16 @@ from . import booklet
 from .cover_letter import availability_from_answers, compile_letter, tailor_text
 from .review_inventory import candidate_wording_requested
 
-VERSION = 2
+VERSION = 3
 CHECKS = ("rendering_clear", "protected_content_intact", "allowed_zones_only", "company_facts_supported", "selected_resume_matches", "availability_matches_verified_answer")
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["why_opening", "why_closing"],
           "properties": {key: {"type": "string", "minLength": 1, "maxLength": 800} for key in ("why_opening", "why_closing")}}
-REVIEW_SCHEMA = {"type": "object", "additionalProperties": False, "required": list(CHECKS),
-                "properties": {key: {"type": "boolean"} for key in CHECKS}}
+REVIEW_SCHEMA = {"type": "object", "additionalProperties": False, "required": [*CHECKS, "issues"],
+                "properties": {**{key: {"type": "boolean"} for key in CHECKS},
+                    "issues": {"type": "array", "maxItems": 12, "items": {"type": "object",
+                        "additionalProperties": False, "required": ["check", "reason"], "properties": {
+                            "check": {"type": "string", "enum": list(CHECKS)},
+                            "reason": {"type": "string", "minLength": 1, "maxLength": 1800}}}}}}
 
 
 class DocumentEngineError(RuntimeError):
@@ -129,10 +134,11 @@ def render_preview(pdf, directory):
 
 class CoverLetterRunner:
     def __init__(self, job, book, role, directory, *, book_path=None, execute=None,
-                 compiler=compile_letter, renderer=render_preview):
+                 compiler=compile_letter, renderer=render_preview, selection=None):
         self.job, self.book, self.role = job, book, role
         self.directory, self.book_path = Path(directory), Path(book_path) if book_path else None
         self.execute, self.compiler, self.renderer = execute, compiler, renderer
+        self.selection = json.loads(json.dumps(selection)) if selection is not None else None
 
     def _inputs(self):
         from ..eligibility import verified_description
@@ -177,6 +183,18 @@ class CoverLetterRunner:
                   "source_skill": skill, "source_skill_sha256": _sha(skill_path),
                   "availability_override": availability_from_answers(self.book.get("answers", {}))}
         inputs["availability_sha256"] = hashlib.sha256(json.dumps(inputs["availability_override"], sort_keys=True).encode()).hexdigest()
+        if self.selection is not None:
+            from . import resume_selection
+            if resume_selection.packet_role(self.job, {"resume_selection": self.selection, "selected_role": self.role}, self.book) != self.role:
+                raise ValueError("Cover letter differs from the retained resume selection")
+            if self.selection.get("method") == "independent_codex":
+                resume_selection._validate_quotes(self.selection, resume_selection.evidence(self.job, self.book))
+            # Refreshed timestamps do not change the bound document choice.
+            inputs["resume_selection"] = {key: self.selection[key] for key in (
+                "policy", "job_hash", "state", "decision", "selected_role", "method", "evidence_hash",
+                "description_sha256", "resumes", "selected_resume_sha256", "reason", "jd_duties",
+                "resume_comparisons", "candidate_choice_sha256") if key in self.selection}
+            inputs["resume_selection_sha256"] = hashlib.sha256(json.dumps(inputs["resume_selection"], sort_keys=True).encode()).hexdigest()
         inputs["editable_zones"] = {}
         for key, pattern in (("why_opening", r"I believe [^.]+\."),
                              ("why_closing", r"I am particularly interested [^.]+\.|I am excited by .+?(?= and would love)")):
@@ -196,6 +214,7 @@ class CoverLetterRunner:
         if os.environ.get("CI", "").lower() in {"1", "true", "yes"} and self.execute is None:
             return {"state": "agent_task", "reason_code": "document_engine_ci_disabled"}
         stage = "inputs"
+        diagnostic_path = None
         try:
             inputs, resume, template, skill, name = self._inputs()
             fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
@@ -252,15 +271,29 @@ in this generated copy. Check its exact display_date against the supplied verifi
 Without an override, preserve the original January 2027 availability. Every other word, metrics, experience, skills, contact details,
 signature and LaTeX layout must remain intact. New company assertions must be supported
 by the exact official JD. Confirm selected resume variant and role match. Do not approve unsupported facts or layout repairs.
+When resume_selection is supplied, it is the validated full-JD/two-PDF comparison (or exact candidate choice).
+Check its bound selected bytes and reasons; do not reselect a variant merely from the job title. That selection does not
+authorize incorrect employer-team assertions or weaken factual, protected-content, availability or rendering checks.
+The adapted role zone may replace the original ML template's 'your AI/ML engineering team' with neutral 'your team'.
+For every false check, include an issues entry naming that check and the concrete reason.
 INPUT:\n""" + json.dumps({**inputs, "tailored": tailored, "replacements": replacements}, ensure_ascii=False)
                     stage = "visual_review"
                     review = _codex(review_prompt, REVIEW_SCHEMA, directory, image=preview, execute=self.execute)
+                    diagnostic_path = directory / ("visual-review-" + uuid.uuid4().hex + ".json")
+                    booklet.write_private(diagnostic_path, {"fingerprint": fingerprint,
+                        "pdf_sha256": _sha(pdf), "preview_sha256": _sha(preview),
+                        "resume_sha256": inputs["resume_sha256"], "selected_role": self.role,
+                        "resume_selection_sha256": inputs.get("resume_selection_sha256"),
+                        "checks": {key: review.get(key) for key in CHECKS}, "issues": review.get("issues", []),
+                        "verified": all(review.get(check) is True for check in CHECKS)})
                     if not all(review.get(check) is True for check in CHECKS):
                         raise ValueError("Independent cover-letter visual review requires attention")
                     if _sha(template) != inputs["template_sha256"] or _sha(resume) != inputs["resume_sha256"] or _sha(skill) != inputs["source_skill_sha256"]:
                         raise ValueError("Approved document sources changed during generation")
                     manifest = {"fingerprint": fingerprint, "verified": True, "pdf_sha256": _sha(pdf),
                                 "preview_sha256": _sha(preview), "visual_review": review, "replacements": replacements,
+                                "visual_review_path": str(diagnostic_path),
+                                "resume_selection": inputs.get("resume_selection"),
                                 "inputs": {key: value for key, value in inputs.items() if key.endswith("sha256") or key in {"job_hash", "job_url", "selected_role", "availability_override"}}}
                     booklet.write_private(manifest_path, manifest)
                 stage = "delivery"
@@ -272,7 +305,8 @@ INPUT:\n""" + json.dumps({**inputs, "tailored": tailored, "replacements": replac
         except Exception as exc:
             # Technical generation failures never request a letter/path from the candidate.
             return {"state": "agent_task", "reason_code": "cover_letter_" + stage + "_unverified",
-                    "retryable": isinstance(exc, (OSError, TimeoutError, subprocess.TimeoutExpired, DocumentEngineError))}
+                    "retryable": isinstance(exc, (OSError, TimeoutError, subprocess.TimeoutExpired, DocumentEngineError)),
+                    **({"diagnostic_path": str(diagnostic_path)} if diagnostic_path else {})}
 
     def _deliver(self, pdf, template, resume, manifest):
         target = template.parent / pdf.name
@@ -298,6 +332,8 @@ INPUT:\n""" + json.dumps({**inputs, "tailored": tailored, "replacements": replac
                   "delivered_path": str(target), "upload_snapshot": str(pdf), "visual_review": manifest["visual_review"],
                   "template_path": str(template), "resume_path": str(resume), "source_skill_path": self.book["cover_letter_skill"],
                   "preview_path": str(pdf.parent / "preview.png"), "preview_sha256": manifest["preview_sha256"], "one_page": True}
+        if manifest.get("resume_selection") is not None:
+            source["resume_selection"] = manifest["resume_selection"]
         record = {**booklet.answer(str(pdf), source), "proposed": True}
         if self.book_path:
             from .questions import _locked
@@ -342,7 +378,8 @@ def main(argv=None):
     field = matching[0] if matching else {"ref": "standalone-cover-letter", "label": "Cover Letter", "type": "file"}
     book = booklet.load(args.booklet)
     directory = args.artifacts / job["dedupe_hash"]
-    runner = CoverLetterRunner(job, book, args.role, directory, book_path=args.booklet)
+    runner = CoverLetterRunner(job, book, args.role, directory, book_path=args.booklet,
+                               selection=document.get("resume_selection"))
     result = runner.generate(field)
     # This explicitly requested local command reports document paths only.
     print(json.dumps({"state": result["state"], "reason_code": result.get("reason_code"), "preview": result.get("preview"),

@@ -94,6 +94,10 @@ def tailor_text(original, replacements, *, availability=None):
         if short != old_company: body = body.replace(short, new_company)
     if "role" in replacements:
         body = body.replace(role_match[1], latex_escape(replacements["role"]))
+        if role_match[1] == "AI/ML Engineer" and replacements["role"] != role_match[1]:
+            # This original role reference is not evidence that every employer
+            # using the ML resume has an AI/ML engineering team.
+            body = body.replace("your AI/ML engineering team", "your team")
     result = original[:begin] + body + original[end:]
     # Availability and protected quantitative claims are invariants.
     for token in ["January 2027", "10.55", "50\\%", "30\\%", "3,000", "1,400", "15 minutes"]:

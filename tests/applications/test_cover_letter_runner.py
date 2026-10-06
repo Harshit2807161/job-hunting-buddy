@@ -69,7 +69,7 @@ def setup_letter(tmp_path):
     def execute(command,**kwargs):
         calls.append((command,kwargs))
         output=Path(command[command.index('--output-last-message')+1])
-        data=({key:True for key in letters.CHECKS} if '--image' in command else {
+        data=({**{key:True for key in letters.CHECKS}, 'issues': []} if '--image' in command else {
             'why_opening':"I believe SyntheticCo's cloud analytics work offers a concrete setting for reliable software.",
             'why_closing':"I am particularly interested in contributing to SyntheticCo's cloud analytics platform."})
         output.write_text(json.dumps(data))
@@ -96,7 +96,7 @@ def test_generation_uses_skill_independent_image_review_delivery_and_immutable_u
     assert snapshot.read_bytes()==Path(source['delivered_path']).read_bytes()
     assert template.read_bytes()==original and resume.read_bytes()==resume_original
     assert source['selected_role']=='sde' and source['resume_sha256']==hashlib.sha256(resume_original).hexdigest()
-    assert source['visual_review']=={key:True for key in letters.CHECKS}
+    assert source['visual_review']=={**{key:True for key in letters.CHECKS}, 'issues': []}
     assert booklet.load(path)['job_document_answers'][job['dedupe_hash']]['documents.cover_letter']==record
     assert record['proposed'] is True
     for command,kwargs in calls:
@@ -105,6 +105,87 @@ def test_generation_uses_skill_independent_image_review_delivery_and_immutable_u
     assert '--image' in calls[1][0] and book['cover_letter_skill'] not in str(calls[0][0])
     cached=runner.generate(FIELD)
     assert cached['record']['value']==record['value'] and len(calls)==2
+
+
+def test_adapted_ml_role_replaces_only_stale_team_reference():
+    original = TEMPLATE.replace('Software Engineer position', 'AI/ML Engineer position').replace(
+        'I am available starting in January 2027.',
+        'I would love to contribute to your AI/ML engineering team starting in January 2027.')
+    result = letters.tailor_text(original, {'role': 'New Grad Software Engineer, Routing'})
+    expected = original.replace('AI/ML Engineer position', 'New Grad Software Engineer, Routing position').replace(
+        'your AI/ML engineering team', 'your team')
+    assert result == expected
+    assert letters.tailor_text(original, {'role': 'AI/ML Engineer'}) == original
+    assert letters.tailor_text(original, {'company': 'AnotherCo'}).count('your AI/ML engineering team') == 1
+
+
+def test_negative_visual_checks_are_retained_without_delivery_or_registration(setup_letter):
+    runner, book, job, calls, template, resume, path = setup_letter
+    execute = runner.execute
+    def reject(command, **kwargs):
+        result = execute(command, **kwargs)
+        if '--image' in command:
+            output = Path(command[command.index('--output-last-message')+1])
+            value = json.loads(output.read_text())
+            value.update(company_facts_supported=False,
+                         issues=[{'check': 'company_facts_supported', 'reason': 'The named team is not evidenced by this job.'}])
+            output.write_text(json.dumps(value))
+        return result
+    runner.execute = reject
+    result = runner.generate(FIELD)
+    assert result['state'] == 'agent_task' and result['reason_code'] == 'cover_letter_visual_review_unverified'
+    diagnostic = Path(result['diagnostic_path'])
+    evidence = json.loads(diagnostic.read_text())
+    assert evidence['verified'] is False and evidence['checks']['company_facts_supported'] is False
+    assert evidence['issues'][0]['check'] == 'company_facts_supported'
+    assert evidence['pdf_sha256'] == hashlib.sha256((diagnostic.parent/'SyntheticCo.pdf').read_bytes()).hexdigest()
+    assert diagnostic.stat().st_mode & 0o777 == 0o600
+    assert not (resume.parent/'SyntheticCo.pdf').exists() and 'job_document_answers' not in booklet.load(path)
+
+
+def bound_selection(runner, book, job):
+    from jhb.applications import resume_selection
+    data = resume_selection.evidence(job, book)
+    return {'policy': resume_selection.POLICY, 'job_hash': job['dedupe_hash'], 'state': 'selected',
+            'selected_role': 'sde', 'decision': 'sde', 'method': 'independent_codex',
+            'checked_at': time.time(), 'description_sha256': job['verified_job_description']['sha256'],
+            'resumes': {role: {key: value for key, value in record.items() if key != 'text'}
+                        for role, record in data['resumes'].items()},
+            'selected_resume_sha256': data['resumes']['sde']['sha256'],
+            'reason': 'The selected verified variant supports the actual software duties.',
+            'jd_duties': [data['description']['text']],
+            'resume_comparisons': {role: {'evidence': [record['text']], 'reason': 'Synthetic verified comparison.'}
+                                   for role, record in data['resumes'].items()}}
+
+
+def test_document_review_receives_bound_two_pdf_comparison_without_timestamp_churn(setup_letter):
+    runner, book, job, calls, template, resume, path = setup_letter
+    runner.selection = bound_selection(runner, book, job)
+    first = runner.generate(FIELD)
+    assert first['state'] == 'verified'
+    prompt = calls[1][1]['input']
+    inputs = json.loads(prompt.split('INPUT:\n', 1)[1])
+    proof = inputs['resume_selection']
+    assert proof['reason'] == runner.selection['reason'] and set(proof['resumes']) == {'sde', 'ml'}
+    assert proof['selected_resume_sha256'] == hashlib.sha256(resume.read_bytes()).hexdigest()
+    assert 'checked_at' not in proof and first['record']['source']['resume_selection'] == proof
+    runner.selection['checked_at'] += 600
+    again = runner.generate(FIELD)
+    assert again['record']['value'] == first['record']['value'] and len(calls) == 2
+
+
+@pytest.mark.parametrize('change', ['role', 'selected_hash', 'other_hash', 'job_description', 'unsupported_quote'])
+def test_document_runner_rejects_stale_or_unbound_selection_before_model_calls(setup_letter, change):
+    runner, book, job, calls, template, resume, path = setup_letter
+    runner.selection = bound_selection(runner, book, job)
+    if change == 'role': runner.selection['selected_role'] = 'ml'
+    elif change == 'selected_hash': runner.selection['selected_resume_sha256'] = '0'*64
+    elif change == 'other_hash': runner.selection['resumes']['ml']['sha256'] = '0'*64
+    elif change == 'job_description': runner.selection['description_sha256'] = '0'*64
+    else: runner.selection['resume_comparisons']['ml']['evidence'] = ['Invented unsupported experience']
+    result = runner.generate(FIELD)
+    assert result['state'] == 'agent_task' and result['reason_code'] == 'cover_letter_inputs_unverified'
+    assert not calls and not (resume.parent/'SyntheticCo.pdf').exists()
 
 
 def test_distinct_jobs_keep_immutable_snapshots_and_back_up_different_company_pdf(setup_letter):
@@ -141,7 +222,7 @@ def test_unverified_documents_are_agent_tasks_never_candidate_text_prompts(setup
         def reject(command,**kwargs):
             result=original(command,**kwargs)
             if fault=='visual_failure' and '--image' in command:
-                Path(command[command.index('--output-last-message')+1]).write_text(json.dumps({key:False for key in letters.CHECKS}))
+                Path(command[command.index('--output-last-message')+1]).write_text(json.dumps({**{key:False for key in letters.CHECKS}, 'issues': []}))
             if fault=='tool_attempt':result.stdout=json.dumps({'item':{'type':'command_execution'}})
             return result
         runner.execute=reject

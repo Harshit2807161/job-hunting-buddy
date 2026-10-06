@@ -858,7 +858,7 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
     document_runner = None
     if not demo_origin:
         from .cover_letter_runner import CoverLetterRunner
-        document_runner = CoverLetterRunner(job, book, selected_role, directory, book_path=book_path)
+        document_runner = CoverLetterRunner(job, book, selected_role, directory, book_path=book_path, selection=selection)
     if not demo_origin:
         from .cli_browser import BrowserUseCLI
         if board == "greenhouse":
