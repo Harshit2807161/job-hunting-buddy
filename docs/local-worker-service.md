@@ -65,6 +65,13 @@ these defaults: `JHB_SOURCE_BATCH_SIZE`, `JHB_APPLICATION_BATCH_SIZE`,
 to three and accepts `JHB_APPROVED_BATCH_SIZE` from one through ten. Browser
 actions remain serialized even when planners run concurrently.
 
+For one local Chrome instance that stalls when application tabs are hidden, use
+`JHB_PIPELINE_CONCURRENCY=1` and `JHB_APPLICATION_BATCH_SIZE=1`. This keeps a
+preparation together and reaches its independent review and tracking step before
+starting another preparation. Developer agents and isolated source research can
+still work in parallel. This configuration was selected after observed hidden-tab
+rendering stalls; it does not raise the owned-tab limit or close partial drafts.
+
 `private/pipeline-status.json` reports preparation activity.
 `private/pipeline-submit-status.json` reports approval activity independently,
 including active job hashes and aggregate approval states. Submission heartbeats
