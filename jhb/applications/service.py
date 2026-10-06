@@ -171,10 +171,32 @@ async def _approved_once(conn, book_path, drain, limit):
             pass
 
 
+def _observe_late_receipts(connector=None):
+    # Avoid opening runtime storage for an unused service or in CI. This runs
+    # before authority gates solely to record an existing click. Its observer
+    # separately respects pause/quarantine/cancellation before any browser read.
+    if _ci() or not (config.ROOT / "private" / "authorized-submissions").is_dir():
+        return
+    conn = None
+    try:
+        from .late_receipts import reconcile
+        conn = (connector or store.connect)()
+        result = asyncio.run(reconcile(conn))
+        if result["observed"] or result["reconciled"]:
+            booklet.write_private(config.ROOT / "private" / "late-receipt-status.json", {**result, "updated_at": _stamp()})
+    except Exception:
+        pass  # A read failure never changes authority or permits another click.
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def once(mode, *, book_path=booklet.DEFAULT_PATH, connector=None, prepare=None, approved=None):
     """One injected-testable local batch; no service can approve a draft."""
     if mode not in {"prepare", "approved"}:
         raise ValueError("Unknown worker service mode")
+    if mode == "approved":
+        _observe_late_receipts(connector)
     reason = _gate(mode)
     if reason:
         return record_gate(mode, reason)

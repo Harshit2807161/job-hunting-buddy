@@ -306,6 +306,9 @@ def _checked_receipt(row, proof):
     """Match modern receipts to immutable audits, documents and separate review."""
     if proof.get("check_count") != 2 or proof.get("authorization_id") != row["authorization_id"]:
         return False
+    from .late_receipts import SOURCE as LATE_RECEIPT_SOURCE, valid_persisted_observation
+    if proof.get("source") == LATE_RECEIPT_SOURCE and not valid_persisted_observation(row, proof):
+        return False
     _, attempt, _ = _read_private(row["attempt_path"])
     if attempt.get("require_independent_review") is not True:
         return True  # Existing v1 receipts retain their reviewed contract.
@@ -350,6 +353,19 @@ def _reconcile_receipts(conn, recorder):
             result = recorder(conn, json.loads(jobrow["job_json"]), receipt)
             if result.get("state") == "submitted":
                 _finish_attempt(conn, row, "submitted", result, receipt)
+                # The old approval is consumed evidence, never renewed authority.
+                # Update only the matching historic approval if its click was late.
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone():
+                    for approval in conn.execute("SELECT * FROM application_approvals WHERE job_hash=? AND state<>'submitted'",
+                                                 (row["job_hash"],)).fetchall():
+                        try:
+                            _, _, digest = _read_private(approval["authorization_path"])
+                            if digest == row["authorization_id"]:
+                                conn.execute("UPDATE application_approvals SET state='submitted',result_json=? WHERE approval_id=?",
+                                             (json.dumps(result), approval["approval_id"]))
+                        except (OSError, ValueError, TypeError):
+                            continue
+                    conn.commit()
                 reconciled += 1
         except Exception:
             continue  # Read-only receipt reconciliation; never click again.
@@ -362,6 +378,10 @@ async def drain(conn, book_path, *, limit=3, submitter=None, recorder=None, now=
     recorder = recorder or tracking.record_confirmed
     summary = {"attempted": 0, "submitted": 0, "uncertain": 0, "handoffs": 0,
                "reconciled": _reconcile_receipts(conn, recorder), "enabled": False}
+    from .late_receipts import reconcile as observe_late_receipts
+    late = await observe_late_receipts(conn, recorder=recorder, now=now)
+    summary["reconciled"] += late["reconciled"]
+    summary["late_receipts"] = late
     auth = load_authorization(authorization_path, now=now)
     if auth is None:
         return summary

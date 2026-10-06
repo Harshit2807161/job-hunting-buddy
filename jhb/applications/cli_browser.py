@@ -109,6 +109,8 @@ class BrowserUseCLI:
         cancelled = _cancelled or threading.Event()
         from . import boards, application_discard
         job_hash = getattr(self, "job_hash", None) or boards.application_hash(payload.get("url") or self.expected_url)
+        receipt_only = (operation == "observe_receipt" and
+                        self._dispatch_module == "jhb.applications.submission_runtime")
         def cancellation_check():
             if operation != "discard_application_tab" and job_hash:
                 application_discard.check(ROOT, job_hash)
@@ -139,7 +141,7 @@ class BrowserUseCLI:
         )
         env = dict(os.environ)
         env.pop("BU_NAME", None)  # One shared local daemon, never a per-job controller.
-        if operation in {"review_focus", "discard_application_tab"}:
+        if operation in {"review_focus", "discard_application_tab"} or receipt_only:
             from .browser_connection import endpoint_parts
             endpoint_parts(env.get("BU_CDP_WS") or env.get("BU_CDP_URL", ""))
             env["BH_REQUIRE_EXISTING_DAEMON"] = "1"
@@ -202,7 +204,7 @@ class BrowserUseCLI:
                     if message in MECHANICAL_ERRORS:
                         self.last_failure["mechanical_error"] = message
                     raise BrowserOperationError(message, retryable=message in MECHANICAL_ERRORS)
-                if operation != "discard_application_tab" and isinstance(response, dict) and job_hash:
+                if operation != "discard_application_tab" and not receipt_only and isinstance(response, dict) and job_hash:
                     application_discard.remember_target(ROOT, job_hash, response.get("target_id") or self.target_id,
                                                          payload.get("url") or self.expected_url)
                     cancellation_check()

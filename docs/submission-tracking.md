@@ -81,6 +81,39 @@ absence of an immediate receipt does not authorize a duplicate append. Subsequen
 pipeline cycles drain already-confirmed pending tracking work. This does not
 change which boards are eligible for automatic application preparation.
 
+## Delayed browser confirmations
+
+An uncertain Submit outcome is never clicked again. For 15 minutes after the
+persisted native click, the scheduled worker may inspect its original tab through
+the official Browser Use CLI. Reads have a durable 30-second cooldown and a maximum
+of two per cycle; each CLI call is bounded to 25 seconds. The observer neither opens
+tabs nor navigates, focuses, fills, releases guards, or sends input. A closed or
+changed target remains uncertain. The original attempt lock prevents observation
+from racing a terminal operation.
+
+The observer requires the original exact job, target, two identical retained-answer
+audits, document hashes and independent review evidence. Greenhouse confirmation
+must use the original HTTPS origin and exact job path followed by `/confirmation`;
+this does not broaden source classification. Other reviewed boards must retain
+the exact job identity. Explicit received/submitted text and the absence of active
+form controls and terminal buttons are required. A generic thank-you, pending
+verification, rejection text or another job never establishes success.
+
+A positive page is read twice around one native screenshot. Its private receipt
+retains the observed timestamp, screenshot hash, original audits and document
+hashes, then enters the existing confirmation and spreadsheet reconciliation path.
+It also closes the matching historic portal approval as submitted without renewing
+that approval. Submission authority may expire while this read-only follow-up is
+pending. Explicit Pause, technical quarantine or a discarded job stops new browser
+reads; existing positive receipt files can still be recorded and synchronized.
+
+Synthetic tests cover delayed success, expiry, pause, discard, missing click proof,
+changed target/job, active forms, missing screenshots, bounded polling and no replay.
+An actual Greenhouse confirmation on 2026-10-06 motivated this recovery after
+arriving several minutes after its initial receipt timeout. That case was inspected
+read-only and reconciled separately; the new scheduled observer's live validation
+remains distinct from its passing fixtures.
+
 ## Import existing application history before preparation
 
 `jhb.applications.historical.import_sheet` reads the same configured tab through

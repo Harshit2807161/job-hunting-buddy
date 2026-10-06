@@ -411,6 +411,11 @@ def _checks(request, helpers, packet, attempt):
 
 
 def dispatch(request, helpers):
+    if request.get("operation") == "observe_receipt":
+        # Recording a completed historic click needs no current submit power.
+        # This fixed path exposes no input, navigation or guard mutation.
+        from .late_receipts import observe
+        return observe(request, helpers)
     raw_cdp = helpers["cdp"]
     input_stalled = None
     def input_cdp(method, **params):
