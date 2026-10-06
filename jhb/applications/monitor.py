@@ -26,7 +26,7 @@ from . import attempt_feedback, booklet, monitor_window, overnight
 FEATURE_BRANCH = "feat/phase2-greenhouse-agent"
 REPAIR_SECONDS = 900
 VALIDATION_COMPILE_SECONDS = 120
-VALIDATION_TEST_SECONDS = 900
+VALIDATION_TEST_SECONDS = 1200
 VALIDATION_DIFF_SECONDS = 30
 # The full synthetic browser suite takes substantially longer than three
 # minutes. Reserve all checks before changing code, not merely the first one.

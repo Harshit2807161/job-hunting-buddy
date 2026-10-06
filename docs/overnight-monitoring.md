@@ -81,7 +81,7 @@ this monitor; other concurrent changes defer it. The monitor never commits,
 pushes, merges or changes `main` or `v0.1.0`. There are at most eight distinct
 repair attempts per authorization. Each Codex process has a maximum 15-minute
 runtime, further reduced by remaining authorization time. Compile, full pytest
-and diff checks have limits of 120, 900 and 30 seconds respectively; the complete
+and diff checks have limits of 120, 1200 and 30 seconds respectively; the complete
 validation budget is reserved before starting a repair. Owned process groups are
 terminated and reaped on timeout, pause or revocation.
 

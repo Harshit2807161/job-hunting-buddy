@@ -57,7 +57,7 @@ def repo(**changes):
 def runner(calls, *, fail=None, mutate=None):
     def run(command, prefix, auth, timeout, **kwargs):
         assert (monitor.directory() / "repair-pending.json").exists()
-        assert 0 < timeout <= monitor.REPAIR_SECONDS
+        assert 0 < timeout <= max(monitor.REPAIR_SECONDS, monitor.VALIDATION_TEST_SECONDS)
         # Every repair and validation operation retains the pipeline lock.
         with monitor._lock(config.ROOT / "private" / "application-worker.lock") as owned:
             assert not owned
@@ -99,7 +99,7 @@ def test_full_suite_gets_enough_time_for_observed_runtime_not_the_old_three_minu
         # Model the observed ~460-second suite without waiting in this test.
         return {"state": "timeout" if "pytest" in command and timeout < 460 else "complete"}
     assert monitor.validate(monitor.authorization(), run)["state"] == "complete"
-    assert [timeout for _, timeout in calls] == [120, 900, 30]
+    assert [timeout for _, timeout in calls] == [120, 1200, 30]
 
 
 def test_validation_clamps_each_command_to_current_authorization_expiry(setup, monkeypatch):
