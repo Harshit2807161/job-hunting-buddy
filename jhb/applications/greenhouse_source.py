@@ -53,7 +53,7 @@ _OBSERVE = r"""() => ({
   job_postings: (()=>{const jobs=[];const visit=(value,depth=0)=>{if(!value||depth>5||jobs.length>=20)return;
     if(Array.isArray(value)){for(const item of value)visit(item,depth+1);return}
     if(typeof value!=='object')return;
-    if(value['@type']==='JobPosting'||Array.isArray(value['@type'])&&value['@type'].includes('JobPosting'))jobs.push({title:value.title,description:value.description,url:value.url||value.mainEntityOfPage?.['@id']||location.href,jobLocation:value.jobLocation,applicantLocationRequirements:value.applicantLocationRequirements});
+    if(value['@type']==='JobPosting'||Array.isArray(value['@type'])&&value['@type'].includes('JobPosting'))jobs.push({title:value.title,description:value.description,url:value.url||value.mainEntityOfPage?.['@id']||location.href,identifier:value.identifier,baseSalary:value.baseSalary,jobLocation:value.jobLocation,applicantLocationRequirements:value.applicantLocationRequirements});
     if(value['@graph'])visit(value['@graph'],depth+1)};
     for(const e of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(e.textContent))}catch(_){}}
     return jobs})()
@@ -90,6 +90,10 @@ def _observed_description(observation):
     for record in records:
         if not isinstance(record, dict) or job_identity(record.get("url", "")) != identity:
             continue
+        identifier = record.get("identifier")
+        identifier = identifier.get("value") if isinstance(identifier, dict) else identifier
+        if identifier is not None and str(identifier).lower() != identity[-1].lower():
+            continue
         title = record.get("title")
         content = record.get("description", record.get("text"))
         if not isinstance(content, str) or not isinstance(title, str) or not title.strip():
@@ -101,13 +105,19 @@ def _observed_description(observation):
                          for line in plain_text(content).splitlines() if line.strip())
         if len(text) < 100 or len(text.encode()) > 1024*1024:
             continue
-        from .job_context import _metadata_country
+        from .job_context import _metadata_country, structured_base_salary
         candidates.append({"status": "verified", "source_url": url, "job_identity": list(identity),
                            "retrieved_at": time.time(), "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                           "title": title.strip(), "country_context": _metadata_country(record)})
+                           "title": title.strip(), "country_context": _metadata_country(record),
+                           "advertised_salary_ranges": structured_base_salary(record, url)})
     # Conflicting JobPosting records are not an invitation to choose one role.
     unique = {(item["title"], item["sha256"]): item for item in candidates}
     primary = next(iter(unique.values())) if len(unique) == 1 else None
+    if primary:
+        # Multiple explicit ranges remain alternatives; do not silently choose
+        # the last otherwise-identical JobPosting or a location-specific band.
+        ranges = [r for item in candidates for r in item["advertised_salary_ranges"]]
+        primary["advertised_salary_ranges"] = list({(r["lower"], r["upper"]): r for r in ranges}.values())
     if primary and postings:
         # JSON-LD can omit a site's separate Qualifications/Employment sections.
         # Retain observed job-container text only for this exact identity/title;

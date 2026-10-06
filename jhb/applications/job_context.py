@@ -109,6 +109,52 @@ def valid_description(item, joburl):
             and hashlib.sha256(text.encode()).hexdigest() == item.get("sha256"))
 
 
+def structured_base_salary(record, joburl):
+    """One explicit annual USD base range, bound to this exact JobPosting."""
+    import math
+    identity = boards.job_identity(joburl)
+    if not identity or not isinstance(record, dict):
+        return []
+    identifier = record.get("identifier")
+    identifier = identifier.get("value") if isinstance(identifier, dict) else identifier
+    node_url = record.get("url")
+    if ((node_url and boards.job_identity(node_url) != identity)
+            or identifier is not None and str(identifier).lower() != identity[-1].lower()
+            or not (node_url or identifier is not None)):
+        return []
+    salary = record.get("baseSalary")
+    if not isinstance(salary, dict) or salary.get("currency") != "USD":
+        return []
+    value = salary.get("value")
+    if not isinstance(value, dict) or value.get("unitText") != "YEAR":
+        return []
+    lower, upper = value.get("minValue"), value.get("maxValue")
+    if (any(type(v) not in {int, float} or not math.isfinite(v) for v in (lower, upper))
+            or not 20000 <= lower <= upper <= 1000000):
+        return []
+    return [{"lower": lower, "upper": upper, "currency": "USD", "period": "annual",
+             "evidence": f"Official JobPosting baseSalary: USD {lower}–{upper} per YEAR",
+             "source_url": joburl, "job_identity": list(identity)}]
+
+
+def description_salary_ranges(description):
+    """Revalidate cached structured ranges without borrowing another job's pay."""
+    source = description.get("source_url")
+    identity = boards.job_identity(source)
+    values = description.get("advertised_salary_ranges", [])
+    if not identity or not isinstance(values, list) or len(values) > 20:
+        return []
+    result = []
+    for value in values:
+        if (not isinstance(value, dict) or value.get("source_url") != source
+                or value.get("job_identity") != list(identity) or value.get("period") != "annual"):
+            continue
+        result.extend(structured_base_salary({"url": source, "baseSalary": {
+            "currency": value.get("currency"), "value": {"unitText": "YEAR",
+            "minValue": value.get("lower"), "maxValue": value.get("upper")}}}, source))
+    return result
+
+
 def fetch_public_description(joburl, *, opener=None, timeout=15):
     """Read only official-page JobPosting JSON-LD with an exact matching identifier.
 
@@ -151,7 +197,8 @@ def fetch_public_description(joburl, *, opener=None, timeout=15):
             "sha256": hashlib.sha256(text.encode()).hexdigest(), "status": "verified",
             "job_identity": list(identity), "method": "official_exact_job_jsonld",
             "title": record.get("title") if isinstance(record.get("title"), str) else "",
-            "country_context": _metadata_country(record)}
+            "country_context": _metadata_country(record),
+            "advertised_salary_ranges": structured_base_salary(record, url)}
 
 
 def country_context(text):

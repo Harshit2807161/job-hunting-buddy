@@ -11,10 +11,12 @@ from . import boards, job_context
 
 def _context(description):
     from .salary import advertised_ranges
+    ranges = advertised_ranges(description["text"]) + job_context.description_salary_ranges(description)
+    ranges = list({(r["lower"], r["upper"], r["currency"], r["period"]): r for r in ranges}.values())
     return {"name": description.get("title", ""), "source_url": description["source_url"],
             "country_context": description.get("country_context"),
             "verified_job_description": description,
-            "advertised_salary_ranges": advertised_ranges(description["text"])}
+            "advertised_salary_ranges": ranges}
 
 
 def _failure(reason, *, state="unsupported", retryable=False, evidence=None):
