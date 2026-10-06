@@ -1,4 +1,5 @@
 """Only fixed mechanics enums survive the transport→packet→feedback boundary."""
+import asyncio
 import json
 import subprocess
 from types import SimpleNamespace
@@ -65,3 +66,75 @@ def test_local_catalog_failure_retains_only_static_diagnostic(message):
     assert result["error_kind"] == "browser_mechanics" and not result.get("missing")
     if not known:
         assert message not in json.dumps(result) and message not in json.dumps(feedback)
+
+
+@pytest.mark.parametrize("catalog, expected", [
+    ({"choices": []}, "Verified answer needs a complete native catalog"),
+    ({"choices": ["United States"], "truncated": True}, "Verified answer needs a complete native catalog"),
+    (None, "Verified answer needs a native field inspection"),
+    ({"choices": ["United States"]}, "Verified answer needs a field repair"),
+])
+def test_wrapped_dropdown_failure_retains_specific_safe_diagnostic(monkeypatch, tmp_path, catalog, expected):
+    from jhb.applications import booklet
+    from jhb.applications.planner import deterministic_plan
+
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    private_text = "Synthetic private answer must not appear in diagnostics"
+
+    class Form:
+        last_failure = {"operation": "fill", "kind": "invalid_operation"}
+        fill_count = 0
+
+        def allowed_url(self, url): return True
+        async def open(self, url): pass
+        async def observe(self):
+            return {"fields": [{"ref": "country", "label": "Country", "type": "combobox", "required": True}],
+                    "buttons": []}
+        async def fill(self, field, value):
+            self.fill_count += 1
+            raise cli_browser.BrowserOperationError("Stored answer is absent from dropdown options")
+        async def describe(self, field):
+            if catalog is None:
+                raise ValueError(private_text)
+            return catalog
+
+    form = Form()
+    with pytest.raises(cli_browser.BrowserOperationError) as failure:
+        asyncio.run(worker.prepare(None, {"url": "synthetic"},
+            {"identity.country": booklet.answer("United States", "synthetic profile")},
+            deterministic_plan, None, cli_actions=form))
+    result = worker.failure_result(failure.value, form)
+    path = attempt_feedback.record_attempt(
+        {"dedupe_hash": "d" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/1234"},
+        result, attempt_token="wrapped-dropdown")
+    feedback = json.loads(path.read_text())
+    assert result["events"][0].get("mechanical_error") == expected
+    assert feedback.get("mechanical_error") == expected
+    assert result["state"] == "failed" and result["error_kind"] == "browser_mechanics" and result["retryable"]
+    assert not result.get("missing") and not result.get("submitted")
+    assert form.fill_count == 1
+    assert private_text not in json.dumps(result) and private_text not in json.dumps(feedback)
+
+
+def test_wrapped_diagnostics_bound_cyclic_exception_causes():
+    failure = cli_browser.BrowserOperationError("Verified answer needs a field repair", retryable=True)
+    failure.__cause__ = failure
+    result = worker.failure_result(failure)
+    assert result["events"][0].get("mechanical_error") == str(failure)
+
+
+@pytest.mark.parametrize("message", [
+    "Verified answer needs a complete native catalog",
+    "Verified answer needs a native field inspection",
+    "Verified answer needs a field repair",
+])
+def test_retaining_preparation_diagnostics_does_not_expand_cli_retries(monkeypatch, tmp_path, message):
+    monkeypatch.setattr(cli_browser, "ROOT", tmp_path)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:12345")
+    monkeypatch.setattr(cli_browser.BrowserUseCLI, "_run", lambda *args: subprocess.CompletedProcess(
+        ["browser-use"], 0, cli_browser.MARKER + json.dumps({"error": message}) + "\n", ""))
+    client = cli_browser.BrowserUseCLI()
+    with pytest.raises(cli_browser.BrowserOperationError) as failure:
+        client.call("fill", field={"ref": "synthetic", "type": "combobox"}, value="Synthetic")
+    assert failure.value.retryable is False
+    assert client.last_failure == {"operation": "fill", "kind": "invalid_operation"}

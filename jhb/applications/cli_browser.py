@@ -56,6 +56,14 @@ MECHANICAL_ERRORS = {
     "Approved-answer native dropdown inspection failed",
 }
 
+# Local preparation wrappers are diagnostic-only. Keep the CLI retry allowlist
+# separate so retaining their causes cannot change browser recovery behavior.
+MECHANICAL_DIAGNOSTICS = MECHANICAL_ERRORS | {
+    "Verified answer needs a complete native catalog",
+    "Verified answer needs a native field inspection",
+    "Verified answer needs a field repair",
+}
+
 
 class BrowserUseCLI:
     _dispatch_module = "jhb.applications.cli_runtime"

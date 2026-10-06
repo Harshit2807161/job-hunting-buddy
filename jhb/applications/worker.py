@@ -42,7 +42,7 @@ def _record_attempt_feedback(job, result, attempt_token, packet):
 
 def failure_result(exc, actions=None, *, job=None):
     """Classify transport/mechanics separately from unknown answers, without secrets."""
-    from .cli_browser import BrowserOperationError, MECHANICAL_ERRORS
+    from .cli_browser import BrowserOperationError, MECHANICAL_DIAGNOSTICS
     if (isinstance(exc, BrowserOperationError) and getattr(exc, "condition", None) == "browser_capacity"
             and getattr(exc, "mutation_started", None) is False):
         return {"state": "failed", "reason": "Waiting for browser tab capacity",
@@ -61,12 +61,19 @@ def failure_result(exc, actions=None, *, job=None):
     if observed:
         event.update({k: observed[k] for k in ("operation", "kind", "elapsed_seconds") if k in observed})
         detail = observed.get("mechanical_error")
-        if isinstance(detail, str) and detail in MECHANICAL_ERRORS:
+        if isinstance(detail, str) and detail in MECHANICAL_DIAGNOSTICS:
             event["mechanical_error"] = detail
-    # Catalog enrichment can reject a successful CLI response outside the
-    # transport wrapper. Preserve only its fixed enum, never arbitrary text.
-    if isinstance(exc, BrowserOperationError) and str(exc) in MECHANICAL_ERRORS:
-        event["mechanical_error"] = str(exc)
+    # Preparation can wrap a failed native inspection after a successful CLI
+    # response. Retain the most specific allowlisted explicit cause, with a
+    # bounded walk for cyclic chains; never retain arbitrary exception text.
+    if isinstance(exc, BrowserOperationError):
+        cause = exc
+        for _ in range(8):
+            if isinstance(cause, BrowserOperationError) and str(cause) in MECHANICAL_DIAGNOSTICS:
+                event["mechanical_error"] = str(cause)
+            cause = cause.__cause__
+            if cause is None:
+                break
     result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
               "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
     progress = getattr(actions, "_preparation_progress", None)

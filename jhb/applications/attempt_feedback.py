@@ -154,10 +154,10 @@ def build(job, result, *, attempt_token, stage="preparation", packet_path=None, 
         "evidence_paths": sorted(set(refs))[:20],
     }
     # Preserve only fixed runtime enums, never arbitrary exception/page text.
-    from .cli_browser import MECHANICAL_ERRORS
+    from .cli_browser import MECHANICAL_DIAGNOSTICS
     detail = next((row.get("mechanical_error") for row in reversed(events)
                    if row.get("event") == "technical_failure"), None)
-    if isinstance(detail, str) and detail in MECHANICAL_ERRORS:
+    if isinstance(detail, str) and detail in MECHANICAL_DIAGNOSTICS:
         record["mechanical_error"] = detail
     record["recovery_recommendation"] = _recommendation(record)
     return record
