@@ -95,7 +95,12 @@ process-group ID. Unrelated processes remain untouched. PID reuse, unreadable
 ownership or surviving children leaves the repair quarantined, including after
 normal child exit, timeout, pause or revocation. This uses `psutil`, declared in
 the applications dependencies. Repair commands must preserve the inherited
-ownership token in subprocess environments.
+ownership token in subprocess environments. This is an operating contract, not
+OS process containment: an intentionally token-scrubbing child that reparents
+between ancestry samples cannot be attributed safely. Uncertain enumeration
+still attempts to stop every positively identified member before reporting
+quarantine; unrelated or reused identities are never signaled. Cleanup scans
+check their deadline between process reads and retain uncertainty on expiry.
 
 ## Serialization and quarantine
 
