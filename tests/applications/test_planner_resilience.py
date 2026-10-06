@@ -88,7 +88,7 @@ def test_optional_codex_audit_never_reuses_previous_output(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize('label,key', [
-    ('Are you currently authorized to work in the United States?*', 'eligibility.authorized_us'),
+    ('Are you authorized to work in the United States?*', 'eligibility.authorized_us'),
     ('Will you, at any point, require employer sponsorship to work in the United States?*', 'eligibility.sponsorship'),
     ('Will you require sponsorship from Synthetic Corp for employment now or in the future (e.g, H1B visa)?*', 'eligibility.sponsorship'),
     ('I am willing and able to work entirely on-site.*', 'standing.office_willingness'),
@@ -102,6 +102,7 @@ def test_approved_standing_answers_bind_observed_question_variants(label, key):
 
 
 @pytest.mark.parametrize('label', [
+    'Are you currently authorized to work in the United States?*',
     'If offered employment, would you be legally eligible to begin employment immediately?',
     'Do you require sponsorship now?', 'Are you a U.S. Person for export controls?',
     'I will need relocation to work on-site.',

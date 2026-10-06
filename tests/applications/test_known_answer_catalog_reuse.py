@@ -152,9 +152,43 @@ def test_sponsorship_combined_fact_does_not_resolve_timing_without_separate_fact
         'Yes, I will require immigration sponsorship in the future to legally work in the country where the job is located.',
         'No, I do not and will not require immigration sponsorship to legally work in the country where the job is located.'],country='United States')
     a=values();assert resolve(f,a) is None
-    a['eligibility.sponsorship_future']=booklet.answer(True,'explicit future need');assert resolve(f,a) is None
+    a['eligibility.sponsorship_future']=booklet.answer(True,'explicit future need');assert 'in the future' in resolve(f,a)
     a['eligibility.sponsorship_now']=booklet.answer(False,'explicit no present need');assert 'in the future' in resolve(f,a)
-    a['eligibility.sponsorship_now']['status']='needs_input';assert resolve(f,a) is None
+    a['eligibility.sponsorship_now']['status']='needs_input';assert 'in the future' in resolve(f,a)
+    # A stronger alternative that also claims present independence is unknown.
+    f['options'][1]['label']='Yes, but only in the future; I do not need sponsorship now.'
+    assert resolve(f,a) is None
+
+
+@pytest.mark.parametrize('placement', ['label', 'option', 'description'])
+@pytest.mark.parametrize('scope', ['currently', 'for any employer', 'immediately', 'with unrestricted authorization'])
+def test_authorization_scope_is_not_expanded_from_generic_profile_fact(placement, scope):
+    f=field('Are you legally authorized to work in the country where the job is located?',
+            ['Yes','No'],country='United States')
+    if placement=='label':
+        f['label']='Are you legally authorized to work in the United States '+scope+'?'
+    elif placement=='option':
+        f['options'][0]['label']='Yes, I am '+scope+' legally authorized to work in this country.'
+    else:
+        f['description']='Please confirm authorization '+scope+'.'
+    a=values();a['eligibility.ead_issued']=booklet.answer(False,'synthetic explicit EAD fact')
+    assert resolve(f,a) is None
+    assert known_answers.catalog_basis(f,a)=={}
+
+
+def test_exact_current_authorization_response_survives_generic_scope_guard():
+    f=field('Are you legally authorized to work in the country where the job is located?',[
+        'Yes, I am currently legally authorized to work in the country where the jobs is located.',
+        'No, I am not currently legally authorized to work in the country where the job is located.'],country='united states')
+    a=values();assert resolve(f,a) is None
+    a['custom.exact_current']={**booklet.answer(f['options'][1]['label'],'synthetic exact candidate answer'),
+        'question':f['label'],'field_ref':f['ref'],'country_context':'united states'}
+    assert key_for_field(f,a)=='custom.exact_current'
+    f['country_context']='canada';assert key_for_field(f,a) is None
+
+
+def test_current_authorization_direct_planner_fallback_is_guarded():
+    assert resolve(field('Are you currently authorized to work in the United States?', ['Yes','No'])) is None
 
 
 def test_us_sponsorship_punctuation_and_new_relative_wording_are_not_new_questions():

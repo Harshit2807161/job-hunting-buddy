@@ -162,6 +162,9 @@ def key_for_field(field, answers):
                             or not selected or any(value not in offered for value in selected)):
                         continue
             return key
+    from .known_answers import authorization_needs_specific_response
+    if authorization_needs_specific_response(field):
+        return None  # Exact scoped candidate responses above remain authoritative.
     if (label in {"your current location", "current location", "where are you currently located?"}
             and (field.get("type") in {"text", "textarea"}
                  or field.get("type") == "combobox" and label in {"your current location", "current location"})):

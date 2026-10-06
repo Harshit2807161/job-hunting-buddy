@@ -50,6 +50,22 @@ def _choices(field):
     return result
 
 
+def authorization_needs_specific_response(field):
+    """Generic country authorization does not prove present/any-employer scope.
+
+    Scope may appear in the selected option or owned help, not just the label.
+    An explicit answer to that exact employer question can still be reused by
+    the planner; this guard only prevents deriving it from a broader profile.
+    """
+    label = _label(field)
+    authorization = (label in {"u.s. work authorization", "work authorization"} or re.search(
+        r"\b(?:are you|i am)\s+(?:(?:currently|legally)\s+){0,2}(?:authorized|eligible)\s+to\s+work\b", label))
+    context = "\n".join([label, str(field.get("description") or ""), *_choices(field)])
+    return bool(authorization and re.search(
+        r"\bcurrently\b|\bimmediate(?:ly)?\b|\b(?:any|every)\s+employer\b|\bunrestricted\b|\bright now\b|\bat present\b",
+        context, re.I))
+
+
 def contact_location(field):
     return (_label(field) in {"location", "home location", "where are you currently located?"} and field.get("type") == "combobox"
             and field.get("ref") == "ashby:_systemfield_location:control:0")
@@ -95,6 +111,8 @@ def _signature(field):
 
 def key_for_field(field, answers):
     """Bind exact aliases; no fuzzy screening or citizenship assumptions."""
+    if authorization_needs_specific_response(field):
+        return None
     label = _label(field)
     aliases = {
         "are you open to relocation?": "preferences.relocation",
@@ -338,6 +356,8 @@ def catalog_basis(field, answers):
             if original.get("expected") is not True or not end or not (end[0] <= bounds[0] <= bounds[1] <= end[1]):
                 return {}
     elif label in RELATIVE_AUTHORIZATION:
+        if authorization_needs_specific_response(field):
+            return {}
         suffix = {"united states": "us", "canada": "canada", "united kingdom": "uk"}.get(
             normalize(str(field.get("country_context") or "")))
         item = require("eligibility.authorized_" + suffix) if suffix else None
@@ -473,6 +493,8 @@ def _common_projection(field, job, answers):
         return None
     country = normalize(str(field.get("country_context") or ""))
     if label in RELATIVE_AUTHORIZATION and select:
+        if authorization_needs_specific_response(field):
+            return None
         suffix = {"united states": "us", "canada": "canada", "united kingdom": "uk"}.get(country)
         key = "eligibility.authorized_" + suffix if suffix else None
         item = _verified(answers, key) if key else None
@@ -496,10 +518,10 @@ def _common_projection(field, job, answers):
         if item["value"] is False:
             return chosen({"no, i do not and will not require immigration sponsorship to legally work in the country where the job is located."}, records, "Explicit combined No covers both periods")
         now, future = (_verified(answers, "eligibility.sponsorship_"+part) for part in ("now", "future"))
-        timing = "now" if now and now["value"] is True else "in the future" if now and now["value"] is False and future and future["value"] is True else None
+        timing = "now" if now and now["value"] is True else "in the future" if future and future["value"] is True else None
         if timing:
             records.update({"eligibility.sponsorship_"+part: item for part, item in (("now", now), ("future", future)) if item})
-            return chosen({f"yes, i will require immigration sponsorship {timing} to legally work in the country where the job is located."}, records, "Separate verified timing facts; combined True alone cannot distinguish now from future")
+            return chosen({f"yes, i will require immigration sponsorship {timing} to legally work in the country where the job is located."}, records, "Explicit need in the selected period; future-only wording makes no claim that present sponsorship is unnecessary")
         return None
     if select and label in _DISCLOSURES:
         key = _DISCLOSURES[label];item = _verified(answers, key)
