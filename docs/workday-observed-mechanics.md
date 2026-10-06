@@ -104,3 +104,18 @@ more than 100 increments would be needed. Finish composite blur and recheck all
 segments, including previously edited ones. This was validated through the
 registered CLI on six employment dates and four education years; the fixture
 regressions separately cover a foreign display, moved focus and unstable values.
+
+A modern native Resume/CV upload may clear its FileList immediately after handing
+bytes to Workday. Retention proof now captures and hashes the native File in a
+passive capture-phase change listener before that happens, then requires a unique
+success item inside the same owned upload control with the same filename and
+rendered size. Proof is tied to the exact page, input/owner and nonce. Reusing it
+never uploads again; attachment replacement, deletion/restoration, changed text,
+a new input or a new file selection invalidate it. A filename-only success item
+from an earlier upload cannot manufacture this captured-byte proof.
+
+Live LSEG evidence established FileList clearing and the uniquely owned success
+item after a controlled upload. That earlier attachment is preserved; the new
+capture listener cannot retroactively prove its bytes were re-read. The new
+listener, reuse and mutation checks are fixture-validated separately. Workday
+submission capability remains disabled pending full retained-review validation.

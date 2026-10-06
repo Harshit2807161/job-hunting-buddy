@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -532,12 +531,29 @@ def dispatch(request, helpers):
         if not path.is_file() or path.suffix.lower() != ".pdf" or normalize(field["label"]) not in {"resume", "resume/cv", "cover letter"}:
             raise ValueError("Workday upload requires an approved existing PDF in a known document control")
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        from . import workday_upload
+        supplied = request.get("upload_receipt")
+        if supplied:
+            if not isinstance(supplied, dict):
+                raise ValueError("Workday uploaded document did not retain its approved bytes")
+            args = {"index": field["file_index"], "filename": path.name,
+                    "size": path.stat().st_size, "sha256": digest, "nonce": supplied.get("nonce")}
+            proof = workday_upload.verify(js, args)
+            if (supplied.get("sha256") != digest or supplied.get("filename") != path.name or not proof):
+                raise ValueError("Workday uploaded document did not retain its approved bytes")
+            return {"verified": True, "already_retained": True, "upload_receipt": supplied,
+                    "native_upload_proof": proof}
+        args = workday_upload.prepare(js, field, path, digest)
         cdp("DOM.setFileInputFiles", nodeId=node_for_field(field), files=[str(path)])
-        wait(0.2)
-        names = js("(()=>{const e=[...document.querySelectorAll('input[type=file]')]["+str(field["file_index"])+"];return e?[...e.files].map(f=>f.name):[]})()")
-        if names != [path.name] or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        proof = None
+        for _ in range(40):
+            wait(0.15); owned_guard(); proof = workday_upload.verify(js, args)
+            if proof:
+                break
+        if not proof or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise ValueError("Workday uploaded document did not retain its approved bytes")
-        return {"verified": True, "upload_receipt": {"sha256": digest, "filename": path.name, "nonce": uuid.uuid4().hex}}
+        return {"verified": True, "upload_receipt": {"sha256": digest, "filename": path.name, "nonce": args["nonce"]},
+                "native_upload_proof": proof}
     if field["type"] == "checkbox":
         if not isinstance(value, bool):
             raise ValueError("Workday checkbox requires an approved boolean")

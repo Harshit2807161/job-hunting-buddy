@@ -573,3 +573,63 @@ def test_hidden_date_segment_refuses_foreign_or_unstable_native_controls(failure
         assert inspect('window.digits') == 0
         assert inspect("document.getElementById('unrelated').value") == 'Keep my edit'
         assert inspect('window.arrows') <= 26
+
+
+CLEARED_UPLOAD_HTML = '''<div role=group aria-labelledby=resume-heading><h3 id=resume-heading>Resume/CV</h3>
+<div data-fkit-id="resumeAttachments--attachments"><label id=upload-label>Upload a file<abbr>*</abbr></label>
+<div data-automation-id=attachments-FileUpload aria-labelledby=upload-label><input type=file data-automation-id=file-upload-input-ref></div></div></div>
+<script>
+window.uploads=0;
+document.querySelector('input[type=file]').addEventListener('change',event=>{
+ window.uploads++;const file=event.target.files[0],owner=event.target.parentElement;
+ const item=document.createElement('div');item.setAttribute('data-automation-id','file-upload-item');
+ const name=document.createElement('div');name.setAttribute('data-automation-id','file-upload-item-name');name.innerText=file.name;
+ const size=document.createElement('div');size.innerText=(file.size/1024).toFixed(2)+' KB';
+ const success=document.createElement('div');success.setAttribute('data-automation-id','file-upload-successful');success.innerText='Successfully Uploaded!';
+ item.append(name,size,success);owner.append(item);event.target.value='';
+});
+</script>'''
+
+
+def test_workday_native_file_capture_survives_clearing_and_reuses_owned_success_without_reupload(tmp_path):
+    import hashlib
+    resume = tmp_path/'synthetic.pdf';resume.write_bytes(b'%PDF-1.4\nSynthetic upload bytes')
+    with fixture_runtime(CLEARED_UPLOAD_HTML) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='file')
+        result = call('fill',field=field,value=str(resume))
+        assert result['native_upload_proof']['method']=='captured_native_file_and_owned_server_success'
+        assert result['native_upload_proof']['sha256']==hashlib.sha256(resume.read_bytes()).hexdigest()
+        assert inspect("document.querySelector('input[type=file]').files.length")==0
+        assert call('fill',field=field,value=str(resume),upload_receipt=result['upload_receipt'])['already_retained'] is True
+        assert inspect('window.uploads')==1
+
+
+@pytest.mark.parametrize('change',['same_name_replacement','delete_restore','size','name','success','new_input','new_selection'])
+def test_workday_upload_proof_rejects_attachment_mutations_without_reupload(change,tmp_path):
+    resume=tmp_path/'synthetic.pdf';resume.write_bytes(b'%PDF-1.4\nSynthetic upload bytes')
+    changes={
+        'same_name_replacement':"item.replaceWith(item.cloneNode(true))",
+        'delete_restore':"const p=item.parentElement;item.remove();p.append(item)",
+        'size':"item.children[1].innerText='900.00 KB'",
+        'name':"item.children[0].innerText='other.pdf'",
+        'success':"item.children[2].innerText='Upload failed'",
+        'new_input':"const e=document.querySelector('input[type=file]');e.replaceWith(e.cloneNode(true))",
+        'new_selection':"document.querySelector('input[type=file]').dispatchEvent(new Event('change',{bubbles:true}))",
+    }
+    with fixture_runtime(CLEARED_UPLOAD_HTML) as (call, inspect, helpers, lane):
+        field=next(f for f in call('observe')['fields'] if f['type']=='file')
+        receipt=call('fill',field=field,value=str(resume))['upload_receipt']
+        inspect("(()=>{const item=document.querySelector('[data-automation-id=file-upload-item]');"+changes[change]+"})()")
+        with pytest.raises(ValueError,match='uploaded document did not retain'):
+            call('fill',field=field,value=str(resume),upload_receipt=receipt)
+        assert inspect('window.uploads') <= 2
+
+
+def test_workday_same_filename_success_without_native_capture_is_never_content_proof(tmp_path):
+    resume=tmp_path/'synthetic.pdf';resume.write_bytes(b'%PDF-1.4\nSynthetic')
+    with fixture_runtime(CLEARED_UPLOAD_HTML) as (call, inspect, helpers, lane):
+        field=next(f for f in call('observe')['fields'] if f['type']=='file')
+        inspect("document.querySelector('[data-automation-id=attachments-FileUpload]').insertAdjacentHTML('beforeend','<div data-automation-id=file-upload-item><div data-automation-id=file-upload-item-name>synthetic.pdf</div><div>0.02 KB</div><div data-automation-id=file-upload-successful>Successfully Uploaded!</div></div>')")
+        with pytest.raises(ValueError,match='uploaded document did not retain'):
+            call('fill',field=field,value=str(resume))
+        assert inspect('window.uploads')==0
