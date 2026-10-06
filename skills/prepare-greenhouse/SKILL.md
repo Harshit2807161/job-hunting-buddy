@@ -86,6 +86,14 @@ retained value. Public API descriptions and choices can clarify the question in
 the portal; they do not establish native choices, live retention, or readiness.
 The final audit repeats the owned native check for those approved responses.
 
+Greenhouse replaces a resume or cover-letter input with an `uploaded:` control
+after upload. Use the current control for review; preserve the earlier receipt
+as history. The inventory reconciler may merge these references only when one
+current owner has the identical document key, path, source, bytes and receipt.
+Empty description metadata may disappear during replacement. Nonempty or
+truncated instructions, competing owners or changed proof require review; do
+not delete a question or replace a document merely to make submission pass.
+
 For the phone widget's country selector, verified US country spellings may be
 displayed as `United States (+1)`. Translate only after fresh DOM inspection
 confirms the selector belongs to the phone input; keep the candidate's original

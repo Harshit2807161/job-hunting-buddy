@@ -255,6 +255,26 @@ validation errors. The new correlation mechanism has not yet been validated
 with a live upload. No live documents were replaced or applications submitted
 during this repair.
 
+### Greenhouse upload control replacement
+
+A live Nuro draft retained 17 current controls while its preparation inventory
+contained 18 entries: the original cover-letter input and its replacement
+`uploaded:Cover Letter` appeared as separate questions. The normal submission
+guard stopped before any click. Read-only Browser Use CLI audits verified all
+17 retained answers, both native upload receipts and the actual local PDF hashes.
+
+Inventory construction now reconciles this standard Greenhouse transition only
+with a single current owner, matching document provenance/content/receipt, and
+an older native-input observation. Original retained rows remain audit history.
+The native input reports empty description metadata while its uploaded display
+omits those properties; only that empty, untruncated difference is normalized.
+Instructions, ambiguous ownership, changed bytes or receipts remain blockers.
+
+Synthetic worker and inventory tests cover the observed transition and its
+negative cases. Live evidence establishes unchanged form values and documents;
+it does not establish a subsequent successful submission. A refreshed packet
+still requires a new independent review and both retained-answer audits.
+
 ### Native pre-click scroll recovery
 
 A live Greenhouse preparation stalled in `DOM.scrollIntoViewIfNeeded` while
