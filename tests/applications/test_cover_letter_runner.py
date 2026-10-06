@@ -384,3 +384,36 @@ def test_real_compiler_availability_override_changes_only_copy_and_keeps_one_pag
     text=PdfReader(result['record']['value']).pages[0].extract_text()
     assert 'December 14, 2026' in text and 'January 2027' not in text
     assert template.read_bytes()==original
+
+
+@pytest.mark.parametrize('text', [
+    'Synthetic letter starting on December 14, 2026.',
+    'SyntheticletterstartingonDecember14,2026.',
+    'Synthetic letter starting on December\n14, 2026.',
+    'Synthetic letter startingonDecember14,\u00a02026.',
+])
+def test_pdf_date_validation_tolerates_only_extraction_whitespace(text):
+    proof=letters.availability_from_answers({'preferences.start_date':explicit_availability()})
+    assert letters._compiled_availability_matches(text,proof)
+
+
+@pytest.mark.parametrize('text', [
+    'SyntheticletterstartingonDecember15,2026.',
+    'SyntheticletterstartingonDecember14,2027.',
+    'SyntheticletterstartingonDecember14,20260.',
+    'SyntheticletterstartinginJanuary2027.',
+    'SyntheticletterstartingonDecember14,2026. AlsoavailableJanuary2027.',
+    'December14,2026 is graduation; starting later.',
+    'startingonDecember14,2026 and startingonDecember14,2026.',
+])
+def test_pdf_date_validation_rejects_changed_conflicting_or_nonavailability_dates(text):
+    proof=letters.availability_from_answers({'preferences.start_date':explicit_availability()})
+    assert not letters._compiled_availability_matches(text,proof)
+
+
+def test_real_extraction_shape_proceeds_to_independent_review_and_registration(setup_letter):
+    runner,book,job,calls,template,resume,path=with_availability(setup_letter)
+    runner.compiler=lambda t,r,p,**kwargs:pdf(p,'SyntheticletterstartingonDecember14,2026.')
+    result=runner.generate(FIELD)
+    assert result['state']=='verified' and len(calls)==2
+    assert result['record']['source']['visual_review']['availability_matches_verified_answer'] is True

@@ -75,6 +75,14 @@ def document_available(record, *, answers=None):
         return False
 
 
+def _compiled_availability_matches(text, availability):
+    """PDF glyph extraction may omit spaces; the exact closing date may not drift."""
+    compact = re.sub(r"\s+", "", text).casefold()
+    expected = re.sub(r"\s+", "", "starting on " + availability["display_date"]).casefold()
+    return (len(re.findall(re.escape(expected) + r"(?![0-9])", compact)) == 1
+            and not re.search(r"january2027(?![0-9])", compact))
+
+
 def _codex(prompt, schema, directory, *, image=None, execute=None):
     from jsonschema import validate
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -231,8 +239,8 @@ INPUT:\n""" + json.dumps(inputs, ensure_ascii=False)
                     if len(PdfReader(pdf).pages) != 1:
                         raise ValueError("Cover letter exceeds one page")
                     if inputs["availability_override"] is not None:
-                        text = " ".join((PdfReader(pdf).pages[0].extract_text() or "").split())
-                        if (inputs["availability_override"]["display_date"] not in text or "January 2027" in text):
+                        text = PdfReader(pdf).pages[0].extract_text() or ""
+                        if not _compiled_availability_matches(text, inputs["availability_override"]):
                             raise ValueError("Compiled availability does not match the verified user answer")
                     stage = "render"
                     preview = self.renderer(pdf, directory)
