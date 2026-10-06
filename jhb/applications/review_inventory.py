@@ -81,10 +81,66 @@ def _retained_catalog_fallback(field, key, filled, answers):
     return retained
 
 
-def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
+def _superseded_greenhouse_uploads(observed, filled, job_url):
+    """Retire only a proved native-input -> current uploaded-file alias.
+
+    The original observations and retained rows remain unchanged as history.
+    Same-label documents alone cannot establish that they are one control.
+    """
+    from .boards import job_identity
+    identity = job_identity(job_url)
+    if not identity or identity[0] != 'greenhouse':
+        return {}
+    # The worker re-plans at a later step whenever observed refs change.
+    steps = [f.get('observed_step') for f in observed]
+    if not steps or any(type(step) is not int or step < 0 for step in steps):
+        return {}
+    latest = max(steps)
+    superseded = {}
+    for old in observed:
+        label = normalize(old.get('label', ''))
+        expected = {'cover letter': ('cover_letter', 'documents.cover_letter'),
+                    'resume': ('resume', 'documents.resume'),
+                    'resume/cv': ('resume', 'documents.resume')}.get(label)
+        if (not expected or old.get('type') != 'file' or old.get('ref') != expected[0]
+                or old['observed_step'] >= latest):
+            continue
+        current = [f for f in observed if f.get('type') == 'file'
+                   and normalize(f.get('label', '')) == label and f['observed_step'] == latest]
+        if len(current) != 1:
+            continue
+        new = current[0]
+        if (new.get('ref') != 'uploaded:'+new.get('label', '')
+                or any(old.get(k) != new.get(k) for k in
+                       ('label', 'required', 'description', 'description_truncated'))
+                or sum(f.get('ref') == old['ref'] for f in observed) != 1
+                or sum(f.get('ref') == new['ref'] for f in observed) != 1):
+            continue
+        before = [r for r in filled if r.get('ref') == old['ref']]
+        after = [r for r in filled if r.get('ref') == new['ref']]
+        if len(before) != 1 or len(after) != 1:
+            continue
+        a, b = before[0], after[0]
+        if (a.get('key') != expected[1] or a.get('question') != old['label']
+                or not a.get('source') or not isinstance(a.get('value'), str)
+                or not a['value'].lower().endswith('.pdf')
+                or not isinstance(a.get('upload_receipt'), str) or not a['upload_receipt']
+                or not isinstance(a.get('document_sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', a['document_sha256'])
+                or any(a.get(k) != b.get(k) for k in
+                       ('key', 'question', 'value', 'source', 'document_sha256', 'upload_receipt'))):
+            continue
+        superseded[old['ref']] = new['ref']
+    return superseded
+
+
+def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0,job_url=None):
     """Reconcile every observed question; an optional blank is still visible."""
+    superseded = _superseded_greenhouse_uploads(observed, filled, job_url)
     records=[]
     for field in observed:
+        if field['ref'] in superseded:
+            continue
         key=key_for_field(field,answers)
         canonical_key=key
         approved=answers.get(key,{})
@@ -118,7 +174,7 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
     # Their closed editor controls must remain reviewable too.
     seen={record['ref'] for record in records}
     for row in filled:
-        if row['ref'] not in seen:
+        if row['ref'] not in seen and row['ref'] not in superseded:
             records.append({'ref':row['ref'],'question':row['question'],'type':'saved_record','required':False,
                             'status':'answered','answer_key':row.get('key'),'category':'profile_fact',
                             'source':row.get('source'),'step':0,'choices':[], 'candidate_wording_required':False})
@@ -126,6 +182,8 @@ def build(observed,filled,answers,key_for_field,*,complete=False,step_count=0):
     required_blank=any(row['required'] and row['status']!='answered' for row in records)
     inventory={'complete':bool(complete and records and not required_blank),'fields':records,
                'observed_at':int(time.time()),'step_count':step_count}
+    if superseded:
+        inventory['superseded_upload_refs'] = superseded
     counts={'schema_version':1,'inventory_verified':inventory['complete'],'all_observed_count':len(records),
             'answered_count':sum(row['status']=='answered' for row in records),
             'blank_count':sum(row['status']=='blank' for row in records),

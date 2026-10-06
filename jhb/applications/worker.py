@@ -238,7 +238,8 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
         from .review_inventory import build
         return {**result, "agent_tasks": [*document_tasks.values(), *result.get("agent_tasks", [])], "generated_documents": generated_documents,
                 **build(list(observed_fields.values()), result.get("filled", []), answers,
-                                 key_for_field, complete=stable, step_count=observed_step+1 if observed_fields else 0)}
+                                 key_for_field, complete=stable, step_count=observed_step+1 if observed_fields else 0,
+                                 job_url=job.get("application_url") or job.get("url"))}
     if not cli_actions:
         await actions.install()
     if not actions.allowed_url(job["url"]):
