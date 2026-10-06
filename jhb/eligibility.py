@@ -21,6 +21,8 @@ _CLEARANCE = re.compile(r"\b(?:security\s+clearance|(?:secret|confidential|secur
 _POLYGRAPH = re.compile(r"\bpolygraph\b", re.I)
 _SPONSOR = r"(?:(?:any|employment|immigration|work|visa|h[- ]?1[- ]?b)\s+){0,3}sponsor(?:ship|ing)?\b"
 _SPONSORSHIP_DENIAL = re.compile(
+    r"\b(?:is|are)\s+not\s+(?:currently\s+)?sponsoring\s+"
+    r"(?:(?:US|United States|employment|work|h[- ]?1[- ]?b)\s+){0,3}visas?\b|"
     r"\b(?:no|without)\s+" + _SPONSOR + r"|"
     r"\b(?:cannot|can not|can't|unable to|will not|won't|do not|does not|not able to)\s+"
     r"(?:(?:currently|presently|now|be able to)\s+)?(?:offer\s+|provide\s+|support\s+)?" + _SPONSOR + r"|"

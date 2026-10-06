@@ -17,6 +17,7 @@ REQUIRED_US_PERSON = ('U.S. Person Required: Must be a U.S. citizen, lawful perm
 ADDITIONAL_RESTRICTIONS = ('Preferred Qualifications\nEmbedded systems experience.\n'
                          'Additional Requirements\nCurrently a US Citizen with capability to '
                          'obtain and maintain a US Q clearance.')
+PRESENT_VISA_DENIAL = 'At this time, this employer is not sponsoring US employment visas for this role.'
 
 
 @pytest.mark.parametrize('text', [
@@ -172,6 +173,10 @@ def test_nonrequirements_are_not_excluded(text):
 
 
 @pytest.mark.parametrize('text', [
+    PRESENT_VISA_DENIAL,
+    'We are not currently sponsoring employment visas.',
+    'This employer is not sponsoring U.S. work visas.',
+    'The company is not sponsoring H-1B visas.',
     'We cannot provide visa sponsorship for this position.',
     'Employment visa sponsorship is not available.',
     'Candidates must be able to work without sponsorship now or in the future.',
@@ -196,6 +201,10 @@ def test_explicit_sponsorship_denial_conflicts_with_saved_future_sponsorship_nee
 
 
 @pytest.mark.parametrize('text', [
+    'The company is sponsoring US employment visas for this role.',
+    'Are you applying to an employer that is not sponsoring US employment visas?',
+    'The company is not sponsoring conferences or charity events.',
+    'No prior visa experience is required; this employer is sponsoring employment visas.',
     'Visa sponsorship is available for qualified candidates.',
     'Will you require visa sponsorship now or in the future?',
     'Are you eligible to work without visa sponsorship?',
@@ -292,7 +301,7 @@ def job(description="Ordinary application development position."):
     return item
 
 
-@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON, ADDITIONAL_RESTRICTIONS])
+@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON, ADDITIONAL_RESTRICTIONS, PRESENT_VISA_DENIAL])
 def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path, monkeypatch, text):
     def forbidden(*args, **kwargs):
         pytest.fail("Excluded job must not access the candidate browser")
