@@ -576,3 +576,48 @@ def test_failed_current_form_submission_explanation_survives_automatic_detail_re
         assert page.get_by_role('alert').get_by_text(message,exact=True).is_visible()
         assert len(actions)==1 and actions[0][0].endswith('/approve')
         assert not errors
+
+
+@pytest.mark.parametrize('queue_state,display_state,candidate_count,agent_count,label', [
+    ('waiting_input', 'needs_form_repair', 0, 1, 'Needs form repair'),
+    ('waiting_input', 'needs_verification', 0, 0, 'Needs verification'),
+    ('waiting_input', 'waiting_input', 0, 1, 'Needs form repair'),
+    ('queued', 'agent_queued', 0, 1, 'Agent queued'),
+    ('running', 'agent_working', 0, 1, 'Agent working'),
+    ('waiting_input', 'waiting_input', 1, 1, 'Needs your answer'),
+    ('waiting_input', 'discarded', 0, 0, 'Discarded'),
+])
+def test_agent_work_status_matches_overview_and_detail_without_requesting_known_answers(
+        queue_state, display_state, candidate_count, agent_count, label):
+    state = {}
+    def configure(question, detail):
+        # Optional genuine input still belongs to the candidate even when no
+        # required question remains. Known fields must not produce input cards.
+        question['required'] = False
+        question['contexts'][0]['required'] = False
+        current_questions = [question] if candidate_count else []
+        counts = dict(state=queue_state, display_state=display_state,
+                      pending_candidate_questions=candidate_count,
+                      pending_required_questions=0, pending_agent_tasks=agent_count)
+        state['overview']['applications'][0].update(**counts, inventory_ready=False)
+        state['overview']['questions'] = current_questions
+        state['overview']['summary'].update(ready=0, questions=candidate_count)
+        detail.update(**counts, questions=current_questions,
+            agent_tasks=[{'question': 'Gender', 'ref': 'gender', 'task_kind': 'known_answer_fill',
+                          'required': False}] if agent_count else [])
+        detail['approval'].update(can_approve=False, reason='Current work must be verified')
+    with workspace(state=state, configure=configure) as (page, actions, errors):
+        row = page.locator('#applications tbody tr')
+        row.get_by_text(label, exact=True).wait_for()
+        assert page.locator('.question-card').count() == candidate_count
+        assert not page.get_by_label('Answer: Gender').count()
+        if not candidate_count:
+            assert not row.get_by_text('Needs your answer', exact=True).count()
+        page.get_by_role('button', name='Review Synthetic Employer application').click()
+        dialog = page.get_by_role('dialog')
+        dialog.get_by_text(label, exact=True).wait_for()
+        submit = dialog.get_by_role('button', name='Submit current browser form')
+        assert submit.count() == 0 or submit.is_disabled()
+        if not candidate_count:
+            assert not dialog.get_by_text('Needs your answer', exact=True).count()
+        assert not actions and not errors
