@@ -501,3 +501,35 @@ async def refresh_sheet(conn, **kwargs):
         with sqlite3.connect(Path(database).resolve().as_uri()+"?mode=rw", uri=True, timeout=10) as other:
             return import_sheet(other, **kwargs)
     return await asyncio.to_thread(refresh)
+
+
+def refresh_before_submit(job, *, connection=None, executor=None):
+    """Re-read manual applications immediately before the terminal browser call.
+
+    Preparation may use the short cache, but a person can add a spreadsheet row
+    while a draft is being filled or independently reviewed. A configured sheet
+    that cannot be refreshed defers submission; it is never treated as empty.
+    """
+    owned = None
+    try:
+        if tracking._load_config() is None:
+            return {"state": "disabled"}
+        if executor is None and os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
+            return {"state": "pending", "reason": "CI"}
+        if connection is None:
+            path = config.ROOT / "data" / "jobs.sqlite3"
+            if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+                raise ValueError("Unsafe application history database")
+            owned = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=10)
+            owned.row_factory = sqlite3.Row
+            connection = owned
+        result = import_sheet(connection, executor=executor, refresh_seconds=0)
+        if result.get("state") != "imported":
+            return {"state": "pending", "reason": result.get("state", "invalid_refresh")}
+        previous = match(connection, job)
+        return {"state": "blocked", "match": previous} if previous else {"state": "clear"}
+    except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+        return {"state": "pending", "reason": "history_refresh_failed"}
+    finally:
+        if owned is not None:
+            owned.close()

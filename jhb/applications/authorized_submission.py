@@ -213,6 +213,14 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
                      "approved_book_path": str(reviewed_book), "approved_book_sha256": independent["approved_book_sha256"],
                      "review": independent, "reviewed_at": datetime.now(timezone.utc).isoformat()}
             write_private(attempt_path.parent / "independent-review.json", token)
+        from .historical import refresh_before_submit
+        history = await asyncio.to_thread(refresh_before_submit, job)
+        if history.get("state") == "blocked":
+            return {"state": "waiting_review", "reason": "A manually recorded prior application blocks submission",
+                    "click_started": False, "retryable": False, "history_match": history["match"]}
+        if history.get("state") not in {"clear", "disabled"}:
+            return {"state": "waiting_review", "reason": "Fresh spreadsheet history is temporarily unavailable",
+                    "click_started": False, "retryable": True, "error_kind": "application_history_transport"}
         return await client.invoke("submit", **context, documents=documents)
     except Exception as exc:
         # Transport failure after a durable click is uncertain, never replayable.

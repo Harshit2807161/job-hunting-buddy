@@ -34,6 +34,32 @@ def test_import_deduplicates_history_without_append_receipt_queue_or_guessed_dat
     assert Path(found["evidence_path"]).stat().st_mode & 0o777 == 0o600
 
 
+def test_submission_refresh_detects_manual_row_added_during_cache_window(setup):
+    conn, job, _, sheets, _ = setup
+    historical.import_sheet(conn, executor=sheets)
+    assert historical.match(conn, job) is None
+    sheets.rows[2] = row(job)
+    assert historical.import_sheet(conn, executor=sheets)["state"] == "cached"
+    result = historical.refresh_before_submit(job, connection=conn, executor=sheets)
+    assert result["state"] == "blocked"
+    assert result["match"]["disposition"] == "exclude"
+    assert sheets.appends == 0
+
+
+def test_submission_refresh_preserves_new_unapplied_exact_job(setup):
+    conn, job, _, sheets, _ = setup
+    sheets.rows[2] = row(job, url=ASHBY.replace("555555555555", "555555555556"))
+    assert historical.refresh_before_submit(job, connection=conn, executor=sheets) == {"state": "clear"}
+    assert sheets.appends == 0
+
+
+def test_submission_history_refresh_failure_does_not_allow_click(setup):
+    conn, job, _, _, _ = setup
+    def unavailable(*args):
+        raise RuntimeError("Synthetic unavailable sheet")
+    assert historical.refresh_before_submit(job, connection=conn, executor=unavailable)["state"] == "pending"
+
+
 @pytest.mark.parametrize("saved,current", [
     (ASHBY, CANONICAL+"?embed=true&utm_source=feed"),
     ('=HYPERLINK("'+CANONICAL+'"; "Application")', ASHBY),

@@ -91,6 +91,13 @@ successful reads for 15 minutes, and never appends a row or creates a submission
 receipt. CI cannot use live Composio authentication. Missing, malformed or
 unavailable reads retain existing history and report a sanitized pending state.
 
+Immediately before the terminal submission call, the authorized worker bypasses
+that cache and reads the configured sheet again. This catches manual applications
+added while preparation or independent review was running. An exact match blocks
+the duplicate; a cautious legacy match remains a hold. If the read is unavailable
+or its lock is busy, submission waits for a bounded retry. This read-only check
+does not alter existing rows or turn a manual entry into an employer receipt.
+
 Call `historical.match(conn, job)` before source-browser access and again after
 resolving the exact ATS URL, including the original `source_url`. An existing
 canonical ATS/LinkedIn job identity returns an `exclude` decision. Tracking

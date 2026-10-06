@@ -380,13 +380,14 @@ def test_explicitly_answered_fresh_packet_can_retry_preclick_handoff_once(setup)
     assert (config.ROOT / "private" / "authorized-submissions" / job["dedupe_hash"] / "attempt-1.json").exists()
 
 
-def test_preclick_transport_retry_has_durable_backoff_and_three_attempt_budget(setup):
+@pytest.mark.parametrize("kind", ["TimeoutError", "application_history_transport"])
+def test_preclick_transport_retry_has_durable_backoff_and_three_attempt_budget(setup, kind):
     db, bookpath, _, _ = setup
     candidate(setup)
     calls = []
     async def transient(*args, **kwargs):
         calls.append(True)
-        return {"state": "waiting_review", "retryable": True, "error_kind": "TimeoutError"}
+        return {"state": "waiting_review", "retryable": True, "error_kind": kind}
     first = asyncio.run(overnight.drain(db, bookpath, submitter=transient))
     assert first["handoffs"] == 1
     assert asyncio.run(overnight.drain(db, bookpath, submitter=transient))["attempted"] == 0

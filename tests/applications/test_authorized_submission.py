@@ -120,6 +120,28 @@ def test_cached_prior_application_blocks_before_any_browser_submission(tmp_path,
     assert json.loads(attempt_path.read_text()).get("runtime_click_started") is not True
 
 
+@pytest.mark.parametrize("history", [
+    {"state": "blocked", "match": {"disposition": "exclude"}},
+    {"state": "pending", "reason": "busy"},
+])
+def test_fresh_manual_history_check_stops_terminal_action_after_audit(tmp_path, monkeypatch, history):
+    job, packet, packet_path, manifest, auth, attempt_path = evidence(tmp_path, monkeypatch)
+    from jhb.applications import historical
+    checked = []
+    def refresh(current):
+        checked.append(current)
+        return history
+    monkeypatch.setattr(historical, "refresh_before_submit", refresh)
+    with synthetic_runtime() as (call, invoke, inspect, helpers, target, other_guard, lane):
+        cli = AuthorizedSubmissionCLI()
+        monkeypatch.setattr(cli, "invoke", invoke)
+        result = asyncio.run(submit_reviewed(job, packet_path, manifest, authorization=auth, attempt=attempt_path, cli=cli))
+        assert result["state"] == "waiting_review" and result["click_started"] is False
+        assert inspect("window.submissions") == 0
+        assert checked == [job]
+        assert json.loads(attempt_path.read_text()).get("runtime_click_started") is not True
+
+
 @contextmanager
 def synthetic_runtime(*, html=HTML, url=URL):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", BROWSERS)

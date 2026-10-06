@@ -165,7 +165,7 @@ def _safe_preclick_retry(previous, packet_sha, *, now, authorization_id=None):
         result = json.loads(previous["result_json"] or "{}")
         from .pipeline import TRANSIENT_KINDS
         return (previous["state"] == "waiting_review" and result.get("retryable") is True
-                and result.get("error_kind") in TRANSIENT_KINDS | {"BrowserOperationError"}
+                and result.get("error_kind") in TRANSIENT_KINDS | {"BrowserOperationError", "application_history_transport"}
                 and previous["available_at"] <= now)
     except (OSError, ValueError, TypeError):
         return False
