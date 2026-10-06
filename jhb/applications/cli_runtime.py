@@ -454,7 +454,14 @@ def dispatch(request, helpers):
                 raise ValueError("Owned application tab changed during recovery")
             helpers["activate_tab"](owned["targetId"])
             wait(0.5)
-            js("document.readyState")
+            try:
+                js("document.readyState")
+            except (TimeoutError, RuntimeError) as recovery_error:
+                if not isinstance(recovery_error, TimeoutError) and "Runtime.evaluate timed out" not in str(recovery_error):
+                    raise
+                # Recovery is exhausted. Use the structured mechanic boundary
+                # so the transport layer cannot repeat the entire open/wake.
+                raise ValueError("Owned application tab remains unresponsive after activation") from recovery_error
             woke_tab = True
         actual_url = js("location.href")
         if greenhouse_identity(actual_url) != identity:

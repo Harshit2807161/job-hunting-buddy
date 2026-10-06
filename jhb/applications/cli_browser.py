@@ -34,6 +34,7 @@ class BrowserCapacityError(BrowserOperationError):
 
 
 MECHANICAL_ERRORS = {
+    "Owned application tab remains unresponsive after activation",
     "Observed control has invalid click geometry", "Observed control has no clickable area",
     "Observed control geometry is unavailable before input",
     "Owned dropdown option is unavailable after rerender",
