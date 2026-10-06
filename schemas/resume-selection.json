@@ -1,0 +1,21 @@
+{
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["sde", "ml", "needs_review"]},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 3000},
+    "jd_duties": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+    "resume_comparisons": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "sde": {"type": "object", "additionalProperties": false,
+          "properties": {"evidence": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}, "reason": {"type": "string", "minLength": 1, "maxLength": 3000}},
+          "required": ["evidence", "reason"]},
+        "ml": {"type": "object", "additionalProperties": false,
+          "properties": {"evidence": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}, "reason": {"type": "string", "minLength": 1, "maxLength": 3000}},
+          "required": ["evidence", "reason"]}
+      },
+      "required": ["sde", "ml"]
+    }
+  },
+  "required": ["decision", "reason", "jd_duties", "resume_comparisons"]
+}

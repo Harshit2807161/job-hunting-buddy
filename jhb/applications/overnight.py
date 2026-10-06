@@ -172,9 +172,8 @@ def _safe_preclick_retry(previous, packet_sha, *, now, authorization_id=None):
 
 
 def _manifest(job, packet, book):
-    from .worker import role_for_job
-    choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
-    role = choice.get("value") if choice.get("status") == "verified" else role_for_job(job)
+    from .resume_selection import packet_role
+    role = packet_role(job, packet, book)
     if role not in {"sde", "ml"}:
         raise ValueError("Submission needs a verified resume variant")
     # The retained packet, not historical ledger entries, owns completion.
@@ -259,10 +258,12 @@ def _candidate(conn, row, auth, book, *, rejections=None):
         return reject("eligibility_not_verified")
     if os.environ.get("JHB_ROLE_FIT_REVIEW") == "1":
         from .role_fit import evidence_hash, POLICY as FIT_POLICY
-        from .worker import role_for_job
+        from .resume_selection import packet_role
         _, fit, _ = _read_private(packet_path.parent / "role-fit.json")
-        choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
-        role = choice.get("value") if choice.get("status") == "verified" else role_for_job(job)
+        try:
+            role = packet_role({**job, "verified_job_description": description}, packet, book)
+        except ValueError:
+            return reject("resume_selection_not_verified")
         if (role not in {"sde", "ml"} or fit.get("state") != "eligible" or fit.get("source") != FIT_POLICY
                 or fit.get("mode") != "independent_codex" or fit.get("selected_role") != role
                 or fit.get("evidence_hash") != evidence_hash({**job, "verified_job_description": description}, book, role)):

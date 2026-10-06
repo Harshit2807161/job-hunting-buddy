@@ -173,7 +173,6 @@ def _facts(book, job, role):
 
 def _snapshot(packet_path, book_path):
     from .authorized_submission import document_manifest, private_file
-    from .worker import role_for_job
     path = private_file(str(packet_path))
     packet_bytes = path.read_bytes()
     packet = json.loads(packet_bytes)
@@ -203,9 +202,8 @@ def _snapshot(packet_path, book_path):
     book = booklet.load(book_file)
     if booklet.job_excluded(book, job):
         raise ValueError("Candidate declined this role")
-    selected = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
-    role = selected.get("value") if selected.get("status") == "verified" else role_for_job(job)
     manifest = overnight._manifest(job, packet, book)
+    role = manifest["selected_role"]
     documents = document_manifest(manifest, packet)
     screenshot = path.with_name("browser.png")
     if not screenshot.is_file() or screenshot.is_symlink() or screenshot.stat().st_size > 15*1024*1024:

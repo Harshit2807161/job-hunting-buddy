@@ -304,10 +304,11 @@ INPUT:\n""" + json.dumps({**inputs, "tailored": tailored, "replacements": replac
             with _locked(self.book_path):
                 current = booklet.load(self.book_path)
                 latest = current.get("roles", {}).get(self.role, {}).get("documents.resume", {})
-                selected = current.get("job_role_answers", {}).get(self.job["dedupe_hash"], {})
+                from .resume_selection import explicit_role
+                selected = explicit_role(current, self.job)
                 latest_template = current.get("roles", {}).get(self.role, {}).get("documents.cover_template", {})
                 if (availability_from_answers(current.get("answers", {})) != source.get("availability_override")
-                        or booklet.job_excluded(current, self.job) or selected.get("status") == "verified" and selected.get("value") != self.role
+                        or booklet.job_excluded(current, self.job) or selected is not None and selected != self.role
                         or latest.get("status") != "verified" or latest.get("value") != str(resume)
                         or _sha(resume) != source["resume_sha256"] or latest_template.get("status") != "verified"
                         or latest_template.get("value") != str(template) or _sha(template) != source["template_sha256"]):

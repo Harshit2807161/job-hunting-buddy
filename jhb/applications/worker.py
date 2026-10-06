@@ -196,7 +196,7 @@ def _scoped_custom_answers(book, job, scope):
 
 
 def role_for_job(job):
-    """Choose a resume variant; the independent fit check still decides suitability."""
+    """Legacy/demo hint only; live selection compares the full JD and both PDFs."""
     value = job.get("role_classes", "")
     classes = {str(item).strip() for item in (value if isinstance(value, list) else str(value).split(","))}
     if classes == {"swe"}: return "sde"
@@ -447,6 +447,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     document_bytes = Path(str(record["value"])).read_bytes()
                     if document_bytes.startswith(b"%PDF-"):
                         document_hash = hashlib.sha256(document_bytes).hexdigest()
+                        if (key == "documents.resume" and record.get("resume_selection_sha256")
+                                and document_hash != record["resume_selection_sha256"]):
+                            from .cli_browser import BrowserOperationError
+                            raise BrowserOperationError("Selected resume bytes changed before upload")
                 retained = await actions.fill(field, record["value"])
                 document_proof = {}
                 upload_receipt = retained.get("upload_receipt") if isinstance(retained, dict) else None
@@ -691,9 +695,9 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
                   interactive=False, review_seconds=0, role=None, artifacts=None, book_path=None):
     owner_token = _FEEDBACK_ATTEMPT.get()
     attempt_token = owner_token or uuid.uuid4().hex
-    choice = book.get("job_role_answers", {}).get(job["dedupe_hash"], {})
-    explicit_role = choice.get("value") if choice.get("status") == "verified" and choice.get("value") in {"sde", "ml"} else None
-    selected_role = role or explicit_role or role_for_job(job)
+    from . import resume_selection
+    selected_role = resume_selection.explicit_role(book, job) or role or (role_for_job(job) if demo_origin else None)
+    selection = None
     job = {**job, "selected_role": selected_role}
     if not re.fullmatch(r"[a-f0-9]{64}", job["dedupe_hash"]): raise ValueError("Invalid job identity")
     from .retained_preparation import retained_review
@@ -708,6 +712,8 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
         if retained:
             return retained["review_path"]  # Objective exclusions retain the original audit evidence.
         result["selected_role"] = selected_role
+        if selection:
+            result["resume_selection"] = selection
         packet = await write_packet(page, directory, job, result, cli_actions=cli_actions)
         if owner_token is None:
             _record_attempt_feedback(job, result, attempt_token, packet)
@@ -742,6 +748,20 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
             "state": "unsupported", "filled": [], "missing": [], "events": []}
         result.update(reason=retained["reason"], preparation_preserved=True)
         return result, retained["review_path"]
+    if not demo_origin:
+        selection = await asyncio.to_thread(resume_selection.select, job, book, requested_role=role)
+        booklet.write_private(directory / "resume-selection.json", selection)
+        selected_role = selection.get("selected_role")
+        job = {**job, "selected_role": selected_role}
+        if selection.get("state") != "selected":
+            needs_choice = selection.get("state") == "waiting_input"
+            result = {"state": "waiting_input" if needs_choice else "failed",
+                      "reason": selection["reason"], "resume_selection": selection,
+                      "missing": [{"question": "Choose the SDE or ML resume variant", "reason": selection["reason"]}] if needs_choice else [],
+                      "events": [{"event": "resume_selection_handoff"}], "filled": [],
+                      "retryable": selection.get("retryable", False),
+                      "error_kind": selection.get("error_kind", "resume_selection_evidence")}
+            return result, await persist(None, directory, job, result)
     if not selected_role:
         result = {"state": "waiting_input", "reason": "Ambiguous role; choose --role sde or --role ml",
                   "missing": [{"question": "Choose the SDE or ML resume variant"}], "events": [], "filled": []}
@@ -755,6 +775,9 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
                       "events": [{"event": "role_fit_handoff"}], "filled": [], "missing": []}
             return result, await persist(None, directory, job, result)
     answers = booklet.for_role(book, selected_role, job=job)
+    if selection and "documents.resume" in answers:
+        answers["documents.resume"] = {**answers["documents.resume"],
+                                       "resume_selection_sha256": selection["selected_resume_sha256"]}
     start_month = _verified_start_month(answers.get("preferences.start_date", {}))
     if start_month:
         answers["standing.start_month"] = start_month
