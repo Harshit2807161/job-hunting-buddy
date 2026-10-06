@@ -33,6 +33,9 @@ VALIDATION_DIFF_SECONDS = 30
 # minutes. Reserve all checks before changing code, not merely the first one.
 VALIDATION_SECONDS = VALIDATION_COMPILE_SECONDS + VALIDATION_TEST_SECONDS + VALIDATION_DIFF_SECONDS + 5
 MAX_REPAIRS = 8
+# Match the normal preparation queue's default retry budget. A code repair
+# cannot reset that budget or make a terminal failed row claimable.
+MAX_PREPARATION_ATTEMPTS = 3
 INTERVAL_SECONDS = 300
 TECHNICAL_KINDS = {
     "TimeoutError", "TimeoutExpired", "ConnectionError", "ConnectionResetError",
@@ -194,11 +197,45 @@ def _preclick_issues(connection, tables, auth, issues):
         _merge(issues, _issue("authorized_submission", kind, "runtime", str(path.relative_to(config.ROOT)), row["job_hash"]))
 
 
-def snapshot(state, auth, database=None):
+def _application_defer_reason(row, now):
+    """Require current queue proof of a due retry; diagnostics alone are not work."""
+    row = dict(row)
+    if not {"state", "attempts", "available_at", "lease_until"} <= row.keys():
+        return "missing_queue_evidence"
+    if type(row["attempts"]) is not int or row["attempts"] < 0:
+        return "missing_queue_evidence"
+    if row["attempts"] >= MAX_PREPARATION_ATTEMPTS:
+        return "retry_budget_exhausted"
+    if row["state"] != "retry":
+        return "not_claimable_retry"
+    if type(row["available_at"]) is not int:
+        return "missing_queue_evidence"
+    if row["lease_until"] is not None:
+        return "retained_lease"
+    if row["available_at"] > now:
+        return "retry_backoff"
+    return None
+
+
+def _application_issue(issues, deferred, item, row, now):
+    reason = _application_defer_reason(row, now)
+    if reason is None:
+        _merge(issues, item)
+        return
+    # Keep failed/exhausted evidence visible without mixing its job identities
+    # or packet paths into an actionable job sharing the same fingerprint.
+    key = (item["fingerprint"], row["job_hash"])
+    previous = deferred.setdefault(key, {**item, "defer_reason": reason,
+        "queue_state": row["state"], "attempts": dict(row).get("attempts"),
+        "available_at": dict(row).get("available_at")})
+    previous["evidence"] = sorted(set(previous["evidence"] + item["evidence"]))[:20]
+
+
+def snapshot(state, auth, database=None, *, read_logs=True):
     now = int(time.time())
     health = {"observed_at": now, "application_states": {}, "source_states": {},
               "confirmed_submissions": 0, "uncertain_submissions": 0, "pending_questions": 0}
-    issues = {}
+    issues, deferred = {}, {}
     feedback = attempt_feedback.records()
     health["attempt_feedback"] = attempt_feedback.summarize(feedback)
     latest = {}
@@ -232,12 +269,12 @@ def snapshot(state, auth, database=None):
             _preclick_issues(connection, tables, auth, issues)
             if "applications" in tables and auth:
                 for row in feedback_candidates:
-                    current = connection.execute("SELECT state FROM applications WHERE job_hash=?", (row["job_hash"],)).fetchone()
+                    current = connection.execute("SELECT * FROM applications WHERE job_hash=?", (row["job_hash"],)).fetchone()
                     if current and current["state"] in {"failed", "retry"}:
-                        _merge(issues, _issue("application", row["error_kind"], row["operation"],
-                                             row["feedback_path"], row["job_hash"]))
+                        _application_issue(issues, deferred, _issue("application", row["error_kind"], row["operation"],
+                                             row["feedback_path"], row["job_hash"]), current, now)
                 start = overnight._timestamp(auth["authorized_at"])
-                for row in connection.execute("SELECT job_hash,packet FROM applications WHERE state IN ('failed','retry') AND updated_at>=?", (start,)):
+                for row in connection.execute("SELECT * FROM applications WHERE state IN ('failed','retry') AND updated_at>=?", (start,)):
                     if not re.fullmatch(r"[a-f0-9]{64}", row["job_hash"]) or not row["packet"]:
                         continue
                     path = Path(row["packet"]).parent / "packet.json"
@@ -253,11 +290,13 @@ def snapshot(state, auth, database=None):
                     raw_events = result.get("events", [])
                     events = [event for event in raw_events if isinstance(event, dict) and event.get("event") == "technical_failure"] if isinstance(raw_events, list) else []
                     operation = events[-1].get("operation", "runtime") if events else "runtime"
-                    _merge(issues, _issue("application", kind, operation, str(path.relative_to(config.ROOT)), row["job_hash"]))
+                    _application_issue(issues, deferred, _issue("application", kind, operation,
+                                       str(path.relative_to(config.ROOT)), row["job_hash"]), row, now)
         finally:
             connection.close()
-    health["new_log_error_counts"] = _logs(state, issues)
+    health["new_log_error_counts"] = _logs(state, issues) if read_logs else {}
     health["technical_issues"] = list(issues.values())
+    health["deferred_application_issues"] = list(deferred.values())
     return health
 
 
@@ -559,6 +598,24 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
                 if (current is None or current.get("repair_authority") is not True
                         or current["authorization_id"] != auth["authorization_id"]):
                     return finish("authorization_ended")
+                # A worker may have completed, leased, or exhausted a retry
+                # after the first observation. Re-read evidence under both
+                # existing worker locks before creating the long-lived gate.
+                # Do not consume incremental log cursors for this recheck.
+                fresh = snapshot({}, current, database, read_logs=False)
+                fresh_issues = {item["fingerprint"]: item for item in fresh["technical_issues"]}
+                new = [fresh_issues[item["fingerprint"]]
+                       if item["component"] in {"application", "authorized_submission"} else item
+                       for item in new if item["component"] not in {"application", "authorized_submission"}
+                       or item["fingerprint"] in fresh_issues]
+                log_issues = [item for item in health["technical_issues"] if item["component"].startswith("log:")]
+                health.update({key: value for key, value in fresh.items()
+                               if key not in {"technical_issues", "new_log_error_counts"}})
+                health["technical_issues"] = fresh["technical_issues"] + log_issues
+                observed.update(fresh_issues)
+                _write(directory() / "state.json", state)
+                if not new:
+                    return finish("healthy", repairs=0)
                 repo = inspect_repository()
                 if repo["branch"] != FEATURE_BRANCH or (repo["dirty"] and state.get("validated_repository") != repo):
                     return finish("repository_busy")

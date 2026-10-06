@@ -62,7 +62,7 @@ def test_preparation_repair_survives_revoked_submission_consent_without_changing
     assert health["monitoring_kind"] == "preparation_repair"
     assert health["state"] == "validated"
     assert health["repair_authority"] is True and health["submission_authority"] is False
-    assert health["application_states"] == {"failed": 1}
+    assert health["application_states"] == {"retry": 1}
     assert setup[1].read_bytes() == before and overnight.load_authorization() is None
     assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "healthy"
 

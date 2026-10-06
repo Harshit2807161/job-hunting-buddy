@@ -31,13 +31,15 @@ def setup(tmp_path, monkeypatch):
     booklet.write_private(path, auth)
     config.DB_PATH.parent.mkdir()
     with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("CREATE TABLE applications(job_hash TEXT PRIMARY KEY,state TEXT,packet TEXT,updated_at INTEGER)")
+        conn.execute("CREATE TABLE applications(job_hash TEXT PRIMARY KEY,state TEXT,packet TEXT,updated_at INTEGER,"
+                     "attempts INTEGER DEFAULT 1,available_at INTEGER DEFAULT 0,lease_until INTEGER)")
         conn.execute("CREATE TABLE authorized_submission_attempts(id TEXT,state TEXT)")
         conn.execute("INSERT INTO authorized_submission_attempts VALUES ('uncertain-test','uncertain')")
     return tmp_path, path, now
 
 
-def failure(setup, *, number=1, kind="browser_mechanics", state="failed", age=0, **updates):
+def failure(setup, *, number=1, kind="browser_mechanics", state="retry", age=0,
+            attempts=1, available_at=0, lease_until=None, **updates):
     root, _, now = setup
     job_hash = f"{number:064x}"
     packet = root / "private" / "applications" / job_hash / "packet.json"
@@ -45,8 +47,9 @@ def failure(setup, *, number=1, kind="browser_mechanics", state="failed", age=0,
               "events": [{"event": "technical_failure", "operation": "fill"}], **updates}
     booklet.write_private(packet, result)
     with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("INSERT OR REPLACE INTO applications VALUES (?,?,?,?)",
-                     (job_hash, state, str(packet.with_name("review.html")), now - age))
+        conn.execute("INSERT OR REPLACE INTO applications VALUES (?,?,?,?,?,?,?)",
+                     (job_hash, state, str(packet.with_name("review.html")), now - age,
+                      attempts, available_at, lease_until))
     return packet
 
 
@@ -144,7 +147,7 @@ def test_monitor_reads_feedback_for_failure_even_if_packet_capture_failed(setup)
     _, _, now = setup
     path = feedback_attempt()
     with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("INSERT INTO applications VALUES (?, 'failed', NULL, ?)", ("b" * 64, now))
+        conn.execute("INSERT INTO applications(job_hash,state,packet,updated_at) VALUES (?, 'retry', NULL, ?)", ("b" * 64, now))
     calls = []
     assert monitor.once(run=runner(calls), inspect_repository=repo)["state"] == "validated"
     assert str(path.relative_to(config.ROOT)) in calls[0][1]
@@ -175,7 +178,7 @@ def test_feedback_never_resurrects_old_attempt_or_repairs_candidate_handoff(setu
         changes = {"state": "waiting_login"} if mode == "new_handoff" else {"state": "waiting_review"} if mode == "new_complete" else {"click_started": True} if mode == "terminal" else {"missing": [{"question": "Unknown fact"}]}
         feedback_attempt(token="two", **changes)
     with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("INSERT INTO applications VALUES (?, ?, NULL, ?)", ("b" * 64, "waiting_review" if mode == "current_ready" else "failed", now))
+        conn.execute("INSERT INTO applications(job_hash,state,packet,updated_at) VALUES (?, ?, NULL, ?)", ("b" * 64, "waiting_review" if mode == "current_ready" else "retry", now))
     assert monitor.once(run=lambda *a, **kw: pytest.fail("unsafe repair"), inspect_repository=repo)["state"] == "healthy"
 
 
@@ -412,7 +415,7 @@ def preclick(setup, *, clicked=False, age=0, application_state="waiting_review",
     with sqlite3.connect(config.DB_PATH) as conn:
         for name in ("job_hash", "authorization_id", "attempt_path", "result_json", "updated_at"):
             conn.execute(f"ALTER TABLE authorized_submission_attempts ADD COLUMN {name}")
-        conn.execute("INSERT INTO applications VALUES (?,?,NULL,?)", (job_hash, application_state, now))
+        conn.execute("INSERT INTO applications(job_hash,state,packet,updated_at) VALUES (?,?,NULL,?)", (job_hash, application_state, now))
         conn.execute("INSERT INTO authorized_submission_attempts(id,state,job_hash,authorization_id,attempt_path,result_json,updated_at) "
                      "VALUES ('preclick',?,?,?,?,?,?)", (attempt_state, job_hash, auth_id, str(path), json.dumps(result), now-age))
     return path

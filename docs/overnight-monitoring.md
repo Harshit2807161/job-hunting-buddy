@@ -69,6 +69,16 @@ the authorization window do not qualify. Log scanning seeds its initial cursor
 at the current end of each log and reads bounded new tails; it extracts known
 exception classes without copying raw messages into prompts.
 
+Preparation evidence must also belong to a current, due, unleased `retry` row
+below the normal three-attempt cap. Exhausted failures, nonclaimable rows and
+retries still in backoff remain visible in `deferred_application_issues`, with
+their reasons and original evidence; they do not start a repair or renew the
+retry budget. A shared error fingerprint does not mix those historical job
+identities into an actionable job's repair prompt. The supervisor rechecks
+current application and no-click attempt evidence after acquiring both worker
+locks, before creating a repair quarantine. Log-only diagnostics retain their
+existing separate handling.
+
 The fingerprint consists of component, technical error class and operation.
 The same issue affecting many jobs therefore requests one repair, with at most
 20 evidence references. Deferred observations remain in private state while the
