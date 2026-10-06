@@ -103,6 +103,15 @@ def key_for_field(field, answers):
         return None
     if field.get("required") and label in ALIASES["identity.preferred_name"] and "standing.required_preferred_name" in answers:
         return "standing.required_preferred_name"
+    # A conditional optional referrer-name field is inapplicable under an
+    # explicit no-personal-referral fact; do not write a fabricated contact.
+    referral = answers.get("screening.personal_referral", {})
+    if (not field.get("required") and field.get("type") in {"text", "textarea"}
+            and not field.get("description") and not field.get("description_truncated")
+            and re.fullmatch(r"if someone at [a-z0-9 .&'-]+ referred you, we['’]d love to give them credit! please share their name and your connection[.]?", label)
+            and referral.get("status") == "verified" and referral.get("source") and referral.get("value") is False
+            and answers.get("standing.inapplicable_referral_details", {}).get("status") == "declined"):
+        return "standing.inapplicable_referral_details"
     # The latest explicit phone-format rule also supersedes an older saved
     # employer phone answer, but only in an observed split calling-code widget.
     if field.get("type") == "tel" and field.get("separate_phone_country") is True and label in ALIASES["identity.phone"]:

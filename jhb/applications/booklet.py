@@ -26,7 +26,7 @@ ALIASES = {
     "identity.address_line2": ["address line 2", "address 2"],
     "identity.address_line3": ["address line 3", "address 3"],
     "identity.birthday": ["birthday", "date of birth"],
-    "identity.preferred_name": ["preferred name", "preferred first name"],
+    "identity.preferred_name": ["preferred name", "preferred first name", "preferred name (if applicable)"],
     "identity.suffix": ["suffix name", "suffix"],
     "identity.postal_code": ["zip code", "postal code"],
     "identity.country": ["country"],
@@ -252,7 +252,14 @@ def _reusable_profile_facts(values, book, role, records, experiences):
     never used to infer a total internship count.
     """
     policy = book.get("workflow_preferences", {})
-    if policy.get("preferred_first_name", {}).get("required") == "use identity.first_name":
+    preferred = policy.get("preferred_first_name", {})
+    preferred = preferred if isinstance(preferred, dict) else {}
+    if preferred.get("required") == "use identity.first_name":
+        first = _verified_item(values, "identity.first_name")
+        if first:
+            values["standing.required_preferred_name"] = answer(first["value"], {
+                "rule": "Required preferred name uses the verified first name",
+                "original_source": first["source"], "policy": preferred})
         last = _verified_item(values, "identity.last_name")
         if last:
             values["standing.required_preferred_last_name"] = answer(last["value"], {
@@ -263,6 +270,13 @@ def _reusable_profile_facts(values, book, role, records, experiences):
             and relocation["value"] is True):
         values["standing.relocate_anywhere"] = answer(True, {
             "policy": policy["relocation"], "original_source": relocation["source"]})
+    referral = _verified_item(values, "screening.personal_referral")
+    if referral and referral["value"] is False:
+        values["standing.inapplicable_referral_details"] = {
+            "value": None, "status": "declined", "source": {
+                "method": "conditional_optional_details_inapplicable",
+                "original_source": referral["source"],
+                "basis": {"screening.personal_referral": False}}}
     current = [r for r in records if isinstance(r, dict) and r.get("status") == "verified"
                and r.get("source") and r.get("expected") is True
                and _education_bound(r.get("start_date")) and _education_bound(r.get("end_date"), end=True)

@@ -284,6 +284,16 @@ _DISCLOSURES = {
 }
 
 
+# Exact observed standard Ashby EEOC definitions, not instructions to infer identity.
+EEOC_RACE_DESCRIPTION = 'Hispanic or Latino - A person of Cuban, Mexican, Puerto Rican, South or Central American, or other Spanish culture or origin regardless of race.\n\nWhite (Not Hispanic or Latino) - A person having origins in any of the original peoples of Europe, the Middle East, or North Africa.\n\nBlack or African American (Not Hispanic or Latino) - A person having origins in any of the Black racial groups of Africa.\n\nNative Hawaiian or Other Pacific Islander (Not Hispanic or Latino) - A person having origins in any of the peoples of Hawaii, Guam, Samoa, or other Pacific Islands.\n\nAsian (Not Hispanic or Latino) - A person having origins in any of the original peoples of the Far East, Southeast Asia, or the Indian Subcontinent, including, for example, Cambodia, China, India, Japan, Korea, Malaysia, Pakistan, the Philippine Islands, Thailand, and Vietnam.\n\nAmerican Indian or Alaska Native (Not Hispanic or Latino) - A person having origins in any of the original peoples of North and South America (including Central America), and who maintain tribal affiliation or community attachment.\n\nTwo or More Races (Not Hispanic or Latino) - All persons who identify with more than one of the above five races.'
+
+def _disclosure_context(field):
+    description = normalize(field.get("description") or "")
+    return (not field.get("description_truncated") and (not description or (
+        _label(field) == "race" and field.get("ref") == "ashby:_systemfield_eeoc_race"
+        and description == normalize(EEOC_RACE_DESCRIPTION))))
+
+
 def _prompt(field):
     return re.sub(r" \((?:mark all that apply|select one)\)$", "", _label(field))
 
@@ -297,6 +307,10 @@ def catalog_basis(field, answers):
     if field.get("description_truncated"):
         return {}
     label, records = _prompt(field), {}
+    if plain_contact_location(field):
+        basis = contact_location_basis(answers)
+        return ({"preferences.application_city": basis[3], "identity.state": basis[1],
+                 "identity.country": basis[2]} if basis else {})
     def require(key):
         item = _verified(answers, key)
         if item:
@@ -338,7 +352,7 @@ def catalog_basis(field, answers):
         if not match or not 0 <= float(match[1]) <= 4:
             return {}
     elif label in _DISCLOSURES:
-        if field.get("description"):
+        if not _disclosure_context(field):
             return {}
         key = _DISCLOSURES[label]
         item = require(key)
@@ -471,7 +485,7 @@ def _common_projection(field, job, answers):
         return None
     if select and label in _DISCLOSURES:
         key = _DISCLOSURES[label];item = _verified(answers, key)
-        if not item or field.get("description"):
+        if not item or not _disclosure_context(field):
             return None  # Unfamiliar owned qualifications need their own binding.
         value = item["value"];records = {key: item}
         if key == "disclosure.gender":
