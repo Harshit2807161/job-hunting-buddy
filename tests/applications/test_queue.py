@@ -40,6 +40,19 @@ def test_exact_claim_preserves_other_jobs_and_lease_guards(conn):
     assert dict(conn.execute("SELECT * FROM applications WHERE job_hash=?", (application_hash(first),)).fetchone()) == other
 
 
+def test_handpicked_then_untried_jobs_precede_old_technical_retries(conn):
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/1")])
+    old = queue.claim(conn)
+    queue.finish(conn, old['job_hash'], 'failed')
+    assert queue.retry(conn, old['job_hash'], error_kind='browser_mechanics', retry_seconds=0)
+    queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/2", 'new-source')])
+    selected = {**job("https://job-boards.greenhouse.io/example/jobs/3", 'selected-source'), 'source': 'user_selected'}
+    queue.enqueue(conn, [selected])
+    assert queue.claim(conn)['job']['url'].endswith('/3')
+    assert queue.claim(conn)['job']['url'].endswith('/2')
+    assert queue.claim(conn)['job_hash'] == old['job_hash']
+
+
 @pytest.mark.parametrize("state", ["submitted", "waiting_review", "submission_uncertain", "discarded", "skipped", "history_hold", "waiting_input"])
 def test_exact_claim_cannot_bypass_protected_state(conn, state):
     queue.enqueue(conn, [job("https://job-boards.greenhouse.io/example/jobs/1234")])

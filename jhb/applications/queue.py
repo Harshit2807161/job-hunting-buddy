@@ -131,7 +131,9 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3, job_hash=None):
         for _ in range(100):
             row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
                                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
-                               "AND (? IS NULL OR job_hash=?) ORDER BY updated_at,job_hash LIMIT 1",
+                               "AND (? IS NULL OR job_hash=?) "
+                               "ORDER BY CASE WHEN json_extract(job_json,'$.source')='user_selected' THEN 0 ELSE 1 END,"
+                               "attempts,updated_at,job_hash LIMIT 1",
                                (now, now, max_attempts, job_hash, job_hash)).fetchone()
             if row is None:
                 break
