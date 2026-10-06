@@ -76,11 +76,14 @@ def test_explicit_transcription_consent_is_shared_with_question_router():
     assert resolve(control,book=b)['value']=='Opt out of recording'
 
 
-@pytest.mark.parametrize('change',['generic_compliance','no_policy','extra_help','truncated','wrong_ref','changed_options'])
+@pytest.mark.parametrize('change',['generic_compliance','no_policy','extra_help','truncated','wrong_ref','changed_options',
+                                  'negated_recording','mention_without_approval'])
 def test_recording_never_inherits_generic_terms_or_changed_scope(change):
     b=synthetic_book();control=recording_field()
     if change=='generic_compliance':b['workflow_preferences']['application_compliance']['source']='synthetic acceptance of application terms'
     if change=='no_policy':del b['workflow_preferences']['application_compliance']
+    if change=='negated_recording':b['workflow_preferences']['application_compliance']['source']='Applicant accepted terms, not AI transcription; no interview recording approval'
+    if change=='mention_without_approval':b['workflow_preferences']['application_compliance']['source']='Applicant accepted terms; AI transcription was discussed'
     if change=='extra_help':control['description']+=' Recordings may be sold to third parties.'
     if change=='truncated':control['description_truncated']=True
     if change=='wrong_ref':control['ref']='unknown-consent'

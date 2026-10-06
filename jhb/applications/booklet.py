@@ -164,7 +164,10 @@ def common_answers(book: dict, job=None) -> dict:
         values["standing.interview_recording"] = answer(recording["value"], recording["source"])
     elif (isinstance(compliance, dict) and compliance.get("value") is True
           and isinstance(compliance.get("source"), str)
-          and re.search(r"\b(?:AI transcription|interview recording)\b", compliance["source"], re.I)):
+          and not re.search(r"\b(?:no|not|decline[ds]?|refus(?:e[ds]?|al)|denied)\b", compliance["source"], re.I)
+          and re.search(r"\b(?:AI transcription|interview recording)\b[^.;]{0,120}\b(?:yes|approved|approval|authorized|consent)\b"
+                        r"|\b(?:approved|authorized|consented to)\b[^.;]{0,80}\b(?:AI transcription|interview recording)\b",
+                        compliance["source"], re.I)):
         # Generic acceptance of application terms does not authorize recording.
         values["standing.interview_recording"] = answer(True, compliance["source"])
     salary = policy.get("salary_expectation", {})
