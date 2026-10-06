@@ -14,8 +14,46 @@ from test_monitor import setup, failure, repo
 
 
 @pytest.mark.parametrize("leader_exits", [False, True])
-def test_bounded_stops_new_session_child_and_preserves_unrelated_process(setup, leader_exits):
+def test_bounded_stops_new_session_child_and_preserves_unrelated_process(setup, monkeypatch, leader_exits):
     monitor.directory().mkdir()
+    output = monitor.directory() / "nested-session.jsonl"
+    original_popen, original_iter = subprocess.Popen, psutil.process_iter
+    original_tracker = owned_processes.OwnedProcesses
+    spawned, enumerated = [], set()
+
+    def spawn(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def fixture_inventory():
+        # Success here assumes readable process metadata. Real newborn desktop
+        # processes may deny environ() nondeterministically, which correctly
+        # quarantines production but is covered by the explicit negative test
+        # below. Enumerating only our disposable processes is not ownership:
+        # orphan discovery must still verify the child's actual inherited token.
+        pids = {process.pid for process in spawned}
+        recorded = output.read_text().strip() if output.exists() else ""
+        if recorded:
+            pids.add(int(recorded))
+        for process in original_iter():
+            if process.pid in pids:
+                enumerated.add(process.pid)
+                yield process
+
+    def tracker(process, *args):
+        if leader_exits:
+            # Force the orphan route rather than occasionally finding the
+            # child through its still-alive parent before reparenting.
+            process.wait(timeout=5)
+        tracked = original_tracker(process, *args)
+        if leader_exits:
+            assert tracked.members == {}
+        return tracked
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(owned_processes.psutil, "process_iter", fixture_inventory)
+    monkeypatch.setattr(owned_processes, "OwnedProcesses", tracker)
     unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
     script = ("import subprocess,sys,time; "
               "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],start_new_session=True);"
@@ -23,9 +61,10 @@ def test_bounded_stops_new_session_child_and_preserves_unrelated_process(setup, 
     try:
         result = monitor.bounded([sys.executable, "-c", script], monitor.directory()/"nested-session",
                                  monitor.authorization(), .5 if not leader_exits else 5)
-        pid = int((monitor.directory()/"nested-session.jsonl").read_text().strip())
+        pid = int(output.read_text().strip())
         assert result["state"] == ("complete" if leader_exits else "timeout"), result
         assert unrelated.poll() is None
+        assert {pid, unrelated.pid} <= enumerated
         try:
             child = psutil.Process(pid)
             assert child.status() == psutil.STATUS_ZOMBIE
