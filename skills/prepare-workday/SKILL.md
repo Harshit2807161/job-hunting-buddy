@@ -61,6 +61,10 @@ Observed mechanics retained in `workday_runtime.py`:
   that a search matched. Enter may commit a highlighted result. Prefer an exact
   observed option and native click, then inspect the actual retained chip.
   Preserve the original degree when applying a candidate-approved major fallback.
+  Verify the exact input remains active, connected and writable before select-all,
+  deletion, each text event and final blur. A native focus request or click alone
+  does not establish ownership. Some modern search widgets need their observed
+  native open control first; a collapsed widget is not a successful search.
 - Required radio state may be on the radio group's owned `aria-required`
   wrapper rather than each input. Do not treat these factual questions as
   optional, or copy requiredness from a neighboring group. An exact observed

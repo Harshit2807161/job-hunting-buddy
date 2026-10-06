@@ -633,3 +633,21 @@ def test_workday_same_filename_success_without_native_capture_is_never_content_p
         with pytest.raises(ValueError,match='uploaded document did not retain'):
             call('fill',field=field,value=str(resume))
         assert inspect('window.uploads')==0
+
+
+@pytest.mark.parametrize('trigger',['focus','select_all','backspace'])
+def test_workday_text_entry_stops_before_typing_into_a_different_control(trigger):
+    listener={
+        'focus':"target.addEventListener('focus',()=>other.focus());",
+        'select_all':"target.addEventListener('keydown',e=>{if(e.key==='a'&&e.metaKey)other.focus();});",
+        'backspace':"target.addEventListener('keydown',e=>{if(e.key==='Backspace')other.focus();});",
+    }[trigger]
+    html='''<label for=name--legalName--firstName>First Name</label><input id=name--legalName--firstName value=Before>
+<label for=workExperience-1--jobTitle>Job Title</label><input id=workExperience-1--jobTitle value="Preserve original title">
+<script>const target=document.getElementById('name--legalName--firstName'),other=document.getElementById('workExperience-1--jobTitle');'''+listener+'''</script>'''
+    with fixture_runtime(html) as (call,inspect,helpers,lane):
+        field=next(f for f in call('observe')['fields'] if f['ref']=='name--legalName--firstName')
+        with pytest.raises(ValueError,match='field did not retain its approved answer'):
+            call('fill',field=field,value='Synthetic Name')
+        assert inspect("document.getElementById('workExperience-1--jobTitle').value")=='Preserve original title'
+        assert inspect("document.getElementById('name--legalName--firstName').value")!='Synthetic Name'

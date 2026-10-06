@@ -213,6 +213,16 @@ def dispatch(request, helpers):
         cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=code or key, **params)
         cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=code or key)
     def type_value(node, value, *, segmented=False):
+        def require_focus():
+            remote = cdp("DOM.resolveNode", nodeId=node)["object"]["objectId"]
+            try:
+                focused = cdp("Runtime.callFunctionOn", objectId=remote,
+                    functionDeclaration="function(){return this.isConnected&&document.activeElement===this&&!this.disabled&&!this.readOnly;}",
+                    returnByValue=True)["result"].get("value")
+            finally:
+                cdp("Runtime.releaseObject", objectId=remote)
+            if focused is not True:
+                raise ValueError("Workday field did not retain its approved answer")
         if segmented:
             remote = cdp("DOM.resolveNode", nodeId=node)["object"]["objectId"]
             try:
@@ -267,7 +277,9 @@ def dispatch(request, helpers):
             finally:
                 cdp("Runtime.releaseObject", objectId=remote)
         cdp("DOM.focus", nodeId=node)
+        require_focus()
         press("a", "KeyA", modifiers=4, commands=["selectAll"])
+        require_focus()
         if segmented:
             # An empty native date segment can interpret Backspace as moving
             # focus to its sibling. Replace the selected text with digit keys.
@@ -284,7 +296,9 @@ def dispatch(request, helpers):
                 cdp("Runtime.releaseObject", objectId=remote)
         else:
             press("Backspace")
+            require_focus()
             cdp("Input.insertText", text=str(value))
+        require_focus()
         press("Tab"); wait(0.1)
 
     if operation == "screenshot":
