@@ -195,8 +195,15 @@ def packet_role(job, packet, book):
     role = packet.get("selected_role") or selection.get("selected_role")
     explicit = explicit_role(book, job)
     if role not in {"sde", "ml"}:
-        paths = {row.get("value") for row in packet.get("filled", []) if row.get("key") == "documents.resume"}
-        matches = [name for name in ("sde", "ml") if book.get("roles", {}).get(name, {}).get("documents.resume", {}).get("value") in paths]
+        paths = {row["value"] for row in packet.get("filled", [])
+                 if isinstance(row, dict) and row.get("key") == "documents.resume"
+                 and isinstance(row.get("value"), str) and row["value"].strip()}
+        matches = []
+        for name in ("sde", "ml"):
+            document = book.get("roles", {}).get(name, {}).get("documents.resume", {})
+            if (isinstance(document, dict) and document.get("status") == "verified"
+                    and isinstance(document.get("value"), str) and document["value"] in paths):
+                matches.append(name)
         if len(matches) != 1:
             raise ValueError("Retained resume variant is ambiguous")
         role = matches[0]  # Legacy packets: actual uploaded file, never title/category.

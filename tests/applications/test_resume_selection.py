@@ -206,6 +206,34 @@ def test_legacy_packet_uses_actual_uploaded_resume_instead_of_misleading_title(c
     assert selection.packet_role(job,packet,book)=='ml'
 
 
+@pytest.mark.parametrize('retained', [None, '', '   ', [], {'unexpected': 'path'}])
+def test_legacy_packet_cannot_bind_missing_or_malformed_upload_to_absent_variant(context, retained):
+    job, book = context
+    book['roles']['ml'] = {}
+    packet = {'job': job, 'filled': [{'key': 'documents.resume', 'value': retained}]}
+    with pytest.raises(ValueError, match='Retained resume variant is ambiguous'):
+        selection.packet_role(job, packet, book)
+
+
+@pytest.mark.parametrize('status', ['needs_input', 'unverified', None])
+def test_legacy_packet_requires_verified_resume_record(context, status):
+    job, book = context
+    record = book['roles']['ml']['documents.resume']
+    packet = {'job': job, 'filled': [{'key': 'documents.resume', 'value': record['value']}]}
+    record['status'] = status
+    with pytest.raises(ValueError, match='Retained resume variant is ambiguous'):
+        selection.packet_role(job, packet, book)
+
+
+def test_legacy_packet_cannot_choose_between_identical_variant_paths(context):
+    job, book = context
+    book['roles']['sde']['documents.resume'] = copy.deepcopy(book['roles']['ml']['documents.resume'])
+    packet = {'job': job, 'filled': [{'key': 'documents.resume',
+        'value': book['roles']['ml']['documents.resume']['value']}]}
+    with pytest.raises(ValueError, match='Retained resume variant is ambiguous'):
+        selection.packet_role(job, packet, book)
+
+
 def test_resume_selection_cannot_bypass_robotics_role_fit(context,monkeypatch,tmp_path):
     job,book=context; job['title']='Robotics Software Engineer - New Grad'
     change_jd(job,'Implement robot motion planning and embedded control systems.')

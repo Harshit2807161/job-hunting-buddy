@@ -115,16 +115,20 @@ def test_validated_resolver_revision_allows_one_new_recovery(work, monkeypatch):
     assert answer_resume.recover_agent_work(conn, path) == 0
 
 
-def test_stale_required_ledger_does_not_veto_current_complete_review(work):
+@pytest.mark.parametrize("selected_role", ["sde", "ml"])
+def test_stale_required_ledger_does_not_veto_current_complete_review(work, selected_role):
     from jhb.applications.overnight import _manifest
     conn, path, job, packet, packet_path = work
     book = booklet.load(path)
     job["role_classes"] = "swe"
-    book["roles"]["sde"]["documents.resume"] = booklet.answer("/synthetic/resume.pdf", "synthetic")
-    packet.update(state="waiting_review", missing=[], filled=[{"key": "documents.resume"}])
+    resume_path = f"/synthetic/{selected_role}/resume.pdf"
+    book["roles"][selected_role]["documents.resume"] = booklet.answer(resume_path, "synthetic")
+    packet.update(state="waiting_review", missing=[], filled=[{"key": "documents.resume", "value": resume_path}])
     packet["review_inventory"] = {"complete": True, "fields": [
         {"ref": "resume", "question": "Resume", "required": True, "status": "answered"}]}
-    assert _manifest(job, packet, book)["documents"]["documents.resume"]["value"] == "/synthetic/resume.pdf"
+    manifest = _manifest(job, packet, book)
+    assert manifest["selected_role"] == selected_role
+    assert manifest["documents"]["documents.resume"]["value"] == resume_path
     packet["missing"] = [{"question": "Unanswered", "required": True}]
     with pytest.raises(ValueError, match="unresolved required"):
         _manifest(job, packet, book)
