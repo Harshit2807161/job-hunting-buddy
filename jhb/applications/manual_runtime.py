@@ -302,10 +302,12 @@ def dispatch(request, helpers):
         from .known_answers import plain_contact_location
         from .ashby_education import school_control
         catalog_control = residence or (scope["board"] == "ashby" and (plain_contact_location(field) or school_control(field)))
-        from .known_answers import current_university_control
+        from .known_answers import PROFILE_CATALOG_QUESTIONS, current_university_control
         university = scope["board"] == "ashby" and current_university_control(field)
         if (operation == "fill" and scope["board"] == "ashby"
-                and (plain_contact_location(requested) or school_control(requested))
+                and (plain_contact_location(requested) or school_control(requested)
+                     or requested.get("type") == "combobox"
+                     and normalize(requested.get("label", "")) in PROFILE_CATALOG_QUESTIONS)
                 and ((field.get("description") or "") != (requested.get("description") or "")
                      or bool(field.get("description_truncated")) != bool(requested.get("description_truncated")))):
             raise ValueError("Observed manual field has changed")

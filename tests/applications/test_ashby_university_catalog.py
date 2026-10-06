@@ -106,6 +106,30 @@ def test_queryless_profile_catalog_projection_can_use_native_fill(native,questio
     assert page.evaluate('[window.commits,window.submissions]')==[1,0]
 
 
+@pytest.mark.parametrize('question,choices',[
+    ('Please select your graduation month',['May','December']),
+    ('Please select your graduation year',['2029','2030']),
+    (QUESTION,[SCHOOL,'Other']),
+])
+@pytest.mark.parametrize('change',['help','truncated_help'])
+def test_profile_fill_rejects_new_employer_instructions_before_native_input(native,question,choices,change):
+    page,call,_=native
+    page.locator('.ashby-application-form-question-title').evaluate('(e,s)=>{e.textContent=s}',question)
+    page.locator('.ashby-application-form-question-description').evaluate('(e,s)=>{e.textContent=s}',NOTE if question==QUESTION else '')
+    page.evaluate('(s)=>{window.schools=s}',choices)
+    book=profile();book['answers']['education.expected_graduation_date']=booklet.answer('2030-12-14','synthetic explicit date')
+    values=booklet.for_role(book,'sde');field=enrich(call,values)['fields'][0]
+    key=known_answers.enrich(field,{'url':URL},values)
+    baseline=page.evaluate('[window.queries,window.commits,window.submissions]')
+    page.locator('.ashby-application-form-question-description').evaluate('(e,s)=>{e.textContent=s}',
+        'Completed degrees only.' if change=='help' else 'Updated degree instructions. '*180)
+    with pytest.raises(ValueError,match='Observed manual field has changed'):
+        call('fill',field=field,value=values[key]['value'])
+    assert page.locator('input').input_value()==''
+    assert page.locator('input').get_attribute('aria-expanded')=='false'
+    assert page.evaluate('[window.queries,window.commits,window.submissions]')==baseline
+
+
 @pytest.mark.parametrize('existing',[SCHOOL,'Other'])
 def test_describe_never_retypes_retained_university(native,existing):
     page,call,_=native;page.locator('input').evaluate('(e,v)=>{e.value=v}',existing)
