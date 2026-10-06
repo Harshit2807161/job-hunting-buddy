@@ -15,8 +15,8 @@ DEFAULT_PATH = ROOT / "private" / "answer-booklet.json"
 
 # Exact labels only. An unfamiliar question is a handoff, never a guessed answer.
 ALIASES = {
-    "identity.first_name": ["first name", "given name", "what is your legal first name?"],
-    "identity.last_name": ["last name", "family name", "surname", "what is your legal last name?"],
+    "identity.first_name": ["first name", "given name", "legal first name", "what is your legal first name?"],
+    "identity.last_name": ["last name", "family name", "surname", "legal last name", "what is your legal last name?"],
     "identity.full_name": ["full name", "full legal name", "name", "legal first and last name"],
     "identity.email": ["email", "email address"],
     "identity.phone": ["phone", "phone number", "mobile phone", "contact number"],
@@ -48,7 +48,8 @@ ALIASES = {
     "eligibility.authorized_uk": ["are you authorized to work in the united kingdom?"],
     "eligibility.over_18": ["are you over 18 years of age?", "are you over the age of 18 years old?"],
     "eligibility.sponsorship_now": ["do you currently require visa sponsorship?"],
-    "eligibility.sponsorship_future": ["will you require visa sponsorship in the future?"],
+    "eligibility.sponsorship_future": ["will you require visa sponsorship in the future?",
+        "would you require visa sponsorship at any time in the future?"],
     "eligibility.sponsorship": ["will you now or in the future require sponsorship for work authorization? (this information will not be used in assessing your qualifications for any position.)","will you now or in the future require sponsorship?", "will you now or in the future require visa sponsorship?",
         "will you now or in the future require visa sponsorship to work in the united states?",
         "will you now or in the future require sponsorship for employment visa status?",

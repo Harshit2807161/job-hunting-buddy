@@ -225,6 +225,10 @@ def key_for_field(field, answers):
         return "preferences.relocation"
     for key, aliases in ALIASES.items():
         if label in aliases and key in answers:
+            if key == "eligibility.sponsorship_future":
+                from .known_answers import catalog_basis
+                if not catalog_basis(field, answers):
+                    return None  # Preserve verified future-only scope and any owned instructions.
             if key.startswith("documents.") and field.get("type") != "file":
                 # A source PDF path is never prose for Workable/Lever's
                 # cover-letter textarea or a freeform resume summary.

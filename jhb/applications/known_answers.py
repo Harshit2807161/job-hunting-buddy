@@ -12,7 +12,7 @@ from calendar import monthrange
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from .booklet import answer, normalize
+from .booklet import ALIASES, answer, normalize
 
 _GRADUATE = ("are you currently pursuing or recently completed a graduate degree (ms or phd, or equivalent research experience) "
              "in physics, electrical engineering, computer engineering, computer science, applied math, or a related field?")
@@ -374,6 +374,15 @@ def catalog_basis(field, answers):
             return {}
         for part in ("now", "future"):
             require("eligibility.sponsorship_" + part)
+    elif label in ALIASES["eligibility.sponsorship_future"]:
+        # Future-only wording must use its own sourced fact, never infer it
+        # from the combined now-or-future answer or present visa status.
+        if (field.get("description") or normalize(str(field.get("country_context") or ""))
+                not in {"", "united states"}):
+            return {}
+        item = require("eligibility.sponsorship_future")
+        if not item or type(item["value"]) is not bool:
+            return {}
     elif label in {"what is your current gpa", "what is your current gpa?"}:
         item = require("standing.current_education_gpa")
         match = re.fullmatch(r"(\d(?:\.\d+)?)\s*/\s*4(?:\.0+)?", str(item.get("value"))) if item else None
