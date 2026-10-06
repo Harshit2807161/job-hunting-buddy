@@ -9,6 +9,8 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from datetime import date, datetime
+from calendar import month_name
 
 
 def latex_escape(text):
@@ -17,7 +19,53 @@ def latex_escape(text):
     return "".join(replacements.get(c, c) for c in text)
 
 
-def tailor_text(original, replacements):
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def availability_from_answers(answers):
+    """Only the current explicit user availability may override reference prose.
+
+    Resume, graduation, assistant-derived dates and unsigned policies cannot
+    authorize this exception. The reference file itself remains immutable.
+    """
+    record = answers.get("preferences.start_date", {})
+    source = record.get("source", {})
+    if (record.get("status") != "verified" or not isinstance(source, dict)
+            or str(source.get("provider", "")).casefold() not in {
+                "explicit user response", "explicit user question response"}
+            or not isinstance(record.get("value"), str)
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", record["value"])):
+        return None
+    scope = str(source.get("scope", "")) + " " + str(source.get("question", ""))
+    if not re.search(r"\b(?:availability|start date|available to start)\b", scope, re.I):
+        return None
+    try:
+        value = date.fromisoformat(record["value"])
+        stamp = datetime.fromisoformat(source["answered_at"].replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        stored = json.loads(json.dumps(record, sort_keys=True, ensure_ascii=False))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return {"answer_key": "preferences.start_date", "record": stored,
+            "display_date": f"{month_name[value.month]} {value.day}, {value.year}",
+            "record_sha256": _digest(stored), "source_sha256": _digest(source)}
+
+
+def _availability_copy(text, availability):
+    if availability is None:
+        return text
+    if (not isinstance(availability, dict) or availability_from_answers({
+            "preferences.start_date": availability.get("record", {})}) != availability):
+        raise ValueError("Availability override requires verified explicit user provenance")
+    old = "starting in January 2027"
+    if text.count(old) != 1:
+        raise ValueError("Reference availability clause is not uniquely recognized")
+    return text.replace(old, "starting on " + availability["display_date"], 1)
+
+
+def tailor_text(original, replacements, *, availability=None):
     """Replace company/role references and bounded why-them clauses, preserving all else."""
     allowed = {"company", "role", "why_opening", "why_closing"}
     if set(replacements) - allowed: raise ValueError("Only approved company/role/why-them zones are supported by v1")
@@ -50,15 +98,15 @@ def tailor_text(original, replacements):
     # Availability and protected quantitative claims are invariants.
     for token in ["January 2027", "10.55", "50\\%", "30\\%", "3,000", "1,400", "15 minutes"]:
         if original.count(token) != result.count(token): raise ValueError("Protected claim or availability changed")
-    return result
+    return _availability_copy(result, availability)
 
 
-def compile_letter(template: Path, replacements: dict, output: Path):
+def compile_letter(template: Path, replacements: dict, output: Path, *, availability=None):
     from pypdf import PdfReader
     template = template.resolve()
     digest = hashlib.sha256(template.read_bytes()).hexdigest()
     original = template.read_text()
-    tailored = tailor_text(original, replacements)
+    tailored = tailor_text(original, replacements, availability=availability)
     output = output.resolve()
     if output == template or output.suffix != ".pdf": raise ValueError("Output must be a new PDF")
     output.parent.mkdir(parents=True, exist_ok=True)

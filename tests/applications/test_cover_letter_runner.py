@@ -261,3 +261,126 @@ def test_real_compiler_and_png_renderer_keep_one_page_and_reference_unchanged(se
     text=PdfReader(result['record']['value']).pages[0].extract_text()
     assert 'January 2027' in text and 'SyntheticCo' in text and 'Protected skills' in text
     assert Path(result['preview']).is_file()
+
+
+def explicit_availability(value='2026-12-14'):
+    return booklet.answer(value, {'provider':'explicit user response', 'answered_at':'2026-10-04T23:40:52+00:00',
+        'question':'What is your exact start date?', 'scope':'updated candidate availability',
+        'reply':'December 14; update my availability', 'year_context':2026})
+
+
+def with_availability(setup_letter):
+    runner,book,job,calls,template,resume,path=setup_letter
+    book['answers']['preferences.start_date']=explicit_availability()
+    booklet.write_private(path,book)
+    def compiler(template,replacements,output,*,availability=None):
+        text=letters.tailor_text(template.read_text(),replacements,availability=availability)
+        assert 'Protected experience' in text and 'starting on December 14, 2026' in text
+        return pdf(output,'Synthetic letter; starting on '+availability['display_date'])
+    runner.compiler=compiler
+    return runner,book,job,calls,template,resume,path
+
+
+@pytest.mark.parametrize('source',[
+    'resume says December 2026', {'provider':'assistant','answered_at':'2026-10-04T23:40:52+00:00','scope':'availability'},
+    {'provider':'explicit user response','answered_at':'2026-10-04T23:40:52+00:00','scope':'expected graduation'},
+    {'provider':'explicit user response','scope':'availability'},
+    {'provider':'explicit user response','answered_at':'2026-10-04T23:40:52','scope':'availability'},
+])
+def test_only_timestamped_explicit_availability_authorizes_template_exception(source):
+    answers={'preferences.start_date':booklet.answer('2026-12-14',source),
+             'education.expected_graduation_date':explicit_availability()}
+    assert letters.availability_from_answers(answers) is None
+    record=explicit_availability();record['status']='needs_input'
+    assert letters.availability_from_answers({'preferences.start_date':record}) is None
+
+
+def test_trusted_override_is_separate_from_model_replacements_and_protected_template_content():
+    override=letters.availability_from_answers({'preferences.start_date':explicit_availability()})
+    result=letters.tailor_text(TEMPLATE,{},availability=override)
+    assert result==TEMPLATE.replace('starting in January 2027','starting on December 14, 2026')
+    with pytest.raises(ValueError):letters.tailor_text(TEMPLATE,{'availability':'December 14, 2026'})
+    changed=copy.deepcopy(override);changed['display_date']='December 1, 2026'
+    with pytest.raises(ValueError):letters.tailor_text(TEMPLATE,{},availability=changed)
+    with pytest.raises(ValueError):letters.tailor_text(TEMPLATE.replace('starting in January 2027','starting whenever'),{},availability=override)
+
+
+def test_override_manifest_pdf_review_and_registration_share_exact_answer_proof(setup_letter):
+    runner,book,job,calls,template,resume,path=with_availability(setup_letter)
+    reference=template.read_bytes();result=runner.generate(FIELD)
+    assert result['state']=='verified'
+    record=result['record'];source=record['source'];proof=letters.availability_from_answers(book['answers'])
+    assert source['availability_override']==proof and source['availability_sha256']
+    assert source['availability_override']['record']['source']==explicit_availability()['source']
+    assert letters.document_available(record,answers=book['answers'])
+    assert 'December 14, 2026' in PdfReader(record['value']).pages[0].extract_text()
+    assert 'January 2027' not in PdfReader(record['value']).pages[0].extract_text()
+    assert 'availability_override' in calls[1][1]['input']
+    assert 'supersedes the source skill date' in calls[1][1]['input']
+    assert source['visual_review']['availability_matches_verified_answer'] is True
+    assert template.read_bytes()==reference
+    assert booklet.load(path)['job_document_answers'][job['dedupe_hash']]['documents.cover_letter']==record
+
+
+def test_new_user_availability_invalidates_old_letter_without_mutating_old_snapshot(setup_letter):
+    runner,book,job,calls,template,resume,path=setup_letter
+    old=runner.generate(FIELD)['record'];old_bytes=Path(old['value']).read_bytes()
+    runner,book,*_=with_availability(setup_letter)
+    assert not letters.document_available(old,answers=book['answers'])
+    new=runner.generate(FIELD)['record']
+    assert new['value']!=old['value'] and Path(old['value']).read_bytes()==old_bytes
+    assert letters.document_available(new,answers=book['answers'])
+    revised=copy.deepcopy(book['answers']);revised['preferences.start_date']['source']['answered_at']='2026-10-05T00:00:00+00:00'
+    assert not letters.document_available(new,answers=revised)
+    assert len(calls)==4
+
+
+def test_renderer_or_compiler_cannot_silently_preserve_the_stale_pdf_date(setup_letter):
+    runner,book,job,calls,template,resume,path=with_availability(setup_letter)
+    runner.compiler=lambda t,r,p,**kwargs:pdf(p,'Synthetic letter starting in January 2027')
+    result=runner.generate(FIELD)
+    assert result['state']=='agent_task' and result['reason_code']=='cover_letter_compile_unverified'
+    assert len(calls)==1 and not (resume.parent/'SyntheticCo.pdf').exists()
+    assert 'job_document_answers' not in booklet.load(path)
+
+
+def test_changed_answer_during_generation_prevents_delivery_and_registration(setup_letter):
+    runner,book,job,calls,template,resume,path=with_availability(setup_letter)
+    original_renderer=runner.renderer
+    def renderer(pdf_path,directory):
+        preview=original_renderer(pdf_path,directory)
+        latest=booklet.load(path);latest['answers']['preferences.start_date']=explicit_availability('2027-01-15')
+        booklet.write_private(path,latest);return preview
+    runner.renderer=renderer
+    result=runner.generate(FIELD)
+    assert result['state']=='agent_task' and result['reason_code']=='cover_letter_delivery_unverified'
+    assert not (resume.parent/'SyntheticCo.pdf').exists() and 'job_document_answers' not in booklet.load(path)
+
+
+def test_worker_regenerates_stale_generated_document_before_upload(setup_letter):
+    runner,book,job,calls,template,resume,path=setup_letter
+    old=runner.generate(FIELD)['record']
+    runner,book,*_=with_availability(setup_letter)
+    class CLI:
+        blocked_requests=0
+        def __init__(self):self.uploads=[]
+        def allowed_url(self,url):return url==URL
+        async def open(self,url):assert url==URL
+        async def observe(self):return {'url':URL,'fields':[FIELD],'buttons':[{'ref':'submit','label':'Submit application'}]}
+        async def fill(self,field,value):self.uploads.append(value);assert value!=old['value']
+        async def click_next(self,*args):pytest.fail('No terminal action')
+    cli=CLI();answers=booklet.for_role(book,'sde');answers['documents.cover_letter']=old
+    result,_=asyncio.run(worker.prepare(None,job,answers,planner.deterministic_plan,None,cli_actions=cli,document_runner=runner))
+    assert result['state']=='waiting_review' and len(cli.uploads)==1
+    assert 'December 14, 2026' in PdfReader(cli.uploads[0]).pages[0].extract_text()
+
+
+@pytest.mark.skipif(not shutil.which('xelatex') or not shutil.which('pdftoppm'),reason='Local PDF tools unavailable')
+def test_real_compiler_availability_override_changes_only_copy_and_keeps_one_page(setup_letter):
+    runner,book,job,calls,template,resume,path=with_availability(setup_letter)
+    runner.compiler=letters.compile_letter;runner.renderer=letters.render_preview
+    original=template.read_bytes();result=runner.generate(FIELD)
+    assert result['state']=='verified' and len(PdfReader(result['record']['value']).pages)==1
+    text=PdfReader(result['record']['value']).pages[0].extract_text()
+    assert 'December 14, 2026' in text and 'January 2027' not in text
+    assert template.read_bytes()==original

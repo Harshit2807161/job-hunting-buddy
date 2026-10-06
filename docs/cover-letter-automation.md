@@ -51,3 +51,15 @@ injected image-review decisions, exact source/hash mismatches, two-page overflow
 immutable snapshots, backup delivery and generation during observed form
 preparation without submission. This is not live candidate validation. CI never
 uses Codex subscription authentication; synthetic tests inject the engine.
+
+The source reference and skill remain unchanged. A current verified `preferences.start_date`
+may supersede the reference availability only when its timestamped provenance is an
+explicit user availability response. The generator cannot supply this exception: a
+separate validated Python argument changes the copied closing date after all normal
+template invariants pass. Graduation dates, imported resume dates, and assistant
+projections never authorize the override. The input digest, private manifest and
+document provenance retain the full answer and its source/digests, and generated
+letters with an older availability binding are not reusable. Compilation checks the
+PDF date; independent visual review checks the same explicit override and all other
+protected content. A changed booklet answer during generation prevents delivery or
+registration. Fixture validation does not prove any existing live attachment changed.

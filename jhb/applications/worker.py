@@ -277,10 +277,10 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                 if not cover_field(field) or field["ref"] in document_tasks:
                     continue
                 scoped = answers.get(key_for_field(field, answers), {})
-                if scoped.get("status") == "declined" or document_available(scoped):
+                if scoped.get("status") == "declined" or document_available(scoped, answers=answers):
                     continue
                 record = answers.setdefault("documents.cover_letter", booklet.answer(source="Cover letter awaits skill-based generation"))
-                if record.get("status") == "declined" or document_available(record):
+                if record.get("status") == "declined" or document_available(record, answers=answers):
                     continue
                 if record.get("status") == "verified":
                     answers["documents.cover_letter"] = booklet.answer(source="Existing cover-letter document unavailable; regenerate from the preserved skill")
