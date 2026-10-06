@@ -8,6 +8,7 @@ import pytest
 
 from jhb import config
 from jhb.applications import monitor, owned_processes
+from monitor_process_fixture import controlled_process_inventory
 from test_monitor import setup
 
 
@@ -98,7 +99,8 @@ def test_validate_marks_every_child_isolated_without_changing_parent_authority(s
     assert monitor.authorization()['authorization_id'] == auth['authorization_id']
 
 
-def test_actual_validation_child_cannot_rehydrate_runtime_and_gets_fresh_owner_token(setup, monkeypatch):
+def test_actual_validation_child_cannot_rehydrate_runtime_and_gets_fresh_owner_token(
+        setup, monkeypatch, controlled_process_inventory):
     monitor.directory().mkdir()
     authority = monitor.authorization()
     runtime(monkeypatch)

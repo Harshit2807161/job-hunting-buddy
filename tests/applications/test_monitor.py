@@ -11,6 +11,7 @@ import pytest
 
 from jhb import config
 from jhb.applications import attempt_feedback, booklet, monitor, overnight
+from monitor_process_fixture import controlled_process_inventory
 
 
 @pytest.fixture
@@ -320,14 +321,14 @@ def test_pipeline_lock_and_symlink_quarantine_fail_closed(setup):
     assert calls == []
 
 
-def test_bounded_process_timeout_reaps_owned_group_and_keeps_logs_private(setup):
+def test_bounded_process_timeout_reaps_owned_group_and_keeps_logs_private(setup, controlled_process_inventory):
     root, _, _ = setup
     monitor.directory().mkdir()
     pidpath = root / "private" / "process.pid"
     script = "import os,time,pathlib; pathlib.Path(" + repr(str(pidpath)) + ").write_text(str(os.getpid())); time.sleep(30)"
     result = monitor.bounded([sys.executable, "-c", script], monitor.directory() / "timeout-test",
                              monitor.authorization(), 0.35)
-    assert result["state"] == "timeout"
+    assert result["state"] == "timeout", result
     pid = int(pidpath.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
@@ -335,13 +336,14 @@ def test_bounded_process_timeout_reaps_owned_group_and_keeps_logs_private(setup)
         assert (monitor.directory() / ("timeout-test" + suffix)).stat().st_mode & 0o777 == 0o600
 
 
-def test_bounded_process_also_stops_descendants_after_parent_exit(setup):
+def test_bounded_process_also_stops_descendants_after_parent_exit(setup, controlled_process_inventory):
     monitor.directory().mkdir()
+    controlled_process_inventory.pid_files.append(monitor.directory() / "descendant-test.jsonl")
     script = ("import subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
               "print(child.pid,flush=True)")
     result = monitor.bounded([sys.executable, "-c", script], monitor.directory() / "descendant-test",
                              monitor.authorization(), 5)
-    assert result["state"] == "complete"
+    assert result["state"] == "complete", result
     pid = int((monitor.directory() / "descendant-test.jsonl").read_text().strip())
     # A killed orphan can briefly remain a zombie until the OS reaps it. It
     # must not be a live process able to keep mutating the repository.
@@ -361,13 +363,13 @@ def test_bounded_process_checks_revocation_before_start_and_drops_api_keys(setup
     assert monitor.bounded(["unused"], monitor.directory() / "revoked", auth, 20)["state"] == "authorization_ended"
 
 
-def test_bounded_process_uses_existing_auth_without_api_key_environment(setup, monkeypatch):
+def test_bounded_process_uses_existing_auth_without_api_key_environment(setup, monkeypatch, controlled_process_inventory):
     monitor.directory().mkdir()
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-never-use")
     monkeypatch.setenv("CODEX_API_KEY", "synthetic-never-use")
     output = monitor.bounded([sys.executable, "-c", "import os; print('OPENAI_API_KEY' in os.environ, 'CODEX_API_KEY' in os.environ)"],
                              monitor.directory() / "env-test", monitor.authorization(), 5)
-    assert output["state"] == "complete"
+    assert output["state"] == "complete", output
     assert (monitor.directory() / "env-test.jsonl").read_text().strip() == "False False"
 
 
