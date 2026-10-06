@@ -185,6 +185,19 @@ Historical records are retained. The current packet and complete inventory own
 submission completeness; an obsolete ledger question cannot veto a later
 independently checked review.
 
+The portal labels waiting drafts from this same current projection. Known-only
+work shows `Needs form repair`; an incomplete packet with no current question
+shows `Needs verification`. Either required or optional genuine candidate
+questions show `Needs your answer`. Requeuing a draft clears its stale input
+cards until the next observed handoff; this does not claim its form is complete.
+
+Generated cover letters fingerprint the latest explicitly sourced candidate
+availability as well as the selected resume, template, skill and job description.
+A newer verified user availability instruction may replace the single closing
+date in the generated copy. Reference files remain unchanged. The compiler,
+rendered review, delivery provenance and upload-availability check all bind that
+override, so an older cached PDF cannot silently retain the template's date.
+
 The review also warns when a different posting at the same company has the same
 full title as a recorded confirmed application. It shows both locations and links
 the earlier portal record. Different posting IDs do not establish different
