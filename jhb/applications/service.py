@@ -49,8 +49,8 @@ def _gate(mode):
             return "local_browser_unavailable"
     except ValueError:
         return "local_browser_unavailable"
-    from .browser_connection import available
-    if not available(endpoint):
+    from .browser_connection import available, reconnect
+    if not available(endpoint) and not reconnect(endpoint):
         return "local_browser_disconnected"
     return None
 

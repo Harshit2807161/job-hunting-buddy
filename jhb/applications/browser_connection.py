@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
+import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MAX_BYTES = 65536
 TIMEOUT = 2
+RECONNECT_TIMEOUT = 20
+RECONNECT_COOLDOWN = 300
 LOCAL = {"127.0.0.1", "localhost", "::1"}
 # The installed browser-use wrapper rejects doctor flags before delegation.
 # Its normal CLI access mode pre-imports the official read-only health helpers.
@@ -149,5 +155,112 @@ def available(endpoint=None, *, opener=None, runner=None, active_files=None):
         return (socket.scheme in {"ws", "wss"} and socket.port == parsed.port
                 and (socket.hostname == "::1") == (parsed.hostname == "::1")
                 and (parsed.scheme not in {"ws", "wss"} or socket.path == parsed.path))
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return False
+
+
+@contextmanager
+def _reconnect_lock(path):
+    """Never wait behind active browser work or follow a replaced lock path."""
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError("Browser reconnect lock must remain private")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Browser reconnect lock must be a regular file")
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
+
+
+def reconnect(endpoint, *, runner=None, active_files=None, now=None):
+    """Opt-in repair of the same local CLI connection, never a browser launch.
+
+    An explicit WebSocket bypasses harness browser/profile discovery. Only the
+    fixed browser-level health script runs; no navigation, tab or form actions.
+    A failed or interrupted attempt consumes its cooldown before CLI startup.
+    """
+    if (os.environ.get("JHB_BROWSER_RECONNECT_ENABLED") != "1"
+            or os.environ.get("CI", "").lower() in {"1", "true", "yes"}):
+        return False
+    from .. import config
+    from .booklet import write_private
+    try:
+        parsed = endpoint_parts(endpoint)
+        if parsed.scheme != "ws":
+            return False  # No discovery or HTTP-to-WebSocket fallback during repair.
+        binding = _active_match(parsed, active_files)
+        if binding is None or any(parent.is_symlink() for parent in Path(binding[0]).parents):
+            return False
+        execute = runner or subprocess.run
+
+        def pinned_run(command, **kwargs):
+            env = dict(kwargs.get("env", os.environ))
+            for key in ("BU_NAME", "BU_CDP_URL", "BU_BROWSER_ID", "BU_AUTOSPAWN"):
+                env.pop(key, None)
+            env.update(BU_CDP_WS=endpoint, BH_HOME=str(config.ROOT / "private" / "browser-use-harness"),
+                       BH_TELEMETRY="0", BH_UPDATE_CHECK="0")
+            return execute(command, **{**kwargs, "env": env})
+
+        def healthy():
+            return (_active_match(parsed, active_files) == binding
+                    and available(endpoint, runner=pinned_run, active_files=active_files)
+                    and _active_match(parsed, active_files) == binding)
+
+        if healthy():
+            return True
+        private = config.ROOT / "private"
+        if private.is_symlink() or any(parent.is_symlink() for parent in private.parents):
+            return False
+        private.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with _reconnect_lock(private / "browser-connection.lock") as connection_owned:
+            if not connection_owned:
+                return False
+            with _reconnect_lock(private / "browser-lane.lock") as lane_owned:
+                if not lane_owned or _active_match(parsed, active_files) != binding:
+                    return False
+                if healthy():
+                    return True  # Another CLI operation already repaired the connection.
+                path = private / "browser-reconnect.json"
+                if path.is_symlink():
+                    return False
+                instant = time.time() if now is None else now
+                if path.exists():
+                    if not path.is_file() or path.stat().st_size > MAX_BYTES:
+                        return False
+                    record = json.loads(path.read_text())
+                    attempted = record.get("attempted_at") if isinstance(record, dict) else None
+                    if type(attempted) not in {int, float} or not 0 <= instant-attempted:
+                        return False
+                    if instant-attempted < RECONNECT_COOLDOWN:
+                        return False
+                record = {"schema_version": 1, "endpoint_sha256": hashlib.sha256(endpoint.encode()).hexdigest(),
+                          "attempted_at": instant, "next_attempt_at": instant+RECONNECT_COOLDOWN,
+                          "status": "started", "timeout_seconds": RECONNECT_TIMEOUT}
+                write_private(path, record)
+                status = "failed"
+                try:
+                    if _active_match(parsed, active_files) != binding:
+                        status = "profile_changed"
+                    else:
+                        result = pinned_run(["browser-use"], input=HEALTH_SCRIPT, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=RECONNECT_TIMEOUT, check=False,
+                            env={**os.environ, "BH_REQUIRE_EXISTING_DAEMON": "0"})
+                        if _active_match(parsed, active_files) != binding:
+                            status = "profile_changed"
+                        elif result.returncode == 0 and healthy():
+                            status = "connected"
+                except subprocess.TimeoutExpired:
+                    status = "timed_out"
+                except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+                    pass
+                write_private(path, {**record, "status": status, "finished_at": time.time() if now is None else now})
+                return status == "connected"
     except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
         return False
