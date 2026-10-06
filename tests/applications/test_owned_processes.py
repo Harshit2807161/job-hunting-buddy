@@ -10,7 +10,7 @@ import psutil
 import pytest
 
 from jhb.applications import monitor, owned_processes
-from test_monitor import setup
+from test_monitor import setup, failure, repo
 
 
 @pytest.mark.parametrize("leader_exits", [False, True])
@@ -139,3 +139,43 @@ def test_orphan_scan_refreshes_cached_process_birth_before_age_filter(monkeypatc
     monkeypatch.setattr(owned_processes.psutil,'Process',lambda pid:Fresh())
     tracker.scan(recover_orphans=True)
     assert tracker.members=={43210:101}
+
+
+def test_tracker_constructor_failure_stops_direct_child_and_keeps_quarantine(setup, monkeypatch):
+    failure(setup)
+    children=[]
+    def broken_tracker(process,*args):
+        assert process.poll() is None
+        children.append(process)
+        raise RuntimeError('Synthetic tracker initialization failed')
+    monkeypatch.setattr(owned_processes,'OwnedProcesses',broken_tracker)
+    commands=[]
+    def run(command,prefix,auth,timeout,**kwargs):
+        commands.append(command)
+        kwargs.pop('input_text',None)
+        return monitor.bounded([sys.executable,'-c','import time;time.sleep(30)'],prefix,auth,timeout,**kwargs)
+    result=monitor.once(run=run,inspect_repository=repo)
+    assert result['state']=='quarantined'
+    assert len(commands)==len(children)==1  # Validation must not start.
+    assert children[0].poll() is not None
+    with pytest.raises(psutil.NoSuchProcess):psutil.Process(children[0].pid)
+    pending=json.loads((monitor.directory()/'repair-pending.json').read_text())
+    assert pending['repair']['error_kind']=='ProcessCleanupError'
+    assert pending['validation']['state']=='not_run'
+
+
+def test_unreadable_leader_birth_still_stops_direct_popen_child(setup, monkeypatch):
+    monitor.directory().mkdir()
+    actual_popen=subprocess.Popen;actual_process=owned_processes._process;children=[]
+    def remember(*args,**kwargs):
+        child=actual_popen(*args,**kwargs);children.append(child);return child
+    class UnreadableBirth:
+        def __init__(self,pid):self.pid=pid
+        def create_time(self):raise psutil.AccessDenied(self.pid)
+    monkeypatch.setattr(monitor.subprocess,'Popen',remember)
+    monkeypatch.setattr(owned_processes,'_process',lambda pid:UnreadableBirth(pid) if children and pid==children[0].pid else actual_process(pid))
+    result=monitor.bounded([sys.executable,'-c','import time;time.sleep(30)'],monitor.directory()/'birth-error',
+                           monitor.authorization(),5)
+    assert result['state']=='failed' and result['error_kind']=='ProcessCleanupError'
+    assert len(children)==1 and children[0].poll() is not None
+    with pytest.raises(psutil.NoSuchProcess):psutil.Process(children[0].pid)

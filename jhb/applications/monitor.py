@@ -435,6 +435,11 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
             cleanup_errors = []
             try:
                 if owned is None:
+                    # Tracking can fail after Popen succeeds. Its direct child
+                    # is still unreaped, so Popen's own guarded kill/wait is
+                    # safe even though descendant ownership remains unknown.
+                    process.kill()
+                    process.wait(timeout=3)
                     raise RuntimeError("Repair process ownership was not established")
                 owned.cleanup()
             except Exception as exc:

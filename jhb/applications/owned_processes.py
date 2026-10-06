@@ -179,6 +179,15 @@ class OwnedProcesses:
         ordered = sorted(self.members.items(), key=lambda row: row[0] == self.process.pid)
         for pid, birth in ordered:
             signal_owned(pid, birth, signal.SIGKILL)
+        if self.process.pid not in self.members and self.process.poll() is None:
+            # A tracker object can exist even if reading the direct child's
+            # birth identity failed. Popen still owns that unreaped child;
+            # stop it without guessing any descendant or reused bare PID.
+            try:
+                self.process.kill()
+            except Exception:
+                errors.append(CleanupUnproven("Direct repair child could not be stopped"))
+            errors.append(CleanupUnproven("Direct repair child identity was unreadable"))
         try:
             self.process.wait(timeout=max(.01, deadline-time.monotonic()))
         except Exception:
