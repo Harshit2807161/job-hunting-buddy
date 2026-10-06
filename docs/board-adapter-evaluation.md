@@ -326,6 +326,30 @@ catalogs without a query, preserving the owned-listbox and unchanged-value check
 
 Synthetic Chromium fixtures cover blank and retained values, no input or commit
 events, rejection of absent or ambiguous listbox ownership, and exact-job scope.
-The live inspection did not open or select any choices. The repaired operation
-has fixture validation only; successful live catalog inspection and subsequent
-application preparation remain unverified.
+The initial live inspection did not open or select any choices. A later guarded
+normal-worker run completed the month/year catalog inspections, then stopped at
+the separate university catalog. Complete application preparation remains
+unverified for this case.
+
+### Ashby large university catalogs
+
+An official Browser Use CLI diagnostic found a uniquely ARIA-owned university
+list containing 928 options. Generic describe returned its bounded first 50 and
+correctly marked the result truncated; the verified original institution was
+present beyond that slice. All 19 observed controls and retained documents were
+unchanged after inspection. This establishes a catalog-size mechanic, not a
+missing candidate fact or permission to use Other.
+
+For the exact observed current/most-recent-university prompt, the preparation
+and retained-answer audit paths now pass the verified institution as a scoped
+native search query. Only a complete unambiguous filtered result may supply the
+option. Existing selections are inspected without retyping, and a blank input
+is restored before planning. Month/year/university Ashby combobox answers retain
+both the native search query and exact observed choice; native select answers
+remain scalar.
+
+Synthetic Chromium tests cover finding an institution beyond the first 50,
+query restoration, missing/duplicate/unowned results, retained manual edits,
+changed source facts and final read-only audit binding. The repaired scoped
+query has not yet been validated against the live widget; its search filtering
+and subsequent native commit remain live checks before another full retry.

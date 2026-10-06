@@ -89,9 +89,11 @@ def _attach(field, descriptor):
 
 
 async def enrich_async(snapshot, job, answers, describe):
+    from .known_answers import current_university_query
     for field in _fields(snapshot, job, answers):
         try:
-            _attach(field, await describe(field))
+            query = current_university_query(field, answers)
+            _attach(field, await describe(field, **({"query": query} if query is not None else {})))
         except BrowserOperationError:
             raise
         except (ValueError, RuntimeError, TimeoutError) as exc:
@@ -100,9 +102,11 @@ async def enrich_async(snapshot, job, answers, describe):
 
 
 def enrich_sync(snapshot, job, answers, describe):
+    from .known_answers import current_university_query
     for field in _fields(snapshot, job, answers):
         try:
-            _attach(field, describe(field))
+            query = current_university_query(field, answers)
+            _attach(field, describe(field, **({"query": query} if query is not None else {})))
         except BrowserOperationError:
             raise
         except (ValueError, RuntimeError, TimeoutError) as exc:

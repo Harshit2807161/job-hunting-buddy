@@ -51,6 +51,15 @@ Escape and verify the original value is unchanged. Do not type a query or press
 Enter to inspect these catalogs. Missing or ambiguous ownership remains a
 mechanical failure; choices from another dropdown cannot supply the catalog.
 
+The exact “Please select your current or most recent university.” autocomplete
+can contain more schools than the bounded generic catalog inspection returns.
+For that observed prompt and its unqualified/known Other hint, search with the
+verified current institution, inspect a complete uniquely owned filtered list,
+then restore the original blank. Never retype an existing selection during
+inspection, raise the global catalog limit, or infer Other from a truncated or
+missing result. Keep the original institution fact and the exact observed option
+separate: native filling needs both the search query and selected choice.
+
 Choice matching must preserve the observed question context through both filling
 and final audit. A verified No for Veteran Status can match the corresponding
 nonprotected-veteran option; that wording is not a generic synonym for No in

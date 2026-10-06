@@ -312,8 +312,8 @@ class BrowserUseCLI:
             self._uploads[cache_key] = result["upload_receipt"]
         return result
 
-    async def describe(self, field):
-        return await self.invoke("describe", field=field)
+    async def describe(self, field, *, query=None):
+        return await self.invoke("describe", field=field, **({"query": query} if query is not None else {}))
 
     async def click_next(self, button):
         return await self.invoke("next", button=button)

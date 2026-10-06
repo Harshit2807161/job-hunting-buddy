@@ -313,6 +313,9 @@ PROFILE_QUESTIONS = frozenset({
 PROFILE_CATALOG_QUESTIONS = frozenset({"please select your graduation month",
     "please select your graduation year", "please select your current or most recent university."})
 _UNIVERSITY = "please select your current or most recent university."
+_UNIVERSITY_NOTES = {"", "if your university is not listed, please select ‘other.’",
+                     "if your university is not listed, please select 'other.'",
+                     'if your university is not listed, please select "other."'}
 _START_LABELS = frozenset({"when are you available to start work?", "when can you start a new role?",
                          "how soon are you able to start a new role?",
                          "if offered a position, what is your ideal start-date?"})
@@ -374,9 +377,7 @@ def _profile_basis(field, answers):
     """Exact unqualified questions, bound to complete verified source records."""
     label, kind = _label(field), field.get("type")
     description = normalize(field.get("description") or "")
-    permitted = {""} | ({"if your university is not listed, please select ‘other.’",
-                           "if your university is not listed, please select 'other.'",
-                           'if your university is not listed, please select "other."'} if label == _UNIVERSITY else set())
+    permitted = _UNIVERSITY_NOTES if label == _UNIVERSITY else {""}
     if (label not in PROFILE_QUESTIONS or field.get("description_truncated")
             or description not in permitted):
         return {}
@@ -470,8 +471,27 @@ def _profile_projection(field, answers):
         desired = month_name[bound.month] if label.endswith("month") else str(bound.year)
         matched = [choice for choice in choices if normalize(choice) == normalize(desired)]
         value = matched[0] if len(matched) == 1 else None
+    if (value is not None and field.get("type") == "combobox"
+            and str(field.get("ref", "")).startswith("ashby:") and label in PROFILE_CATALOG_QUESTIONS):
+        query = records["standing.current_education_school"]["value"] if label == _UNIVERSITY else value
+        value = {"query": query, "choice": value}
     return ((value, {"records": records, "criterion": "Exact observed profile question projected from verified original records; no qualification or authorization expansion"})
             if value is not None else None)
+
+
+def current_university_control(field):
+    """Only this observed Ashby prompt permits a canonical school search."""
+    return (str(field.get("ref", "")).startswith("ashby:") and field.get("type") == "combobox"
+            and _label(field) == _UNIVERSITY and not field.get("description_truncated")
+            and normalize(field.get("description") or "") in _UNIVERSITY_NOTES)
+
+
+def current_university_query(field, answers):
+    if current_university_control(field):
+        record = _profile_basis(field, answers).get("standing.current_education_school")
+        if record:
+            return record["value"]
+    return None
 
 
 def catalog_basis(field, answers):

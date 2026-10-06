@@ -329,9 +329,9 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         if cli_actions and hasattr(actions, "describe") and not snapshot.get("handoff"):
             from .native_question_context import enrich_async
-            async def describe_catalog(field):
+            async def describe_catalog(field, **payload):
                 progress.update(operation="describe", field_ref=field["ref"], field_type=field["type"])
-                return await actions.describe(field)
+                return await actions.describe(field, **payload)
             await enrich_async(snapshot, job, answers, describe_catalog)
             progress.update(operation="observe")
             progress.pop("field_ref", None); progress.pop("field_type", None)

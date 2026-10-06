@@ -302,6 +302,8 @@ def dispatch(request, helpers):
         from .known_answers import plain_contact_location
         from .ashby_education import school_control
         catalog_control = residence or (scope["board"] == "ashby" and (plain_contact_location(field) or school_control(field)))
+        from .known_answers import current_university_control
+        university = scope["board"] == "ashby" and current_university_control(field)
         if (operation == "fill" and scope["board"] == "ashby"
                 and (plain_contact_location(requested) or school_control(requested))
                 and ((field.get("description") or "") != (requested.get("description") or "")
@@ -396,7 +398,7 @@ def dispatch(request, helpers):
                 before = state(expr)
                 query = request.get("query")
                 if query is not None:
-                    if (not catalog_control
+                    if (not (catalog_control or university)
                             or not isinstance(query, str) or not query.strip() or len(query) > 200):
                         raise ValueError("Residence catalog query is outside its approved scope")
                     if not before:

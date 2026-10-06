@@ -351,7 +351,7 @@ def _checks(request, helpers, packet, attempt):
     from .native_question_context import enrich_sync
     probe_answers = _reviewed_probe_answers(request, packet, attempt, approved)
     enrich_sync(snapshot, packet.get("job", {}), probe_answers,
-                lambda field: _board_dispatch({"operation": "describe", "field": field,
+                lambda field, **payload: _board_dispatch({"operation": "describe", "field": field, **payload,
                     "target_id": request["target_id"], "expected_url": attempt["application_url"]},
                     helpers, attempt["application_url"]))
     if helpers["js"]("[...document.querySelectorAll('input[type=password]')].some(e=>e.getClientRects().length)"):

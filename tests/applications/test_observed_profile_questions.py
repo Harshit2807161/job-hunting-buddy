@@ -16,9 +16,9 @@ CASES = [
     ('What is your current/most recent employer?', 'text', [], 'Example Cloud'),
     ('Please list the city and state/province that you are located in today.', 'text', [], 'Example City, CA'),
     ('If you are not located in one of the above hubs, are you willing to relocate?', 'radio', ['Yes', 'No'], 'Yes'),
-    ('Please select your graduation month', 'combobox', ['May', 'December'], 'December'),
-    ('Please select your graduation year', 'combobox', ['2029', '2030'], '2030'),
-    (UNIVERSITY, 'combobox', ['Example University', 'Other'], 'Example University'),
+    ('Please select your graduation month', 'combobox', ['May', 'December'], {'query': 'December', 'choice': 'December'}),
+    ('Please select your graduation year', 'combobox', ['2029', '2030'], {'query': '2030', 'choice': '2030'}),
+    (UNIVERSITY, 'combobox', ['Example University', 'Other'], {'query': 'Example University', 'choice': 'Example University'}),
     ('Have you had a previous work experience in software engineering?', 'radio', ['Yes', 'No'], 'Yes'),
 ]
 
@@ -98,8 +98,9 @@ def test_three_known_empty_ashby_catalogs_are_native_work_then_bind_actual_obser
         assert question_routing.field_route(question, values) == question_routing.KNOWN
     catalogs = {label: choices for label, _, choices, _ in CASES}
     calls = []
-    async def describe(question):
+    async def describe(question, **payload):
         calls.append(question['label'])
+        assert payload == ({'query': 'Example University'} if question['label'] == UNIVERSITY else {})
         return {'type': 'combobox', 'choices': catalogs[question['label']], 'truncated': False}
     asyncio.run(native_question_context.enrich_async(snapshot, {'url': URL}, values, describe))
     assert calls == [q['label'] for q in questions]
@@ -130,7 +131,7 @@ def test_catalog_failures_never_supply_guessed_university_or_other(problem):
     if problem == 'wrong_type': descriptor['type'] = 'select'
     if problem == 'wrong_job': snapshot['url'] = URL.replace('11111111', '99999999')
     with pytest.raises(BrowserOperationError):
-        native_question_context.enrich_sync(snapshot, {'url': URL}, values, lambda f: descriptor)
+        native_question_context.enrich_sync(snapshot, {'url': URL}, values, lambda f, **payload: descriptor)
     assert known_answers.enrich(question, {}, values) is None
 
 
@@ -242,6 +243,7 @@ def test_submission_audit_uses_review_bound_original_facts_and_actual_catalogs(t
         return {'type': 'combobox', 'choices': options, 'truncated': False}
     def state(helpers, question, board):
         value = next(row['value'] for row in rows if row['ref'] == question['ref'])
+        if isinstance(value, dict): value = value['choice']
         if change == 'retained_value' and question['type'] == 'text': value = 'Manual change'
         return {'value': value, 'selected': [value] if question['type'] == 'radio' else value, 'invalid': False}
     def js(expression):
