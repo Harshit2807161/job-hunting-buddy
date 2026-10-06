@@ -98,6 +98,16 @@ and diff checks have limits of 120, 1200 and 30 seconds respectively; the comple
 validation budget is reserved before starting a repair. The child runs focused
 synthetic regressions; the supervisor owns the single full-suite pass.
 
+After a successful diagnostic child that changes no repository content, the
+monitor can reuse its exact `validated_repository` snapshot. Reuse requires the
+same active authorization and unchanged protected candidate/application data
+throughout the locked operation. The complete repository fingerprint, including
+untracked public files, is checked again before quarantine is cleared. Missing
+validation history or any repository change still requires the full checks;
+failed children and authority/protected-state changes cannot gain approval by
+reuse. The private validation result records `reused_validated_repository` so it
+does not claim that tests ran again, or that the diagnosed application recovered.
+
 Repair tools can start nested commands in separate sessions. The supervisor
 tracks descendants by PID and creation time while the command runs. A unique
 inherited command token identifies quickly reparented children during cleanup;
@@ -124,7 +134,8 @@ submission work. Before Codex starts, the monitor writes
 `private/overnight-monitor/repair-pending.json`. The pipeline checks this file
 under its manager lock and skips a cycle while it exists, including a symlink.
 
-A successful repair must pass, in order:
+A changed repair, or a checkout without an exact prior validated snapshot, must
+pass, in order:
 
 1. `.venv/bin/python -m compileall -q jhb tests`
 2. `.venv/bin/python -m pytest -q`

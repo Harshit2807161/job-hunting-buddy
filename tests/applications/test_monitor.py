@@ -305,7 +305,8 @@ def test_only_exact_last_validated_tree_may_receive_a_subsequent_repair(setup):
     failure(setup, number=2, kind="browser_transport")
     assert monitor.once(run=runner(calls), inspect_repository=lambda: repo(dirty=True, tree="unrelated-change"))["state"] == "repository_busy"
     assert monitor.once(run=runner(calls), inspect_repository=lambda: repo(dirty=True, tree="validated-change"))["state"] == "validated"
-    assert len(calls) == 8
+    # The second diagnosis leaves the exact already-validated diff unchanged.
+    assert len(calls) == 5
 
 
 def test_pipeline_lock_and_symlink_quarantine_fail_closed(setup):

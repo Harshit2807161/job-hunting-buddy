@@ -638,15 +638,31 @@ def once(*, auth_path=None, database=None, run=bounded, inspect_repository=repos
                            "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", "-"]
                 result = run(command, prompt_path.with_suffix(""), auth, min(REPAIR_SECONDS, budget),
                              input_text=text, auth_path=auth_path)
-                checks = validate(auth, run, auth_path=auth_path) if result["state"] == "complete" else {"state": "not_run"}
+                checks = {"state": "not_run"}
+                if result["state"] == "complete":
+                    # A successful read-only diagnosis does not invalidate the
+                    # exact previously tested checkout. Compare the snapshot
+                    # loaded before the child, never state rewritten by it.
+                    # Candidate data and the active authority must also remain
+                    # unchanged under the same repair/worker locks.
+                    if (state.get("validated_repository") == repo
+                            and inspect_repository() == repo
+                            and authorization(auth_path) == auth
+                            and protected_data(auth, database) == protected):
+                        checks = {"state": "complete", "mode": "reused_validated_repository",
+                                  "repository": repo}
+                    else:
+                        checks = validate(auth, run, auth_path=auth_path)
                 pending = {**pending, "finished_at": int(time.time()), "repair": result, "validation": checks,
                            "state": "validated" if checks["state"] == "complete" else "quarantined"}
                 if pending["state"] == "validated":
                     after = inspect_repository()
                     current = authorization(auth_path)
                     if (after["branch"] != FEATURE_BRANCH or after["head"] != repo["head"]
-                            or current is None or current["authorization_id"] != auth["authorization_id"]
-                            or protected_data(auth, database) != protected):
+                            or current != auth
+                            or protected_data(auth, database) != protected
+                            or (checks.get("mode") == "reused_validated_repository"
+                                and after != repo)):
                         pending["state"] = "quarantined"
                     else:
                         state["validated_repository"] = after
