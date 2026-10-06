@@ -19,6 +19,8 @@ _GRADUATE = ("are you currently pursuing or recently completed a graduate degree
 _AVAILABILITY = "if presented with an offer, when would be the earliest you would be available to start?"
 _LINKS = "github, scholar, publications, or personal site you'd like to share?"
 _DISCOVERY = "how did you hear about this job opportunity?"
+_PROJECT_SHARE = "do you have a personal project you're proud of that you'd like to share?"
+_DISCOVERY_OTHER_CHOICES = {"career fair", "google", "handshake", "linkedin", "word of mouth", "i'm a customer", "other"}
 _RESTRICTION = ("are you currently subject to any agreement (such as a non-compete, non-solicitation, non-disclosure, "
                 "or similar restriction) that could limit your ability to perform this role?")
 _CALIFORNIA_NOTE = "note: if you are based in california, please mark n/a."
@@ -352,7 +354,20 @@ def _office_willingness_question(label):
         or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?"
         or label == "are you open to a hybrid schedule with in-office days on monday, wednesday, and friday?"
         or label == "this is a hybrid role, working out of our boston, ma office 4 days per week. does this setup align to the working environment you are seeking in your next opportunity?"
-        or label == "this position requires 4 days a week in office, including thursdays in our mountain view, ca headquarters and the remaining 3 days in either mountain view or our san francisco, ca office. are you able to meet this requirement?")
+        or label == "this position requires 4 days a week in office, including thursdays in our mountain view, ca headquarters and the remaining 3 days in either mountain view or our san francisco, ca office. are you able to meet this requirement?"
+        or label == "i understand this is an in-person role in philadelphia, pa.")
+
+
+def _project_share_basis(field, answers):
+    """A verified resume project, never professional history or an invented story."""
+    item = _verified(answers, "role.projects")
+    text = item.get("value") if item else None
+    if (_prompt(field) == _PROJECT_SHARE and not field.get("description")
+            and not field.get("description_truncated") and isinstance(text, str)
+            and re.search(r"(?m)^\S[^\n]+\|[^\n]+$", text)
+            and re.search(r"(?m)^\s*•\s+\S", text)):
+        return {"role.projects": item}
+    return {}
 
 
 def _profile_basis(field, answers):
@@ -529,6 +544,8 @@ def catalog_basis(field, answers):
         office, relocation = require("standing.office_willingness"), require("preferences.relocation")
         if not office or office["value"] is not True or not relocation or relocation["value"] is not True:
             return {}
+    elif label == _PROJECT_SHARE:
+        return _project_share_basis(field, answers)
     elif (label in {_DISCOVERY, "how did you hear about this job?", "how did you hear about us?", "how did you hear about this role?"}
           or answers.get("standing.discovery_source", {}).get("company_question")
           and label == normalize(str(answers["standing.discovery_source"]["company_question"]))):
@@ -600,6 +617,27 @@ def _common_projection(field, job, answers):
         item = _verified(answers, "identity.full_name")
         if item and isinstance(item.get("value"), str) and item["value"].strip():
             return result(item["value"], {"identity.full_name": item}, "Verified full name for an unqualified legal-name field")
+    if select and (projects := _project_share_basis(field, answers)):
+        if sorted(map(normalize, choices)) == ["no", "yes"]:
+            return chosen({"yes"}, projects, "Verified selected-resume project available to share; no invented project, link or personal story")
+    if (label == "how did you hear about us?" and kind in {"combobox", "select", "radio"}
+            and not field.get("description") and not field.get("options_truncated")
+            and not field.get("choices_truncated")
+            and len(choices) == len(_DISCOVERY_OTHER_CHOICES)
+            and set(map(normalize, choices)) == _DISCOVERY_OTHER_CHOICES
+            and answers.get("screening.referral", {}).get("status") != "verified"):
+        # This complete observed catalog has no Job Board or Simplify choice.
+        # An unknown/truncated catalog never establishes the Other category.
+        from .boards import application_hash
+        source = _verified(answers, "standing.discovery_source")
+        proof = source.get("source", {}) if source else {}
+        if (source and source.get("value") == "Simplify" and isinstance(proof, dict)
+                and proof.get("method") == "recorded_phase1_discovery"
+                and proof.get("source") == job.get("source") == "simplify"
+                and proof.get("source_url") == job.get("source_url", job.get("url"))
+                and job.get("dedupe_hash") and application_hash(job.get("url")) == job["dedupe_hash"]):
+            return chosen({"other"}, {"standing.discovery_source": source},
+                          "Exact job's recorded Simplify source is outside the complete observed discovery categories")
     if (label == "interview recording consent" and kind == "radio"
             and field.get("ref") == "ashby:_systemfield_recording_consent"
             and normalize(field.get("description") or "") == normalize(INTERVIEW_RECORDING_DESCRIPTION)

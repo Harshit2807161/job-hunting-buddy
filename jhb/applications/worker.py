@@ -168,6 +168,51 @@ def _observed_relocation_choice(field, answers):
         "observed_question": field["label"], "observed_choice": choices[0]["label"]})
 
 
+def _discovery_detail_omission(field, answers, *, snapshot, filled, job):
+    """Prove an adjacent Other follow-up from this pass's retained parent.
+
+    The omitted field remains blank in the complete review inventory. This is
+    conditional applicability evidence, never candidate approval or a decline.
+    """
+    from . import boards
+    if (field.get("required") is not False or field.get("type") != "text"
+            or booklet.normalize(field.get("label", "")) != "if other, please specify"
+            or field.get("description") or field.get("description_truncated")):
+        return None
+    identity = boards.job_identity(job.get("url"))
+    if not identity or identity[0] != "greenhouse" or boards.job_identity(snapshot.get("url")) != identity:
+        return None
+    fields = snapshot.get("fields", [])
+    indices = [i for i, current in enumerate(fields) if current.get("ref") == field.get("ref")]
+    if len(indices) != 1 or indices[0] == 0:
+        return None
+    parent = fields[indices[0]-1]
+    company = job.get("company")
+    label = booklet.normalize(parent.get("label", ""))
+    if (not company or label != booklet.normalize(f"How did you hear about {company}?")
+            or parent.get("type") not in {"combobox", "select", "radio"}
+            or parent.get("description") or parent.get("description_truncated")
+            or parent.get("options_truncated") or parent.get("choices_truncated")
+            or sum(current.get("ref") == parent.get("ref") for current in fields) != 1):
+        return None
+    records = [row for row in filled.values() if row.get("ref") == parent.get("ref")]
+    if len(records) != 1:
+        return None
+    row = records[0]
+    key = key_for_field(parent, answers)
+    record = answers.get(key, {})
+    choices = [option.get("label") for option in parent.get("options", []) if not option.get("disabled")]
+    selected = row.get("value")
+    if (row.get("key") != key or record.get("status") != "verified" or not record.get("source")
+            or row.get("source") != record["source"] or selected != record.get("value")
+            or row.get("question") != parent.get("label") or not isinstance(selected, str)
+            or booklet.normalize(selected) == "other"
+            or choices.count(selected) != 1 or sum(booklet.normalize(str(choice)) == "other" for choice in choices) != 1):
+        return None
+    return {"parent_ref": parent["ref"], "parent_question": parent["label"],
+            "parent_key": key, "selected_choice": selected, "source": row["source"]}
+
+
 def _inapplicable_optional(field, answers):
     if field["required"]:
         return False
@@ -456,12 +501,16 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                     candidate_wording_requested(field["label"]+"\n"+str(field.get("description", ""))) and not candidate_authored(record)):
                 record = {}  # Employer guidance may live below a short label.
             if record.get("status") != "verified":
+                omission = _discovery_detail_omission(field, answers, snapshot=snapshot, filled=filled, job=job)
                 if field["required"]:
                     missing.append(_question(field, key))
-                elif record.get("status") != "declined" and not _inapplicable_optional(field, answers):
+                elif record.get("status") != "declined" and not omission and not _inapplicable_optional(field, answers):
                     optional_questions[field["ref"]] = _question(field, key)
                 else:
                     resolved_optional_refs.add(field["ref"])
+                    if omission:
+                        events.append({"step": step, "event": "conditional_optional_inapplicable",
+                                       "ref": field["ref"], "evidence": omission})
                 continue
             try:
                 progress.update(operation="fill", field_ref=field["ref"], field_type=field["type"])
