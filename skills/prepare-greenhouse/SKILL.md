@@ -91,3 +91,10 @@ displayed as `United States (+1)`. Translate only after fresh DOM inspection
 confirms the selector belongs to the phone input; keep the candidate's original
 answer and provenance. Repeat that ownership-aware translation during retained
 answer audits. A generic country or citizenship field does not inherit this rule.
+
+A `DOM.scrollIntoViewIfNeeded` timeout before a native click can mean an owned
+background tab has stopped rendering. The runtime validates the exact target,
+job identity and submission guard, activates that target once, validates again,
+and retries only that same backend-node scroll. It then repeats the normal
+geometry and obstruction checks before clicking. A second timeout propagates;
+an unknown click outcome must never trigger replay of the click or whole fill.

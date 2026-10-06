@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .booklet import normalize
 from .browser import GUARD_SCRIPT
-from .cli_runtime import _settled_click, option_matches
+from .cli_runtime import _native_scroll_timeout, _settled_click, _wake_owned_scroll, option_matches
 from .planner import safe_next
 
 
@@ -80,8 +80,22 @@ ASHBY_FIELDS = r"""(()=>{
 
 
 def dispatch(request, helpers):
-    cdp, js, wait = helpers["cdp"], helpers["js"], helpers["wait"]
+    raw_cdp, js, wait = helpers["cdp"], helpers["js"], helpers["wait"]
     scope = request.get("scope", {})
+    woke_for_scroll = False
+
+    def cdp(method, **params):
+        nonlocal woke_for_scroll
+        try:
+            return raw_cdp(method, **params)
+        except (TimeoutError, RuntimeError) as exc:
+            if (scope.get("board") != "ashby" or woke_for_scroll
+                    or not _native_scroll_timeout(method, params, exc) or not request.get("target_id")):
+                raise
+            woke_for_scroll = True
+            _wake_owned_scroll(request, helpers, lambda url: matches_scope(url, scope))
+            return raw_cdp(method, **params)
+
     # Revalidate the supplied scope, including its board and fixed origin.
     approved = scope.get("origin", "") + scope.get("path", "")
     if not matches_scope(approved, scope):

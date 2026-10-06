@@ -172,3 +172,9 @@ employer asks for “no AI text,” request the candidate's own wording through 
 question ledger and portal, even if the field is optional. Preserve the exact
 question label. An optional blank needs an explicit per-field Leave Blank
 acknowledgment and the exact packet needs portal approval before submission.
+
+Separately, a proven `DOM.scrollIntoViewIfNeeded` timeout before a native click
+may wake only the exact guarded application target once. Recheck the target and
+application scope after activation, retry the same backend-node scroll once,
+and require fresh geometry and hit checks. This does not retry a failed click,
+replace a missing catalog choice, or grant terminal submission authority.

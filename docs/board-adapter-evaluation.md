@@ -254,3 +254,18 @@ same-name replacement, field/job mismatches, failed saves, and preservation of
 validation errors. The new correlation mechanism has not yet been validated
 with a live upload. No live documents were replaced or applications submitted
 during this repair.
+
+### Native pre-click scroll recovery
+
+A live Greenhouse preparation stalled in `DOM.scrollIntoViewIfNeeded` while
+bringing the owned education Add another control into view, before any click.
+Greenhouse and Ashby now recover only this proven native scroll timeout: check
+exact target, job and active submit guard; activate once; repeat those checks;
+retry the identical backend-node scroll once; then retain normal fresh geometry
+and obstruction checks. Existing native click failures are never replayed.
+
+Synthetic Chromium fixtures cover actual education-row creation and hidden
+Ashby radio selection, unchanged successful actions without activation, a second
+timeout, detached controls, target/job/guard changes, and an unknown delivered
+mouse-press outcome. The new automatic recovery still requires live validation;
+the motivating failure is not evidence of a successful live repair.

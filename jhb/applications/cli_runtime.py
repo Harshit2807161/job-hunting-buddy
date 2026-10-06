@@ -19,6 +19,33 @@ from .planner import safe_next
 from .queue import greenhouse_identity, is_greenhouse
 
 
+def _native_scroll_timeout(method, params, exc):
+    """Only a failed pre-click native node scroll is eligible for recovery."""
+    return (method == "DOM.scrollIntoViewIfNeeded"
+            and isinstance(params.get("backendNodeId"), int)
+            and (isinstance(exc, TimeoutError) or "DOM.scrollIntoViewIfNeeded timed out" in str(exc)))
+
+
+def _wake_owned_scroll(request, helpers, matches_url):
+    """Wake the exact guarded job after a proven native scroll timeout."""
+    target, expected = request.get("target_id"), request.get("expected_url")
+    if not target or not expected or not matches_url(expected):
+        raise ValueError("Owned application tab changed during recovery")
+
+    def validate():
+        current = helpers["current_tab"]()
+        if (current.get("targetId") != target or not matches_url(current.get("url"))
+                or not matches_url(helpers["js"]("location.href"))):
+            raise ValueError("Owned application tab changed during recovery")
+        if helpers["js"]("window.__jhbGuard === true") is not True:
+            raise ValueError("Application submission guard changed during scroll recovery")
+
+    validate()
+    helpers["activate_tab"](target)
+    helpers["wait"](0.5)
+    validate()
+
+
 def _settled_click(backend, cdp, wait, click_at_xy):
     """Click only after bounded, viewport-relative CDP geometry has settled."""
     cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend)
@@ -201,6 +228,15 @@ def dispatch(request, helpers):
         try:
             return raw_cdp(method, **params)
         except (TimeoutError, RuntimeError) as exc:
+            if (_native_scroll_timeout(method, params, exc) and not woke_for_scroll
+                    and not woke_for_catalog and request.get("target_id")):
+                # Nothing clicked yet. Retry this exact backend-node scroll,
+                # then retain all of _settled_click's fresh geometry/hit checks.
+                woke_for_scroll = True
+                identity = greenhouse_identity(request.get("expected_url"))
+                _wake_owned_scroll(request, helpers,
+                                   lambda url: identity is not None and greenhouse_identity(url) == identity)
+                return raw_cdp(method, **params)
             scroll_timeout = (method == "Input.dispatchMouseEvent" and params.get("type") == "mouseWheel"
                               and (isinstance(exc, TimeoutError) or "timed out" in str(exc)))
             if not scroll_timeout or woke_for_scroll or woke_for_catalog or not request.get("target_id"):
