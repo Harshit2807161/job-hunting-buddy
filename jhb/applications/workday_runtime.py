@@ -31,9 +31,18 @@ FIELDS = r"""(()=>{
   const catalog=e.getAttribute('type')==='selectinput'||e.getAttribute('role')==='combobox'||e.getAttribute('data-uxi-widget-type')==='selectinput';
   if(catalog)kind='combobox';
   if(e.id==='phoneNumber--phoneNumber'&&e.name==='phoneNumber'&&/^phone number$/i.test(title)&&document.getElementById('phoneNumber--countryPhoneCode'))kind='tel';
-  let file_index=null;
+  let file_index=null,file_required=false;
   if(e.type==='file'){
    file_index=[...document.querySelectorAll('input[type=file]')].indexOf(e);ref=e.id||'workday:file:'+file_index;
+   const owner=e.closest('[data-fkit-id="resumeAttachments--attachments"]'),group=e.closest('[role=group][aria-labelledby]');
+   const headings=(group?.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);
+   const upload=e.closest('[data-automation-id="attachments-FileUpload"]');
+   if(owner&&group&&group.contains(owner)&&headings.length===1&&group.contains(headings[0])&&headings[0].innerText.trim()==='Resume/CV'&&group.querySelectorAll('input[type=file]').length===1&&upload&&owner.contains(upload)){
+    const labels=(upload.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);
+    if(labels.length===1&&owner.contains(labels[0])&&labels[0].tagName==='LABEL'){
+     title='Resume/CV';file_required=[...labels[0].querySelectorAll('abbr')].some(a=>a.innerText.trim()==='*');
+    }
+   }
    if(!title){for(let p=e.parentElement,depth=0;p&&depth<5;p=p.parentElement,depth++){
     const text=p.innerText.trim();if(text.length<1500&&/^Resume\s*\/\s*CV\b/i.test(text)&&!/(photo|headshot|cover letter)/i.test(text)){title='Resume/CV';break;}
    }}
@@ -70,7 +79,7 @@ FIELDS = r"""(()=>{
   const columns={jobTitle:'title',companyName:'company',location:'location',roleDescription:'summary',currentlyWorkHere:'current'};
   let record_column=ed>=0?({schoolName:'school',degree:'degree',fieldOfStudy:'major',gradeAverage:'gpa'}[suffix]||null):exp>=0?(columns[suffix]||null):null;
   if(date&&(ed>=0||exp>=0))record_column=date.base.endsWith('--startDate')?'start_date':date.base.endsWith('--endDate')?'end_date':null;
-  fields.push({ref,actual_id:e.id,file_index,label:title,type:kind,widget:catalog?'catalog':'native',required:e.required||e.getAttribute('aria-required')==='true'||/\bRequired\s*$/.test(e.getAttribute('aria-label')||''),
+  fields.push({ref,actual_id:e.id,file_index,label:title,type:kind,widget:catalog?'catalog':'native',required:e.required||file_required||e.getAttribute('aria-required')==='true'||/\bRequired\s*$/.test(e.getAttribute('aria-label')||''),
    education_index:ed>=0?ed:null,experience_index:exp>=0?exp:null,date,
    record_kind:ed>=0?'education':exp>=0?'experience':null,record_index:ed>=0?ed:exp>=0?exp:null,record_column,
    separate_phone_country:e.id==='phoneNumber--phoneNumber'&&!!document.getElementById('phoneNumber--countryPhoneCode'),

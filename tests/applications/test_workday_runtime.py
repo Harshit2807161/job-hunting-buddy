@@ -114,6 +114,28 @@ def test_workday_scope_guard_and_document_labels_are_not_guessed(tmp_path):
             call("observe")
 
 
+@pytest.mark.parametrize("shape", ["resume", "photo", "foreign_label", "multiple"])
+def test_workday_native_resume_attachment_owner_supplies_label_and_requiredness(shape, tmp_path):
+    heading = "Resume/CV" if shape != "photo" else "Photo"
+    label_id = "upload-label" if shape != "foreign_label" else "foreign-label"
+    extra = '<input type=file>' if shape == "multiple" else ""
+    html = f'''<label id=foreign-label>Unrelated upload<abbr>*</abbr></label>
+      <div role=group aria-labelledby=resume-heading><h3 id=resume-heading>{heading}</h3>
+      <div><p><div data-fkit-id="resumeAttachments--attachments">
+       <label id=upload-label>Upload a file (5MB max)<abbr aria-hidden=true>*</abbr></label>
+       <div><div><div><div data-automation-id=attachments-FileUpload aria-labelledby="{label_id}">
+        <div><input type=file data-automation-id=file-upload-input-ref>{extra}</div>
+       </div></div></div></div></div></p></div></div>'''
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        field = next(f for f in call("observe")["fields"] if f["type"] == "file")
+        if shape == "resume":
+            assert field["label"] == "Resume/CV" and field["required"] is True
+            resume = tmp_path / "synthetic.pdf"; resume.write_bytes(b"%PDF-1.4\nSynthetic")
+            assert call("fill", field=field, value=str(resume))["upload_receipt"]["filename"] == resume.name
+        else:
+            assert field["label"] == "Unlabeled document upload" and field["required"] is False
+
+
 def test_workday_unknown_login_consent_is_handoff_and_no_registration():
     html = "<form role=dialog><input type=email id=email data-automation-id=email><input type=password id=password><input type=checkbox required id=new-consent><button>Sign In</button></form>"
     with fixture_runtime(html) as (call, inspect, helpers, lane):
