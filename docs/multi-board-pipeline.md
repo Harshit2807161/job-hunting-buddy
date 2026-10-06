@@ -16,6 +16,17 @@ resetting prepared, submitted or uncertain applications. Existing positive
 receipts also prevent preparation of previously submitted manual applications.
 Source access handoffs remain independent from candidate questions.
 
+An authorized preparation cycle also recovers previously notified Phase 1 jobs
+that have no source row. After loading application history, it queues at most
+three exact supported Greenhouse/Ashby sources per cycle, with at most six
+outstanding backfill sources. It preserves the original discovery hash and
+notification date. Existing source rows and exhausted retries are never reset.
+The existing direct-ATS source priority applies; fresh official-description,
+eligibility, both-resume selection and role-fit checks still precede filling.
+Candidate exclusions, exact history and legacy-history holds remain effective.
+Cycle heartbeats expose `source_backfill` counts. This does not change Phase 1
+seed behavior or manufacture application receipts.
+
 ## Authenticated LinkedIn
 
 `JHB_LINKEDIN_LOCAL_RESOLUTION=1` enables the explicitly authorized local source

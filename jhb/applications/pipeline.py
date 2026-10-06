@@ -474,6 +474,15 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     historical_confirmations = restore_confirmed_applications(conn)
     sources_history_blocked = source_queue.filter_history(conn)
     applications_history_blocked = queue.filter_history(conn)
+    from . import backfill
+    try:
+        backfill_book = booklet.load(book_path)
+    except (OSError, ValueError):
+        # The missing profile remains its existing preparation handoff. It
+        # cannot authorize selecting historical jobs without exact exclusions.
+        source_backfill = {"state": "booklet_unavailable", "enqueued": 0}
+    else:
+        source_backfill = backfill.replenish(conn, backfill_book, limit=min(source_limit, 3))
     local_rechecks = recover_authenticated_linkedin_sources(conn, limit=source_limit)
     replayed = replay_resolved_sources(conn)
     recovered = recover_technical_failures(conn)
@@ -494,6 +503,7 @@ async def cycle(conn, book_path, *, resolver=None, runner=None, source_limit=3, 
     summary["history_import"] = history_import
     summary["sources_history_blocked"] = sources_history_blocked
     summary["applications_history_blocked"] = applications_history_blocked
+    summary["source_backfill"] = source_backfill
     summary["description_handoffs_requeued"] = description_rechecks
     summary["known_work_requeued"] = agent_rechecks
     sources = []

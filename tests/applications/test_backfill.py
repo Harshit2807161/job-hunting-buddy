@@ -1,11 +1,13 @@
 """Synthetic discovery, history and queue tests; no browser or external tools."""
+import hashlib
 import json
 import sqlite3
+import time
 
 import pytest
 
 from jhb import config, store
-from jhb.applications import backfill, boards, booklet, cli, historical, queue, source_queue
+from jhb.applications import backfill, boards, booklet, cli, historical, pipeline, queue, source_queue
 from test_tracking import setup, ASHBY
 from test_historical import row as history_row
 
@@ -162,3 +164,86 @@ def test_cli_default_preview_opens_database_read_only(seeded, monkeypatch, tmp_p
     assert cli.main(["--booklet", str(path), "backfill-supported", "--limit", "1"]) == 0
     assert json.loads(capsys.readouterr().out)["selected"] == 1
     assert database.read_bytes() == original
+
+
+def test_scheduled_replenishment_is_bounded_and_leaves_existing_source_attempts_untouched(seeded):
+    conn, _, _, book = seeded
+    for number in range(1, 11):
+        seed(conn, number)
+    assert backfill.replenish(conn, book)["enqueued"] == 3
+    assert backfill.replenish(conn, book)["enqueued"] == 3
+    assert backfill.replenish(conn, book) == {"state": "pending_capacity", "enqueued": 0, "pending": 6}
+    row = conn.execute("SELECT * FROM application_sources ORDER BY source_job_hash LIMIT 1").fetchone()
+    source_queue.finish(conn, row["source_job_hash"], "failed")
+    conn.execute("UPDATE application_sources SET attempts=3 WHERE source_job_hash=?", (row["source_job_hash"],))
+    conn.commit()
+    assert backfill.replenish(conn, book)["enqueued"] == 1
+    preserved = conn.execute("SELECT state,attempts FROM application_sources WHERE source_job_hash=?", (row["source_job_hash"],)).fetchone()
+    assert tuple(preserved) == ("failed", 3)
+    assert conn.execute("SELECT COUNT(*) FROM application_sources").fetchone()[0] == 7
+    assert {row[0] for row in conn.execute("SELECT notified_at FROM jobs")} == {1000}
+
+
+@pytest.mark.parametrize("options", [{"limit": 0}, {"limit": 4}, {"limit": True}, {"max_pending": 0}, {"max_pending": 7}])
+def test_scheduled_replenishment_limits_cannot_be_unbounded(seeded, options):
+    conn, _, _, book = seeded
+    with pytest.raises(ValueError, match="Scheduled backfill"):
+        backfill.replenish(conn, book, **options)
+
+
+def test_pipeline_recovers_absent_notified_source_then_uses_normal_screening(seeded, monkeypatch, tmp_path):
+    conn, _, _, book = seeded
+    job = seed(conn)
+    path = tmp_path / "private" / "book.json"
+    booklet.write_private(path, book)
+    async def history_refresh(db):
+        assert db is conn
+        return {"state": "cached"}
+    monkeypatch.setattr(historical, "refresh_sheet", history_refresh)
+    description = "US citizenship is required for this role."
+    source_calls = []
+    async def resolver(candidate, **kwargs):
+        source_calls.append(candidate)
+        return {"state": "not_greenhouse", "board_type": "ashby", "application_url": job["url"],
+                "verified_job_description": {"status": "verified", "text": description,
+                    "source_url": boards.canonical_url(job["url"]), "job_identity": list(boards.job_identity(job["url"])),
+                    "retrieved_at": time.time(), "sha256": hashlib.sha256(description.encode()).hexdigest()}}
+    async def forbidden(*args, **kwargs):
+        pytest.fail("The verified official citizenship requirement must stop preparation")
+    result = pipeline.run_cycle(conn, path, resolver=resolver, runner=forbidden, source_limit=1)
+    assert result["source_backfill"]["enqueued"] == result["sources_checked"] == 1
+    assert result["applications_prepared"] == result["applications_queued"] == 0
+    assert source_calls[0]["dedupe_hash"] == job["dedupe_hash"]
+    assert source_calls[0]["backfill"]["eligibility_verified"] is False
+    source = conn.execute("SELECT * FROM application_sources").fetchone()
+    assert source["state"] == "filtered" and source["attempts"] == 1
+    assert pipeline.run_cycle(conn, path, resolver=resolver, runner=forbidden)["source_backfill"]["enqueued"] == 0
+    assert len(source_calls) == 1
+
+
+def test_pipeline_does_not_backfill_before_first_complete_history_import(seeded, monkeypatch, tmp_path):
+    conn, _, _, book = seeded
+    seed(conn)
+    path = tmp_path / "private" / "book.json"
+    booklet.write_private(path, book)
+    async def unavailable(*args, **kwargs):
+        return {"state": "pending"}
+    monkeypatch.setattr(historical, "refresh_sheet", unavailable)
+    monkeypatch.setattr(historical, "cached_ready", lambda *_: False)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Missing history cannot schedule any browser")
+    result = pipeline.run_cycle(conn, path, resolver=forbidden, runner=forbidden)
+    assert result["history_unavailable"] is True
+    assert conn.execute("SELECT COUNT(*) FROM application_sources").fetchone()[0] == 0
+
+
+def test_scheduled_backfill_uses_existing_direct_ats_priority_without_reaging_wrappers(seeded):
+    conn, _, _, book = seeded
+    candidate = seed(conn)
+    wrapper = {**candidate, "dedupe_hash": "old-linkedin", "url": "https://www.linkedin.com/jobs/view/123456"}
+    source_queue.enqueue(conn, [wrapper])
+    conn.execute("UPDATE application_sources SET updated_at=1 WHERE source_job_hash='old-linkedin'")
+    conn.commit()
+    assert backfill.replenish(conn, book)["enqueued"] == 1
+    assert source_queue.claim(conn)["source_job_hash"] == candidate["dedupe_hash"]
+    assert tuple(conn.execute("SELECT state,attempts,updated_at FROM application_sources WHERE source_job_hash='old-linkedin'").fetchone()) == ("queued", 0, 1)

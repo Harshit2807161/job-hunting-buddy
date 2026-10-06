@@ -140,3 +140,32 @@ def enqueue(conn, book, *, limit=30):
     count = source_queue.enqueue(conn, selected) if selected else 0
     return {**preview, "state": "enqueued", "enqueued": count,
             "reason": "Queued for source and eligibility checking; no application was filled or submitted"}
+
+
+def replenish(conn, book, *, limit=3, max_pending=6):
+    """Recover absent source rows during an authorized preparation cycle.
+
+    Phase 1's seed/notified ledger must stay unchanged. A small outstanding
+    allowance prevents the old discovery backlog from flooding source checking;
+    existing source rows, including exhausted retries, are never reopened.
+    """
+    if type(limit) is not int or not 1 <= limit <= 3:
+        raise ValueError("Scheduled backfill limit must be between 1 and 3")
+    if type(max_pending) is not int or not 1 <= max_pending <= 6:
+        raise ValueError("Scheduled backfill pending limit must be between 1 and 6")
+    pending = 0
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_sources'").fetchone():
+        for row in conn.execute("SELECT job_json FROM application_sources WHERE state IN ('queued','retry','running')"):
+            try:
+                marker = json.loads(row[0]).get("backfill", {})
+                pending += isinstance(marker, dict) and marker.get("source") == "previously_notified_discovery"
+            except (ValueError, TypeError, AttributeError):
+                continue
+    allowance = min(limit, max(0, max_pending - pending))
+    if not allowance:
+        return {"state": "pending_capacity", "enqueued": 0, "pending": pending}
+    result = enqueue(conn, book, limit=allowance)
+    # Keep cycle heartbeats small; the source ledger retains each original job
+    # and unverified backfill marker for the normal resolver/worker checks.
+    return {key: result[key] for key in ("state", "enqueued", "selected", "available") if key in result} | {
+        "pending": pending + result["enqueued"]}
