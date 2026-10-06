@@ -116,6 +116,36 @@ def _application_presentation(conn, job_hash, state):
     return {"display_state": stage, "approval_state": approval_state}
 
 
+def _work_display_state(state, candidate_count, agent_count):
+    """Describe who can advance current work without changing queue authority."""
+    if state == "waiting_input" and not candidate_count:
+        return "needs_form_repair" if agent_count else "needs_verification"
+    if agent_count and state in {"queued", "retry", "running", "failed"}:
+        return {"queued": "agent_queued", "retry": "agent_queued",
+                "running": "agent_working", "failed": "needs_form_repair"}[state]
+    return state
+
+
+def _packet_agent_tasks(packet, state):
+    if state in {"submitted", "skipped", "submission_uncertain", "discarded", "history_hold"}:
+        return []
+    inventory = packet.get("review_inventory", {})
+    fields = inventory.get("fields", []) if isinstance(inventory, dict) else []
+    fields = fields if isinstance(fields, list) else []
+    tasks = packet.get("agent_tasks", [])
+    tasks = tasks if isinstance(tasks, list) else []
+    filled = {item.get("ref") for item in packet.get("filled", []) if isinstance(item, dict)}
+    return [{"question": _text(task.get("question")), "ref": _text(task.get("ref")),
+             "task_kind": task["task_kind"], "required": task.get("required") is True}
+            for task in tasks if isinstance(task, dict)
+            and task.get("ref") not in filled
+            and not questions._SECRET.search(" ".join(str(task.get(key) or "") for key in ("question", "ref")))
+            and task.get("task_kind") in {"document_generation", "narrative_generation", "known_answer_fill"}
+            and any(isinstance(field, dict) and field.get("ref") == task.get("ref")
+                    and field.get("question") == task.get("question") and field.get("status") not in {"answered", "declined"}
+                    for field in fields)]
+
+
 def _approval_outcome(conn, job_hash):
     """Explain a consumed approval without granting another submission attempt."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='application_approvals'").fetchone():
@@ -447,22 +477,7 @@ class DashboardStore:
         if any(any(c["job_hash"] == job_hash and c["required"] for c in q["contexts"]) for q in pending_questions):
             approval = {**approval, "can_approve": False, "reason": "Answer the remaining required questions before approval"}
         from .applications.question_routing import route, CANDIDATE
-        agent_tasks = []
-        if row["state"] not in {"submitted", "skipped", "submission_uncertain", "discarded"}:
-            packet_tasks = packet.get("agent_tasks", [])
-            native_fields = manifest.get("fields", []) if isinstance(manifest, dict) else []
-            if not isinstance(native_fields, list):
-                native_fields = []
-            for task in packet_tasks if isinstance(packet_tasks, list) else []:
-                if (not isinstance(task, dict)
-                        or questions._SECRET.search(" ".join(str(task.get(key) or "") for key in ("question", "ref")))
-                        or task.get("task_kind") not in
-                        {"document_generation", "narrative_generation", "known_answer_fill"}
-                        or not any(field.get("ref") == task.get("ref") and field.get("question") == task.get("question")
-                                   for field in native_fields if isinstance(field, dict))):
-                    continue
-                agent_tasks.append({"question": _text(task.get("question")), "ref": _text(task.get("ref")),
-                                    "task_kind": task["task_kind"], "required": task.get("required") is True})
+        agent_tasks = _packet_agent_tasks(packet, row["state"])
         try:
             current_book = self.book()
             current_contexts = self.current_question_contexts(current_book, {job_hash: row["state"]},
@@ -483,6 +498,7 @@ class DashboardStore:
                                         "task_kind": kind, "required": context.get("required") is True})
         if agent_tasks:
             approval = {**approval, "can_approve": False, "reason": "Agent work must be verified before approval"}
+        presentation["display_state"] = _work_display_state(presentation["display_state"], len(pending_questions), len(agent_tasks))
         fit = packet.get("role_fit", {})
         fit_notes = [_text(note if isinstance(note, str) else note.get("reason") or note.get("message"), 1500)
                      for note in fit.get("review_notes", []) if isinstance(note, (dict, str))] if isinstance(fit, dict) else []
@@ -511,6 +527,7 @@ class DashboardStore:
             "draft_target_state": draft_target,
             "draft_focus_available": draft_target != "unavailable" and screenshot["available"] and self._focusable(row, packet),
             "questions": pending_questions, "agent_tasks": agent_tasks,
+            "pending_candidate_questions": len(pending_questions), "pending_agent_tasks": len(agent_tasks),
             "inventory_complete": complete_inventory, "documents": documents,
             "resume_role": packet.get("selected_role") or packet.get("resume_role"),
             "reviewer_issues": issues, "reviewer_verdict": review_verdict, "reviewer_reviewed_at": review_at,
@@ -650,7 +667,7 @@ class DashboardStore:
         daily = {(selected-timedelta(days=13-i)).isoformat(): {"date": (selected-timedelta(days=13-i)).isoformat(),
                  "confirmed": 0, "prepared": 0} for i in range(14)}
         state_counts, source_counts, queue_states = Counter(), Counter(), {}
-        confirmed, applications, events = {}, [], []
+        confirmed, applications, events, packet_agent_refs = {}, [], [], {}
         tabs = self.tab_ledger()
         synced = set()
         storage_available = True
@@ -679,6 +696,7 @@ class DashboardStore:
                         if not HASH.fullmatch(row["job_hash"]) or boards.application_hash(job.get("url")) != row["job_hash"]:
                             continue
                         packet_path, packet = self.packet(row, job)
+                        packet_agent_refs[row["job_hash"]] = {task["ref"] for task in _packet_agent_tasks(packet, row["state"])}
                         prepared_day = _day(packet.get("created_at"))
                         proof = confirmed.get(row["job_hash"])
                         incident = False
@@ -747,24 +765,34 @@ class DashboardStore:
         try:
             current_book = self.book()
             pending = self.pending(book=current_book, queue_states=queue_states)
-            from .applications.question_routing import agent_contexts
+            from .applications.question_routing import route, CANDIDATE, KNOWN, DOCUMENT
             current_contexts = self.current_question_contexts(current_book, queue_states,
                 allowed_states=("waiting_input", "waiting_review", "queued", "running", "retry", "failed"))
-            agent_blockers = Counter(key for record in current_book.get("question_handoffs", {}).values()
-                                    if record.get("status") in {"pending", "answered"}
-                                    for key in agent_contexts(current_book, record)
-                                    if key in current_contexts.get(record.get("id"), {}))
+            for record in current_book.get("question_handoffs", {}).values():
+                for key, context in current_contexts.get(record.get("id"), {}).items():
+                    if (record.get("status") == "pending" or record.get("status") == "answered"
+                            and context.get("routing") in {KNOWN, DOCUMENT}):
+                        if route(current_book, record, context, job=context.get("_job")) != CANDIDATE:
+                            packet_agent_refs.setdefault(key, set()).add(context.get("ref"))
+            agent_blockers = Counter({key: len(refs) for key, refs in packet_agent_refs.items()})
             booklet_available = True
         except (ValueError, OSError, KeyError, TypeError):
             pending, booklet_available, agent_blockers = [], False, Counter()
         blockers = Counter(context["job_hash"] for q in pending for context in q["contexts"] if context["required"])
+        candidate_counts = Counter(context["job_hash"] for q in pending for context in q["contexts"])
         for application in applications:
             application["inventory_verified"] = application["inventory_ready"]
             application["pending_required_questions"] = blockers[application["id"]]
             application["pending_agent_tasks"] = agent_blockers[application["id"]]
+            application["pending_candidate_questions"] = candidate_counts[application["id"]]
+            application["display_state"] = _work_display_state(application["display_state"],
+                application["pending_candidate_questions"], application["pending_agent_tasks"])
             if (application["pending_required_questions"] or application["pending_agent_tasks"] or not booklet_available
                     or application["draft_target_state"] == "unavailable"):
                 application["inventory_ready"] = False
+        display_states = {application["id"]: application["display_state"] for application in applications}
+        for event in events:
+            event["state"] = display_states.get(event["job_hash"], event["state"])
         return {"generated_at": now.isoformat(), "timezone": str(ZONE), "selected_date": selected.isoformat(),
             "storage_available": storage_available, "booklet_available": booklet_available, "automation_paused": self.paused(),
             "summary": {"confirmed_today": daily[selected.isoformat()]["confirmed"],

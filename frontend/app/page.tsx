@@ -5,7 +5,7 @@ import { Openings, WorkflowControl, type WorkflowPolicy } from "./workflow-contr
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Application = { id: string; company: string; title: string; location: string; url: string | null; board: string;
-  state: string; display_state?: string; approval_state?: string | null; pending_required_questions?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
+  state: string; display_state?: string; approval_state?: string | null; pending_required_questions?: number; pending_candidate_questions?: number; pending_agent_tasks?: number; updated_at: number; date: string; attempts: number; filled_count: number; missing_count: number;
   has_screenshot: boolean; has_incident: boolean; inventory_ready: boolean; screenshot_at: number | null; confirmed_at: string | null; confirmed_date: string | null; sheet_synced: boolean };
 type Question = { id: string; question: string; kind: string; updated_at: string; required: boolean; country_context: string | null;
   contexts: { job_hash: string; company: string; title: string; url: string | null; required: boolean; type: string; choices: string[]; reason: string; description?: string; description_truncated?: boolean; public_metadata_description?: string }[] };
@@ -21,10 +21,12 @@ type Tab = "all" | "submitted" | "waiting_review" | "attention";
 const stateNames: Record<string, string> = { queued: "Queued", running: "Preparing", retry: "Retry scheduled", waiting_review: "Ready for review",
   waiting_input: "Needs your answer", waiting_login: "Sign-in needed", waiting_captcha: "Verification needed", submission_uncertain: "Outcome to verify",
   submitted: "Submitted", skipped: "Filtered out", unsupported: "Adapter needed", failed: "Technical review",
-  approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded", history_hold: "Check previous application" };
+  approval_queued: "Submission queued", submitting: "Submitting", needs_review: "Needs review", discarded: "Discarded", history_hold: "Check previous application",
+  agent_queued: "Agent queued", agent_working: "Agent working", needs_form_repair: "Needs form repair", needs_verification: "Needs verification" };
 const approvalStages: Record<string, string> = { approved: "approval_queued", submitting: "submitting", needs_review: "needs_review", expired: "needs_review" };
-const displayState = (a: { state: string; display_state?: string; approval_state?: string | null }) => a.display_state ||
-  (a.state === "waiting_review" ? (approvalStages[a.approval_state || ""] || a.state) : a.state);
+const displayState = (a: { state: string; display_state?: string; approval_state?: string | null; pending_candidate_questions?: number; pending_agent_tasks?: number }) =>
+  a.state === "waiting_input" && (!a.display_state || a.display_state === "waiting_input") && a.pending_candidate_questions === 0 ? (a.pending_agent_tasks ? "needs_form_repair" : "needs_verification") :
+  a.display_state || (a.state === "waiting_review" ? (approvalStages[a.approval_state || ""] || a.state) : a.state);
 const applicationLabel = (a: Application) => displayState(a) === "waiting_review" && !!a.pending_required_questions ? "Needs your answer" : displayState(a) === "waiting_review" && !a.inventory_ready ? "Inventory recheck" : stateNames[displayState(a)] || displayState(a);
 const initials = (s: string) => s.trim().split(/\s+/).slice(0, 2).map(v => v[0]).join("").toUpperCase() || "?";
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -56,7 +58,7 @@ function AnswerFeedback({ result, applications = [], paused, autonomous = false 
     {result.resume_pending && <p>Queue status could not be confirmed. Your answer is saved; refresh to check recovery before taking another action.</p>}
     <p>{(paused ?? result.automation_paused) ? "Filling is paused. Queued answers will be used when automation resumes." : "The agent will use your saved answer when filling resumes."} {autonomous ? "A separate reviewer checks the completed application before submission." : "Submission still requires your approval."}</p>
     {result.applications?.map(item => { const current = applications.find(a => a.id === item.job_hash); const state = current && current.updated_at >= (result.saved_at ?? Infinity) ? current.state : item.state;
-      return <p key={item.job_hash}>{current ? `${current.company}: ` : "Application: "}{state === "waiting_input" ? `Waiting for ${item.remaining_required_questions} more required answer${item.remaining_required_questions === 1 ? "" : "s"}.` : state === "queued" ? "Queued for filling." : stateNames[state] || state}</p>; })}
+      return <p key={item.job_hash}>{current ? `${current.company}: ` : "Application: "}{state === "waiting_input" ? (item.remaining_required_questions > 0 ? `Waiting for ${item.remaining_required_questions} more required answer${item.remaining_required_questions === 1 ? "" : "s"}.` : "Checking remaining form work.") : state === "queued" ? "Queued for filling." : stateNames[state] || state}</p>; })}
   </div>;
 }
 
@@ -107,7 +109,7 @@ function QuestionForm({ question, onSaved, autonomous = false }: { question: Que
 }
 
 type ReviewDetail = { location?: string; related_submissions?: { job_hash: string; url: string; company: string; title: string; location: string; confirmed_date: string | null }[];
-  job_hash: string; state: string; display_state?: string; approval_state?: string | null; inventory_complete: boolean; resume_role: string | null;
+  job_hash: string; state: string; display_state?: string; approval_state?: string | null; pending_candidate_questions?: number; pending_agent_tasks?: number; inventory_complete: boolean; resume_role: string | null;
   discard?: { state: string; tab_close: { state: string }; worker_stop: { state: string } };
   automation_paused: boolean; documents: { kind: string; filename: string }[]; reviewer_issues: string[];
   reviewer_verdict: string | null; reviewer_reviewed_at: string | null;
@@ -172,6 +174,8 @@ function ReviewModal({ application: app, close, onChanged, autonomous = false }:
   const blanks = detail?.approval.blank_questions || [];
   const optionalBlanks = blanks.filter(q => !q.required);
   const currentApp: Application = detail ? { ...app, state: detail.state, display_state: detail.display_state,
+    pending_candidate_questions: detail.pending_candidate_questions ?? detail.questions?.length ?? 0,
+    pending_agent_tasks: detail.pending_agent_tasks ?? detail.agent_tasks?.length ?? 0,
     approval_state: detail.approval_state || detail.approval.approval?.state,
     filled_count: detail.fields.filter(f => f.status === "answered").length } : app;
   const stage = actionState || displayState(currentApp);
@@ -325,7 +329,7 @@ export default function Dashboard() {
   const apps = useMemo(() => (data?.applications || []).filter(a => {
     const text = `${a.company} ${a.title} ${a.location}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (board === "all" || a.board === board) &&
-      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed", "needs_review", "history_hold"].includes(displayState(a)) || displayState(a) === "waiting_review" && !a.inventory_ready : displayState(a) === tab && (tab !== "waiting_review" || a.inventory_ready));
+      (tab === "all" || tab === "attention" ? tab !== "attention" || ["waiting_input", "waiting_login", "waiting_captcha", "submission_uncertain", "failed", "needs_review", "needs_form_repair", "needs_verification", "history_hold"].includes(displayState(a)) || displayState(a) === "waiting_review" && !a.inventory_ready : displayState(a) === tab && (tab !== "waiting_review" || a.inventory_ready));
   }), [data, query, board, tab]);
   const summary = data?.summary;
   const questionCount = data?.questions.length || 0;

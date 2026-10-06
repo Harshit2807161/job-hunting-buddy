@@ -144,3 +144,63 @@ def test_answer_feedback_uses_same_remaining_count_as_current_input_cards(portal
     assert reply.json()["applications"][0]["remaining_required_questions"] == 0
     assert client.get("/api/v1/overview").json()["summary"]["questions"] == 0
     assert booklet.load(book)["question_handoffs"][archived["id"]]["status"] == "pending"
+
+
+@pytest.mark.parametrize("state,expected", [("waiting_input", "needs_form_repair"), ("queued", "agent_queued"),
+    ("retry", "agent_queued"), ("running", "agent_working"), ("failed", "needs_form_repair")])
+def test_known_only_work_has_truthful_display_without_changing_queue_state(portal, state, expected):
+    root, conn, book, client, _ = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    data = booklet.load(book);data["answers"]["disclosure.gender"] = booklet.answer("Female", "Synthetic explicit answer")
+    booklet.write_private(book, data)
+    pending_question(job, book, "Gender", "gender", kind="combobox")
+    conn.execute("UPDATE applications SET state=?", (state,));conn.commit()
+    before = book.read_bytes(), list(conn.iterdump())
+    overview = client.get("/api/v1/overview").json();item = overview["applications"][0]
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert item["state"] == detail["state"] == state
+    assert item["display_state"] == detail["display_state"] == overview["activity"][0]["state"] == expected
+    assert item["pending_candidate_questions"] == detail["pending_candidate_questions"] == 0
+    assert item["pending_agent_tasks"] == detail["pending_agent_tasks"] == 1
+    assert overview["questions"] == detail["questions"] == []
+    assert not detail["approval"]["can_approve"]
+    assert (book.read_bytes(), list(conn.iterdump())) == before
+
+
+@pytest.mark.parametrize("required", [True, False])
+def test_mixed_agent_work_and_genuine_optional_or_required_input_still_needs_candidate(portal, required):
+    root, conn, book, client, _ = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    data = booklet.load(book);data["answers"]["disclosure.gender"] = booklet.answer("Female", "Synthetic explicit answer")
+    booklet.write_private(book, data)
+    pending_question(job, book, "Gender", "gender", kind="combobox")
+    pending_question(job, book, "An undisclosed factual certification?", "certification", required=required)
+    overview = client.get("/api/v1/overview").json();item = overview["applications"][0]
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert item["display_state"] == detail["display_state"] == "waiting_input"
+    assert item["pending_candidate_questions"] == detail["pending_candidate_questions"] == 1
+    assert item["pending_required_questions"] == int(required)
+    assert item["pending_agent_tasks"] == detail["pending_agent_tasks"] == 1
+
+
+def test_no_current_questions_or_agent_tasks_is_verification_not_candidate_input(portal):
+    root, conn, _, client, _ = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    item = client.get("/api/v1/overview").json()["applications"][0]
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert item["display_state"] == detail["display_state"] == "needs_verification"
+    assert item["pending_candidate_questions"] == item["pending_agent_tasks"] == 0
+
+
+def test_agent_count_uses_same_exact_job_context_as_candidate_question_routing(portal, monkeypatch):
+    from jhb.applications import question_routing
+    root, conn, book, client, _ = portal
+    job, _, _ = add_job(conn, root, state="waiting_input")
+    pending_question(job, book, "Exact office policy?", "office")
+    def requires_exact_job(data, record, context, *, job=None):
+        return question_routing.KNOWN if job and job.get("dedupe_hash") == context["job_hash"] else question_routing.CANDIDATE
+    monkeypatch.setattr(question_routing, "route", requires_exact_job)
+    item = client.get("/api/v1/overview").json()["applications"][0]
+    detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
+    assert item["pending_candidate_questions"] == 0 and item["pending_agent_tasks"] == detail["pending_agent_tasks"] == 1
+    assert item["display_state"] == detail["display_state"] == "needs_form_repair"
