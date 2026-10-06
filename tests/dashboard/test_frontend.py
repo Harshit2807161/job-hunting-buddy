@@ -162,7 +162,7 @@ def test_review_shows_all_fields_and_never_prechecks_optional_blank_or_autoappro
         ack.check(); assert button.is_enabled()
         button.click()
         page.get_by_text("Submission status: Submission queued. Your current browser answers are preserved.", exact=True).wait_for()
-        assert actions == [(f"/api/v1/applications/{KEY}/approve", {"revision": "exact-draft-revision", "acknowledged_blank_refs": ["why"]})]
+        assert actions == [(f"/api/v1/applications/{KEY}/approve", {"revision": "exact-draft-revision", "acknowledged_blank_refs": ["why"], "acknowledge_role_fit_warning": False})]
         assert button.is_disabled() and errors == []
 
 
@@ -510,7 +510,7 @@ def test_current_form_submit_reports_actual_result_without_claiming_saved_draft_
         page.get_by_text('Uses the answers and attachments currently in your Chrome tab. Your manual edits are preserved.', exact=True).wait_for()
         button.click()
         page.get_by_role('status').get_by_text(expected, exact=True).wait_for()
-        assert actions == [(f'/api/v1/applications/{KEY}/approve', {'revision':'exact-draft-revision','acknowledged_blank_refs':[]})]
+        assert actions == [(f'/api/v1/applications/{KEY}/approve', {'revision':'exact-draft-revision','acknowledged_blank_refs':[], 'acknowledge_role_fit_warning':False})]
         expected_status = {'submitted':'Submitted','submitting':'Submitting','needs_review':'Needs review'}[result['state']]
         assert page.locator('.review-facts .status').inner_text() == expected_status
         assert not errors
