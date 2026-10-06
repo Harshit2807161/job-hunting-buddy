@@ -252,6 +252,32 @@ def test_workday_empty_education_section_adds_approved_rows_without_guessing_oth
         assert inspect("window.wrong") == 0
 
 
+def test_workday_empty_native_experience_step_scopes_delayed_adds_to_named_groups():
+    html = """<div data-automation-id=applyFlowMyExpPage>
+      <div role=group aria-labelledby=work-heading><h2 id=work-heading>Work Experience</h2>
+       <button onclick="setTimeout(()=>this.insertAdjacentHTML('beforebegin','<input id=workExperience-0--jobTitle aria-label=JobTitle>'),350)">Add</button></div>
+      <div role=group aria-labelledby=education-heading><h2 id=education-heading>Education</h2>
+       <button onclick="setTimeout(()=>this.insertAdjacentHTML('beforebegin','<input id=education-0--schoolName aria-label=School>'),350)">Add</button></div>
+      <div role=group aria-labelledby=language-heading><h2 id=language-heading>Languages</h2><button onclick='window.wrong++'>Add</button></div>
+      <div role=group aria-labelledby=website-heading><h2 id=website-heading>Websites</h2><button onclick='window.wrong++'>Add</button></div>
+      </div><script>window.wrong=0</script>"""
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        assert call("observe")["experience_step"] is True
+        assert call("records", kind="education", count=1)["count"] == 1
+        assert call("records", kind="workExperience", count=1)["count"] == 1
+        assert inspect("window.wrong") == 0
+        assert call("records", kind="education", count=1)["count"] == 1
+        assert inspect("document.querySelectorAll('input').length") == 2
+
+
+def test_workday_unowned_experience_progress_text_does_not_create_records():
+    html = '<nav>My Experience Education Work Experience</nav><div data-automation-id=applyFlowMyExpPage><h2>Unrelated form</h2><button>Add</button></div>'
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        assert call("observe")["experience_step"] is False
+        with pytest.raises(ValueError, match="add-record control is ambiguous"):
+            call("records", kind="education", count=1)
+
+
 def test_workday_hidden_renderer_wakes_only_owned_guarded_tab_before_safe_press():
     with fixture_runtime() as (call, inspect, helpers, lane):
         snapshot = call("observe")

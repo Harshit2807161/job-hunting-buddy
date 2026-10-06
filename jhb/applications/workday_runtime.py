@@ -244,7 +244,7 @@ def dispatch(request, helpers):
             return {"url": js("location.href"), "fields": [], "buttons": observed_buttons, "handoff": "unsupported",
                     "reason": "Saved Workday review cards require retained-answer and document auditing before final review"}
         return {"url": js("location.href"), "fields": fields, "buttons": observed_buttons,
-                "experience_step": js("!!document.querySelector('input[id^=workExperience-],input[id^=education-]')") is True}
+                "experience_step": js("!!document.querySelector('input[id^=workExperience-],input[id^=education-]')||[...document.querySelectorAll('[data-automation-id=applyFlowMyExpPage]')].some(p=>p.getClientRects().length&&['Work Experience','Education'].every(title=>[...p.querySelectorAll('[role=group][aria-labelledby]')].some(g=>{const ids=(g.getAttribute('aria-labelledby')||'').split(' ');return ids.some(id=>{const h=document.getElementById(id);return h&&g.contains(h)&&h.innerText.trim()===title;});})))") is True}
     if operation == "next":
         button = request["button"]
         if not safe_next(button):
@@ -269,7 +269,7 @@ def dispatch(request, helpers):
                 remote = cdp("DOM.resolveNode", backendNodeId=int(button["ref"]))["object"]["objectId"]
                 try:
                     owned = cdp("Runtime.callFunctionOn", objectId=remote,
-                        functionDeclaration="function(title,kind){for(let p=this.parentElement;p&&p!==document.body;p=p.parentElement){const text=p.innerText.trim();if(text.startsWith(title+'\\n')&&!p.querySelector('input[id^=\"'+(kind==='education'?'workExperience':'education')+'-\"]'))return true;}return false;}",
+                        functionDeclaration="function(title,kind){const group=this.closest('[role=group][aria-labelledby]');if(group){const labels=(group.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);return labels.length===1&&group.contains(labels[0])&&labels[0].innerText.trim()===title;}for(let p=this.parentElement;p&&p!==document.body;p=p.parentElement){const headings=[...p.querySelectorAll('h1,h2,h3,h4')];if(headings.length>1)return false;if(headings.length===1)return headings[0].innerText.trim()===title&&!p.querySelector('input[id^=\"'+(kind==='education'?'workExperience':'education')+'-\"]');}return false;}",
                         arguments=[{"value": title}, {"value": kind}], returnByValue=True)["result"].get("value")
                 finally:
                     cdp("Runtime.releaseObject", objectId=remote)
@@ -279,6 +279,10 @@ def dispatch(request, helpers):
                 raise ValueError("Workday add-record control is ambiguous")
             click(candidates[0])
             updated = js(count_script)
+            for _ in range(10):
+                if updated != current:
+                    break
+                wait(0.15); owned_guard(); updated = js(count_script)
             if updated != current + 1:
                 raise ValueError("Another Workday record did not appear")
             current = updated
