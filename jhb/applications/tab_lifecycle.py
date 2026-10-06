@@ -510,8 +510,13 @@ class OwnedTabs:
                     if self.close(target, "durable_confirmed_submission_and_retained_review", expected_url=receipt["observed_url"]):
                         closed.append(target)
         finally:
-            if original and original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
-                self.helpers["switch_tab"](original)
+            try:
+                if original and original in {t["targetId"] for t in self.helpers["list_tabs"]()}:
+                    self.helpers["switch_tab"](original)
+            except RuntimeError:
+                # Chrome can retire the original target after list_tabs. This
+                # best-effort restoration must not discard verified cleanup.
+                pass
         return closed
 
     def _empty_technical_evidence(self, row, target):

@@ -142,6 +142,26 @@ def test_reused_preexisting_blank_and_exact_user_job_remain_unowned(owned):
     assert browser.closed==[]
 
 
+def test_receipt_cleanup_keeps_result_when_original_target_disappears_during_restore(owned):
+    owner, browser, root = owned
+    submitted = owner.new_tab(URL)
+    confirmed(owner, browser, root, submitted)
+    draft = owner.new_tab(OTHER)
+    browser.switch('user')
+
+    def disappearing_original(target):
+        if target == 'user':
+            browser.tabs.pop('user')
+            raise RuntimeError('No target with given id found')
+        browser.switch(target)
+
+    owner.helpers['switch_tab'] = disappearing_original
+    assert owner.cleanup() == [submitted]
+    assert browser.closed == [submitted]
+    assert owner.tabs[submitted]['state'] == 'closed'
+    assert draft in browser.tabs and owner.tabs[draft]['state'] == 'active'
+
+
 def test_attached_hidden_placeholder_is_not_false_creation_proof(owned):
     owner,browser,_=owned
     browser.tabs['user']['url']='about:blank'
