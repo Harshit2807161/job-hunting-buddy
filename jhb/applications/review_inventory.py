@@ -111,8 +111,12 @@ def _superseded_greenhouse_uploads(observed, filled, job_url):
             continue
         new = current[0]
         if (new.get('ref') != 'uploaded:'+new.get('label', '')
-                or any(old.get(k) != new.get(k) for k in
-                       ('label', 'required', 'description', 'description_truncated'))
+                or old.get('label') != new.get('label')
+                or bool(old.get('required')) != bool(new.get('required'))
+                # Standard upload aliases omit empty metadata after upload.
+                # Instructions or truncated context require a separate review.
+                or old.get('description') not in (None, '') or new.get('description') not in (None, '')
+                or bool(old.get('description_truncated')) or bool(new.get('description_truncated'))
                 or sum(f.get('ref') == old['ref'] for f in observed) != 1
                 or sum(f.get('ref') == new['ref'] for f in observed) != 1):
             continue

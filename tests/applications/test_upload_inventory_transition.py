@@ -38,11 +38,19 @@ def test_proven_native_upload_replacement_is_one_question_without_erasing_histor
     assert (fields, rows) == original
 
 
+def test_native_empty_metadata_matches_uploaded_owner_omitting_empty_metadata():
+    fields, rows, answers = evidence()
+    fields[0].update(description='', description_truncated=False)
+    result = build(fields, rows, answers)
+    assert result['review_inventory']['superseded_upload_refs'] == {'cover_letter': 'uploaded:Cover Letter'}
+    assert result['review_completeness']['all_observed_count'] == 1
+
+
 @pytest.mark.parametrize('change', [
     'other_board', 'no_job', 'same_step', 'missing_step', 'new_not_current',
     'two_current_owners', 'duplicate_old_ref', 'duplicate_new_ref', 'duplicate_row',
     'missing_row', 'sha', 'receipt', 'source', 'path', 'key', 'missing_proof',
-    'required', 'instructions', 'new_question', 'other_native_ref',
+    'required', 'instructions', 'same_instructions', 'truncated', 'new_question', 'other_native_ref',
 ])
 def test_uncertain_or_changed_documents_never_coalesce(change):
     fields, rows, answers = evidence(); url = URL
@@ -64,6 +72,10 @@ def test_uncertain_or_changed_documents_never_coalesce(change):
     elif change == 'missing_proof': rows[0].pop('upload_receipt'); rows[1].pop('upload_receipt')
     elif change == 'required': fields[1]['required'] = True
     elif change == 'instructions': fields[1]['description'] = 'Attach a different document.'
+    elif change == 'same_instructions':
+        for field in fields: field['description'] = 'Attach the requested writing sample.'
+    elif change == 'truncated':
+        for field in fields: field['description_truncated'] = True
     elif change == 'new_question': fields[1]['label'] = 'Writing sample'
     elif change == 'other_native_ref': fields[0]['ref'] = 'other_cover_letter'
     result = build(fields, rows, answers, url)
@@ -79,8 +91,10 @@ def test_worker_fresh_upload_transition_finishes_with_single_current_question(tm
         def allowed_url(self, url): return url == URL
         async def open(self, url): pass
         async def observe(self):
-            return {'url': URL, 'fields': [{'ref': 'uploaded:Cover Letter' if self.uploaded else 'cover_letter',
-                    'label': 'Cover Letter', 'type': 'file', 'required': False}],
+            field = {'ref': 'uploaded:Cover Letter' if self.uploaded else 'cover_letter',
+                     'label': 'Cover Letter', 'type': 'file', 'required': False}
+            if not self.uploaded: field.update(description='', description_truncated=False)
+            return {'url': URL, 'fields': [field],
                     'buttons': [{'ref': 'submit', 'label': 'Submit application'}]}
         async def fill(self, field, value):
             assert value == str(path); self.uploaded = True
