@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import asyncio
+import copy
 import json
 import os
 import re
@@ -141,6 +142,52 @@ def audit_hash(snapshot, documents):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def _retain_upload_proof(document, result, field, key, url, *, required=False):
+    """Keep current upload evidence separate from the immutable approved packet."""
+    from .ashby_uploads import valid_proof
+    proof = result.get("ashby_upload_proof")
+    if proof is None and not required:
+        return
+    path = Path(document["path"])
+    if (not valid_proof(proof, url=url, field=field, key=key,
+                        sha256=document["sha256"], receipt=document["receipt"])
+            or result.get("sha256") != document["sha256"]
+            or result.get("filename") != document["filename"]
+            or proof.get("filename") != document["filename"]
+            or proof.get("size") != path.stat().st_size
+            or hashlib.sha256(path.read_bytes()).hexdigest() != document["sha256"]):
+        raise ValueError("Current document upload proof differs from the approved document")
+    document["ashby_upload_proof"] = copy.deepcopy(proof)
+
+
+def _check_upload_proofs(documents, snapshot, url):
+    """Require the fresh control/receipt to agree with each returned saved-file ID."""
+    from .ashby_uploads import valid_proof
+    for key, document in documents.items():
+        proof = document.get("ashby_upload_proof")
+        if proof is None:
+            continue
+        fields = [field for field in snapshot.get("fields", []) if field.get("answer_key") == key]
+        rows = [row for row in snapshot.get("retained", []) if row.get("answer_key") == key]
+        if len(fields) != 1 or len(rows) != 1:
+            raise ValueError("Current upload has no unique retained control")
+        field, row = fields[0], rows[0]
+        state = row.get("state", {})
+        observed = state.get("ashby_saved_file") or {}
+        server = observed.get("saved_file") or {}
+        if (not valid_proof(proof, url=url, field=field, key=key,
+                            sha256=document["sha256"], receipt=document.get("receipt"))
+                or row.get("ref") != field.get("ref") or state.get("invalid") is not False
+                or state.get("receipt") != proof["upload_receipt"]
+                or state.get("value") != proof["filename"]
+                or observed.get("other_invalid") is not False
+                or observed.get("field_path") != proof["field_path"]
+                or observed.get("displayed_filename") != proof["filename"]
+                or server.get("typename") != "File" or server.get("id") != proof["saved_file_id"]
+                or server.get("filename") != proof["filename"]):
+            raise ValueError("Current upload proof does not match the retained server attachment")
+
+
 async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, cli=None, reviewer=None):
     """Submit once, after durable ownership and two fresh retained-value checks.
 
@@ -180,10 +227,19 @@ async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, 
             if not result.get("verified") or not result.get("upload_receipt"):
                 raise ValueError("Approved document upload was not verified")
             document["receipt"] = result["upload_receipt"]
-        if authority.get("require_independent_review") is True:
+            proof_required = any(row.get("key") == key and row.get("ashby_upload_proof")
+                                 for row in packet.get("filled", [])) or any(
+                row.get("answer_key") == key and isinstance(row.get("state", {}).get("ashby_saved_file"), dict)
+                for row in snapshot.get("retained", []))
+            _retain_upload_proof(document, result, matches[0], key, persisted["application_url"],
+                                 required=proof_required)
+        if authority.get("require_independent_review") is True or any(
+                document.get("ashby_upload_proof") for document in documents.values()):
             snapshot = await client.invoke("check", **context, documents=documents)
             if snapshot.get("state"):
                 return snapshot
+            _check_upload_proofs(documents, snapshot, persisted["application_url"])
+        if authority.get("require_independent_review") is True:
             if reviewer is None:
                 from .application_review import review_application
                 reviewer = review_application

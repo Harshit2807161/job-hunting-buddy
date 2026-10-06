@@ -58,6 +58,13 @@ Check every retained answer for consistency with its question and the approved p
 check expected versus completed education, indexed schools/dates, authorization versus
 sponsorship, separate-country phone formatting, selected SDE/ML document identity,
 required questions and conditional fields, and subjective statements for unsupported claims.
+The manifest's filled records preserve the immutable approved preparation packet.
+Its upload receipts/saved-file IDs can predate a verified re-upload of the same
+approved document bytes. When manifest.documents contains ashby_upload_proof,
+that is the validated current upload proof; compare its exact job, field, bytes,
+receipt and saved-file ID against retained_checks. Do not substitute the older
+filled-record upload ID for that current evidence. This distinction grants no
+permission to change answers, document content, or candidate approval.
 Do not reject for competitiveness or a merely preferred qualification.
 When review_mode is candidate_current_form, the candidate clicked approval after
 editing the live browser form. The manifest is a fresh read of that exact form.
