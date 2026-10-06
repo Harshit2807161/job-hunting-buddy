@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from jhb.applications import booklet, notices, questions, queue, worker
+from jhb.applications import boards, booklet, notices, questions, queue, worker
 
 
 @pytest.fixture
@@ -20,12 +20,20 @@ def setup(tmp_path, monkeypatch):
 
 
 def add(db, number, state):
-    job = {"dedupe_hash": f"{number:064x}", "title": "Synthetic role", "company": "Example", "source": "fixture",
-           "url": f"https://job-boards.greenhouse.io/example/jobs/{number}"}
+    url = f"https://job-boards.greenhouse.io/example/jobs/{number}"
+    job = {"dedupe_hash": boards.application_hash(url), "title": "Synthetic role", "company": "Example",
+           "source": "fixture", "url": url}
     db.execute("INSERT INTO applications(job_hash,job_json,state,updated_at) VALUES(?,?,?,0)",
                (job["dedupe_hash"], json.dumps(job), state))
     db.commit()
     return job
+
+
+def retain_input(db, root, job, result):
+    packet_path = root / "private" / "applications" / job["dedupe_hash"] / "packet.json"
+    booklet.write_private(packet_path, {"job": job, "state": "waiting_input", "submitted": False,
+                                        "filled": [], **result})
+    queue.finish(db, job["dedupe_hash"], "waiting_input", packet_path.with_name("review.html"))
 
 
 def test_operational_statuses_remain_local_while_reviews_coalesce(setup, monkeypatch):
@@ -126,16 +134,22 @@ def test_optional_questions_stay_local_and_required_reopen_is_new_event(setup, m
     path = root / "private" / "book.json"
     booklet.write_private(path, {"schema_version": 1, "answers": {}, "roles": {"sde": {}, "ml": {}}, "custom_answers": {}})
     required = {"question": "Choose your office", "ref": "office", "required": True}
-    questions.collect(job, {"optional_questions": [{"question": "Preferred name", "required": False}]}, path)
+    result = {"optional_questions": [{"question": "Preferred name", "ref": "preferred_name", "required": False}]}
+    retain_input(db, root, job, result)
+    questions.collect(job, result, path)
     sends = []
     monkeypatch.setattr("jhb.notify.send", lambda jobs, **kwargs: sends.append(kwargs) or True)
     assert questions.notify_new(db, path, send_email=True) == 0 and not sends
-    record = questions.collect(job, {"missing": [required]}, path)[0]
+    result = {"missing": [required]}
+    retain_input(db, root, job, result)
+    record = questions.collect(job, result, path)[0]
     assert questions.notify_new(db, path, send_email=True) == 1
     questions.answer(record["id"], "Unknown office", path)
     current = booklet.load(path)
     key = current["question_handoffs"][record["id"]]["custom_answer_key"]
-    questions.collect(job, {"missing": [{**required, "answer_key": key, "reason": "Selected office is unavailable"}]}, path, observed_book=current)
+    result = {"missing": [{**required, "answer_key": key, "reason": "Selected office is unavailable"}]}
+    retain_input(db, root, job, result)
+    questions.collect(job, result, path, observed_book=current)
     assert questions.notify_new(db, path, send_email=True) == 0  # Coalesce correction.
     clock[0] += notices.COALESCE_SECONDS
     assert questions.notify_new(db, path, send_email=True) == 1
@@ -149,7 +163,9 @@ def test_question_reopened_during_smtp_is_not_marked_as_delivered_new_revision(s
     path = root / "private" / "book.json"
     booklet.write_private(path, {"schema_version": 1, "answers": {}, "roles": {"sde": {}, "ml": {}}, "custom_answers": {}})
     field = {"question": "Choose your office", "ref": "office", "required": True}
-    record = questions.collect(job, {"missing": [field]}, path)[0]
+    result = {"missing": [field]}
+    retain_input(db, root, job, result)
+    record = questions.collect(job, result, path)[0]
     sends = []
     def send(*args, **kwargs):
         sends.append(kwargs)
@@ -157,7 +173,9 @@ def test_question_reopened_during_smtp_is_not_marked_as_delivered_new_revision(s
             questions.answer(record["id"], "Unavailable office", path)
             fresh = booklet.load(path)
             key = fresh["question_handoffs"][record["id"]]["custom_answer_key"]
-            questions.collect(job, {"missing": [{**field, "answer_key": key, "reason": "Office unavailable"}]}, path, observed_book=fresh)
+            result = {"missing": [{**field, "answer_key": key, "reason": "Office unavailable"}]}
+            retain_input(db, root, job, result)
+            questions.collect(job, result, path, observed_book=fresh)
         return True
     monkeypatch.setattr("jhb.notify.send", send)
     assert questions.notify_new(db, path, send_email=True) == 1

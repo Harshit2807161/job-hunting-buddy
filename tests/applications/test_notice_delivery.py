@@ -4,11 +4,12 @@ import sqlite3
 
 import pytest
 
-from jhb.applications import booklet, notices, pipeline, questions, queue, source_queue, worker
+from jhb.applications import boards, booklet, notices, pipeline, questions, queue, source_queue, worker
 
 
 def job():
-    return {"dedupe_hash": "1" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123",
+    url = "https://job-boards.greenhouse.io/example/jobs/123"
+    return {"dedupe_hash": boards.application_hash(url), "url": url,
             "title": "Synthetic engineer", "company": "Example employer", "source": "synthetic"}
 
 
@@ -79,6 +80,10 @@ def test_question_local_notice_keeps_email_pending_until_success(monkeypatch, tm
                                 "custom_answers": {}})
     result = {"missing": [{"question": "Explicit employer-specific certification", "ref": "new_question",
                            "required": True}]}
+    packet_path = tmp_path / "private" / "applications" / row["dedupe_hash"] / "packet.json"
+    booklet.write_private(packet_path, {"job": row, "state": "waiting_input", "submitted": False,
+                                        "filled": [], **result})
+    queue.finish(conn, row["dedupe_hash"], "waiting_input", packet_path.with_name("review.html"))
     questions.collect(row, result, path)
     sends = []
     succeed = False
@@ -101,3 +106,36 @@ def test_question_local_notice_keeps_email_pending_until_success(monkeypatch, tm
     assert questions.pending(path, unnotified=True) == []
     assert questions.notify_new(conn, path, send_email=True) == 0
     assert len(sends) == 2
+
+
+@pytest.mark.parametrize("stale", ["missing_packet", "wrong_job", "filled", "changed_ref", "submitted"])
+def test_historical_question_does_not_send_without_current_unresolved_input(monkeypatch, tmp_path, stale):
+    monkeypatch.setattr("jhb.config.ROOT", tmp_path)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    queue.initialize(conn)
+    row = job()
+    path = tmp_path / "private" / "booklet.json"
+    booklet.write_private(path, {"schema_version": 1, "answers": {}, "roles": {"sde": {}, "ml": {}},
+                                "custom_answers": {}})
+    field = {"question": "Exact employer-specific question", "ref": "question", "required": True}
+    result = {"missing": [field]}
+    questions.collect(row, result, path)
+    packet_path = tmp_path / "private" / "applications" / row["dedupe_hash"] / "packet.json"
+    packet = {"job": row, "state": "waiting_input", "submitted": False, "filled": [], **result}
+    if stale == "wrong_job":
+        packet["job"] = {**row, "dedupe_hash": "f" * 64}
+    elif stale == "filled":
+        packet["filled"] = [{"ref": field["ref"]}]
+    elif stale == "changed_ref":
+        packet["missing"] = [{**field, "ref": "new_question"}]
+    if stale != "missing_packet":
+        booklet.write_private(packet_path, packet)
+    state = "submitted" if stale == "submitted" else "waiting_input"
+    conn.execute("INSERT INTO applications(job_hash,job_json,state,updated_at,packet) VALUES(?,?,?,0,?)",
+                 (row["dedupe_hash"], json.dumps(row), state, str(packet_path.with_name("review.html"))))
+    conn.commit()
+    monkeypatch.setattr("jhb.notify.send", lambda *args, **kwargs: pytest.fail("Stale question emailed candidate"))
+    assert questions.notify_new(conn, path, send_email=True) == 0
+    assert len(questions.pending(path, unnotified=True)) == 1  # Retain history without an active email.
+    conn.close()
