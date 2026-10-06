@@ -145,6 +145,7 @@ def common_answers(book: dict, job=None) -> dict:
     """
     values = dict(book.get("answers", {}))
     records = book.get("education_records", [])
+    records = records if isinstance(records, list) else []
     _education_answers(values, records)
     _reusable_profile_facts(values, book, None, records, [])
     policy = book.get("workflow_preferences", {})
@@ -172,7 +173,7 @@ def common_answers(book: dict, job=None) -> dict:
 
 def _education_answers(values, records):
     for index, record in enumerate(records):
-        if record.get("status") == "verified":
+        if isinstance(record, dict) and record.get("status") == "verified" and record.get("source"):
             for field in ("school", "degree", "major", "gpa", "start_date", "end_date"):
                 if field in record:
                     values[f"education.{index}.{field}"] = answer(record[field], record["source"])
@@ -196,10 +197,14 @@ def _education_answers(values, records):
                         "original_source": record["source"], "expected": record.get("expected")})
 
 
-def for_role(book: dict, role: str) -> dict:
+def for_role(book: dict, role: str, *, job=None) -> dict:
     if role not in {"sde", "ml"}:
         raise ValueError("Choose sde or ml explicitly for ambiguous jobs")
-    values = {**common_answers(book), **book["roles"][role]}
+    common = common_answers(book, job=job)
+    values = {**common, **book["roles"][role]}
+    # Job-derived discovery is more specific than a saved generic/role value.
+    if job and "standing.discovery_source" in common:
+        values["standing.discovery_source"] = common["standing.discovery_source"]
     # Broad skills prompts retain the full chosen resume skill list. Include
     # its coursework only when the candidate explicitly requested this policy;
     # never borrow skills/courses from the other role or an unverified source.
@@ -215,6 +220,7 @@ def for_role(book: dict, role: str) -> dict:
                 {"skills": skills["source"], "coursework": education["source"],
                  "policy": policy.get("source", "explicit candidate coursework preference")})
     records = book.get("education_records", [])
+    records = records if isinstance(records, list) else []
     experiences = experience_records(book, role)
     for index, record in enumerate(experiences):
         for field in ("company", "title", "location", "start_date", "end_date", "summary", "current"):

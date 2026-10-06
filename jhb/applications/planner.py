@@ -184,8 +184,9 @@ def key_for_field(field, answers):
     if education:
         column = "major" if education[1] == "discipline" else education[1]
         key = f"education.{education[2]}.{column}"
-        if key in answers:
-            return key
+        # An indexed row must never borrow row zero through the generic
+        # School/Degree alias when its original record is missing/unverified.
+        return key if key in answers else None
     if (education_year and field.get("type") == "number"
             and label == education_year[1] + " date year"):
         key = f"education.{education_year[2]}.{education_year[1]}_year"

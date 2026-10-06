@@ -196,3 +196,38 @@ def test_current_gpa_catalog_uses_original_scale_and_rejects_overlap():
     assert resolve(field('What is your current GPA', ['3.5-4.0','3.8-4.0'],kind='combobox')) is None
     a=values();a['standing.current_education_gpa']['value']='9.6/10'
     assert resolve(field('What is your current GPA', ['3.5-4.0'],kind='combobox'),a) is None
+
+
+@pytest.mark.parametrize("change", ["missing_source", "unverified", "out_of_range", "invalid_record"])
+def test_indexed_education_never_falls_back_to_another_record(change):
+    b=book(); ref='school--1'
+    if change=='missing_source': b['education_records'][1].pop('source')
+    if change=='unverified': b['education_records'][1]['status']='needs_input'
+    if change=='out_of_range': ref='school--3'
+    if change=='invalid_record': b['education_records'][1]=None
+    a=booklet.common_answers(b)
+    assert a['education.school']['value']=='Example University'
+    assert key_for_field(field('School*',kind='combobox',ref=ref),a) is None
+
+
+def test_missing_first_education_source_is_skipped_without_losing_other_record():
+    b=book(); b['education_records'][0].pop('source')
+    a=booklet.common_answers(b)
+    assert 'education.school' not in a
+    assert 'education.0.school' not in a
+    assert a['education.1.school']['value']=='Another University'
+    assert 'standing.current_education_school' not in a
+
+
+def test_role_catalog_preserves_exact_job_discovery_over_old_generic_and_role_values():
+    b=book(); stale=booklet.answer('Indeed','synthetic old source')
+    b['answers']['standing.discovery_source']=stale
+    b['roles']['ml']['standing.discovery_source']=stale
+    b['roles']['ml']['documents.resume']=booklet.answer('/synthetic/ml.pdf','synthetic selected resume')
+    job={'source':'simplify','company':'Example Company','url':'https://example.test/job'}
+    before=copy.deepcopy(b)
+    a=booklet.for_role(b,'ml',job=job)
+    assert a['standing.discovery_source']['value']=='Simplify'
+    assert a['standing.discovery_source']['company_question']=='How did you hear about Example Company?'
+    assert a['documents.resume']['value']=='/synthetic/ml.pdf'
+    assert b==before
