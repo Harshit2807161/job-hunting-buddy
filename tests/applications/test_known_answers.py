@@ -26,6 +26,48 @@ def facts():
         "links.portfolio": "https://synthetic.example/"}.items()}
 
 
+@pytest.mark.parametrize("label", [
+    "Are you authorized to work in the country in which you are applying?",
+    "Do you now, or will you in the future, require sponsorship for employment in the country which you are applying?",
+    "Will you now or in the future require visa sponsorship for employment at WHOOP?",
+])
+def test_observed_employment_questions_require_actual_job_country(label):
+    for country in (None, "United Kingdom", "United States"):
+        question, values = field(label, kind="combobox"), facts()
+        booklet.annotate_work_country({"fields": [question]}, {"work_country": country})
+        basis = known_answers.catalog_basis(question, values)
+        key = known_answers.enrich(question, {"work_country": country}, values)
+        if country == "United States":
+            assert basis and key and values[key]["value"] == "Yes"
+            assert key_for_field(question, values) == key
+            question["description"] = "You must be authorized to work immediately for any employer."
+            if label.startswith("Are you authorized"):
+                assert not known_answers.catalog_basis(question, values)
+                assert known_answers.enrich(question, {"work_country": country}, values) is None
+        else:
+            assert not basis and key is None
+
+
+@pytest.mark.parametrize("label", [
+    "This is a hybrid role, working out of our Boston, MA office 4 days per week. Does this setup align to the working environment you are seeking in your next opportunity?",
+    "This position requires 4 days a week in office, including Thursdays in our Mountain View, CA headquarters and the remaining 3 days in either Mountain View or our San Francisco, CA office. Are you able to meet this requirement?",
+])
+def test_observed_office_schedules_reuse_two_explicit_preferences(label):
+    for missing in (None, "standing.office_willingness", "preferences.relocation"):
+        question, values = field(label, kind="combobox"), facts()
+        if missing:
+            values[missing]["status"] = "needs_input"
+        key = known_answers.enrich(question, {}, values)
+        assert bool(known_answers.catalog_basis(question, values)) is (missing is None)
+        if missing is None:
+            assert key and values[key]["value"] == "Yes"
+            assert key_for_field(question, values) == key
+            changed = {**question, "label": label + " Can you start tomorrow?"}
+            assert known_answers.enrich(changed, {}, values) is None
+        else:
+            assert key is None
+
+
 @pytest.mark.parametrize("label,key", [
     ("Are you\u00a0 open to relocation?", "preferences.relocation"),
     ("I am authorized to work in the United States.", "eligibility.authorized_us"),

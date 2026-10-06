@@ -279,11 +279,14 @@ def _graduate(answers, today):
 
 # Country-relative questions need posting context, never the candidate's address.
 RELATIVE_AUTHORIZATION = frozenset({
+    "are you authorized to work in the country in which you are applying?",
     "are you authorized to work in the country where the job is located?",
     "are you legally authorized to work in the country where the job is located?",
     "are you legally authorized to work in the country in which this job is located?",
 })
 RELATIVE_SPONSORSHIP = frozenset({
+    "do you now, or will you in the future, require sponsorship for employment in the country which you are applying?",
+    "will you now or in the future require visa sponsorship for employment at whoop?",
     "will you now or in the future require sponsorship for employment visa status in this country?",
     "will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?",
     "will you now or in the future require visa sponsorship to work in the country where this position is located?",
@@ -329,7 +332,9 @@ def _office_willingness_question(label):
     schedule = r"(?:"+days+r"|on (?:mondays|tuesdays|wednesdays|thursdays|fridays)(?: and (?:mondays|tuesdays|wednesdays|thursdays|fridays))? \([1-5] days/week\))"
     return bool(re.fullmatch(r"are you (?:able|willing) to work (?:"+days+r" )?(?:from|in) our [a-z ,.-]+ office(?: "+schedule+r")?\?", label)
         or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?"
-        or label == "are you open to a hybrid schedule with in-office days on monday, wednesday, and friday?")
+        or label == "are you open to a hybrid schedule with in-office days on monday, wednesday, and friday?"
+        or label == "this is a hybrid role, working out of our boston, ma office 4 days per week. does this setup align to the working environment you are seeking in your next opportunity?"
+        or label == "this position requires 4 days a week in office, including thursdays in our mountain view, ca headquarters and the remaining 3 days in either mountain view or our san francisco, ca office. are you able to meet this requirement?")
 
 
 def catalog_basis(field, answers):
