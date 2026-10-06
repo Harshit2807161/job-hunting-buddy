@@ -18,6 +18,15 @@ role directory beside its resume, as the source skill requires. Private build
 artifacts do not replace that final delivery. Verify the resume variant before
 upload and retain document provenance privately.
 
+Choose the resume from the full verified job description and the contents of both
+candidate resume variants. Compare the actual responsibilities and required
+skills against each variant; a job title, employer, or Phase 1 role tag is only
+a hint. An explicit candidate choice for the exact job takes precedence. Retain
+the selection reason, job-description evidence and both resume hashes privately
+with the preparation packet. Upload, independent review and submission must use
+that bound selection rather than infer the role again. Resume selection does not
+replace role-fit, citizenship, clearance or sponsorship screening.
+
 Select application guidance through `jhb/applications/boards.py` after resolving
 the exact job identity. The user explicitly requested multi-board preparation
 and submission, authenticated LinkedIn routing, independent review, and hourly
