@@ -1,0 +1,301 @@
+"""Finite, explicit submission authorization; normal preparation stays guarded."""
+from __future__ import annotations
+
+import hashlib
+import asyncio
+import copy
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .. import config
+from .booklet import write_private
+from .cli_browser import BrowserOperationError, BrowserUseCLI
+from . import boards, overnight
+
+SCOPE = "new Phase 1 Greenhouse jobs discovered during this authorization window"
+
+
+def private_file(value):
+    path = Path(value)
+    root = config.ROOT / "private"
+    if (not path.is_absolute() or path.is_symlink() or any(p.is_symlink() for p in path.parents)
+            or not path.resolve().is_relative_to(root.resolve()) or not path.is_file()
+            or path.stat().st_mode & 0o077 or path.stat().st_size > 2_000_000):
+        raise ValueError("Submission evidence must be a private local file")
+    return path
+
+
+def timestamp(value):
+    result = datetime.fromisoformat(value)
+    if result.tzinfo is None:
+        raise ValueError("Submission timestamps require timezone information")
+    return result.astimezone(timezone.utc)
+
+
+def load_gate(authorization_path, attempt_path, *, now=None, allow_clicked=False):
+    """Re-read immutable user authority and the durable, job-specific attempt."""
+    # A pause can arrive while the separate reviewer or pointer settling is
+    # running. Recheck it at every operation, including immediately before the
+    # write-ahead click marker. Receipt reconciliation does not use this gate:
+    # an already observed positive receipt remains valid after a later pause.
+    for guard in (config.ROOT / "private" / "pipeline-pause.json",
+                  config.ROOT / "private" / "overnight-monitor" / "repair-pending.json"):
+        if guard.exists() or guard.is_symlink():
+            raise ValueError("Application automation is paused or quarantined")
+    authorization_path, attempt_path = private_file(authorization_path), private_file(attempt_path)
+    raw = authorization_path.read_bytes()
+    authority = json.loads(raw)
+    attempt = json.loads(attempt_path.read_text())
+    from .application_discard import check
+    check(config.ROOT, attempt.get("job_hash"))
+    moment = now or datetime.now(timezone.utc)
+    start = timestamp(authority.get("authorized_at", authority.get("started_at", "")))
+    expiry = timestamp(authority.get("expires_at", authority.get("expiry", "")))
+    if (not overnight.gate_enabled(authority)
+            or not overnight.valid_authority(authority, now=moment.timestamp())):
+        raise ValueError("No active finite user authorization for this submission")
+    digest = hashlib.sha256(raw).hexdigest()
+    identity = boards.job_identity(attempt.get("application_url"))
+    allowed = ["greenhouse"] if authority.get("scope") == SCOPE else authority.get("boards", [])
+    if (attempt.get("authorization_id") != digest
+            or attempt.get("authorization_path") != str(authorization_path)
+            or attempt.get("state") != "in_progress"
+            or not re.fullmatch(r"[a-f0-9]{64}", attempt.get("job_hash", ""))
+            or identity is None
+            or identity[0] not in allowed or not boards.submission_supported(identity[0])
+            or boards.application_hash(attempt.get("application_url")) != attempt.get("job_hash")
+            or (authority.get("require_independent_review") is True and attempt.get("require_independent_review") is not True)
+            or (attempt.get("runtime_click_started") and not allow_clicked)
+            or not start <= timestamp(attempt.get("started_at", "")) < expiry):
+        raise ValueError("Submission attempt is mismatched, consumed, or not durable")
+    expected = config.ROOT / "private" / "authorized-submissions" / attempt["job_hash"] / "attempt.json"
+    if attempt_path != expected:
+        raise ValueError("Submission attempt has an unexpected private location")
+    packet_path = private_file(attempt.get("packet_path", ""))
+    packet_bytes = packet_path.read_bytes()
+    packet = json.loads(packet_bytes)
+    from .historical import cached_match
+    if cached_match(packet.get("job", {})):
+        raise ValueError("Existing application history blocks a duplicate submission")
+    if (hashlib.sha256(packet_bytes).hexdigest() != attempt.get("packet_sha256")
+            or packet.get("state") != "waiting_review" or packet.get("submitted") is not False
+            or packet.get("missing") or packet.get("verification") or packet.get("blocked_requests", 0)
+            or packet.get("job", {}).get("dedupe_hash") != attempt["job_hash"]
+            or boards.job_identity(packet.get("job", {}).get("url")) != identity):
+        raise ValueError("Submission packet is changed, incomplete, or for another job")
+    if authority.get("scope") == overnight.PORTAL_SCOPE:
+        from .approvals import validate_binding
+        validate_binding(authority, packet_path)
+        if authority.get("job_hash") != attempt["job_hash"]:
+            raise ValueError("Portal approval belongs to a different application")
+        if authority.get("approval_mode") == "candidate_current_form" and (
+                packet.get("review_mode") != "candidate_current_form" or
+                authority.get("current_form_snapshot_sha256") != packet.get("live_review", {}).get("snapshot_sha256")):
+            raise ValueError("Current-form approval does not bind this live review")
+    elif authority.get("approval_mode") == overnight.INDEPENDENT_MODE:
+        from .approvals import _snapshot
+        binding = attempt.get("review_binding", {})
+        _, current, _ = _snapshot(packet_path, binding.get("book_path", ""))
+        if binding != current:
+            raise ValueError("Independently reviewed draft evidence changed")
+    if packet.get("review_mode") == "candidate_current_form" and (
+            authority.get("scope") != overnight.PORTAL_SCOPE or
+            authority.get("approval_mode") != "candidate_current_form"):
+        raise ValueError("Current-form evidence requires its explicit candidate approval")
+    return authority, attempt, packet
+
+
+def document_manifest(answers, packet):
+    if answers.get("selected_role") not in {"sde", "ml"} or answers.get("filled") != packet.get("filled"):
+        raise ValueError("Submission manifest must preserve the selected role and approved packet")
+    documents = answers.get("documents", {})
+    if "documents.resume" not in documents:
+        raise ValueError("The selected role's verified resume is required")
+    manifest = {}
+    for key, record in documents.items():
+        if key not in {"documents.resume", "documents.cover_letter"} or record.get("status") != "verified" or not record.get("source"):
+            raise ValueError("Submission documents require verified source records")
+        path = Path(record["value"])
+        if (not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".pdf"
+                or not path.read_bytes().startswith(b"%PDF-")):
+            raise ValueError("Approved application document is not an existing PDF")
+        filled = [r for r in packet.get("filled", []) if r.get("key") == key]
+        if not filled or any(Path(r.get("value", "")) != path for r in filled):
+            raise ValueError("Application packet uses a different approved document")
+        manifest[key] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                         "filename": path.name}
+    filled_keys = {r.get("key") for r in packet.get("filled", []) if str(r.get("key", "")).startswith("documents.")}
+    if filled_keys != set(manifest):
+        raise ValueError("Every attached document must have an approved manifest record")
+    return manifest
+
+
+class AuthorizedSubmissionCLI(BrowserUseCLI):
+    _dispatch_module = "jhb.applications.submission_runtime"
+
+
+def audit_hash(snapshot, documents):
+    return hashlib.sha256(json.dumps({"snapshot": snapshot, "documents": documents}, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _retain_upload_proof(document, result, field, key, url, *, required=False):
+    """Keep current upload evidence separate from the immutable approved packet."""
+    from .ashby_uploads import valid_proof
+    proof = result.get("ashby_upload_proof")
+    if proof is None and not required:
+        return
+    path = Path(document["path"])
+    if (not valid_proof(proof, url=url, field=field, key=key,
+                        sha256=document["sha256"], receipt=document["receipt"])
+            or result.get("sha256") != document["sha256"]
+            or result.get("filename") != document["filename"]
+            or proof.get("filename") != document["filename"]
+            or proof.get("size") != path.stat().st_size
+            or hashlib.sha256(path.read_bytes()).hexdigest() != document["sha256"]):
+        raise ValueError("Current document upload proof differs from the approved document")
+    document["ashby_upload_proof"] = copy.deepcopy(proof)
+
+
+def _check_upload_proofs(documents, snapshot, url):
+    """Require the fresh control/receipt to agree with each returned saved-file ID."""
+    from .ashby_uploads import valid_proof
+    for key, document in documents.items():
+        proof = document.get("ashby_upload_proof")
+        if proof is None:
+            continue
+        fields = [field for field in snapshot.get("fields", []) if field.get("answer_key") == key]
+        rows = [row for row in snapshot.get("retained", []) if row.get("answer_key") == key]
+        if len(fields) != 1 or len(rows) != 1:
+            raise ValueError("Current upload has no unique retained control")
+        field, row = fields[0], rows[0]
+        state = row.get("state", {})
+        observed = state.get("ashby_saved_file") or {}
+        server = observed.get("saved_file") or {}
+        if (not valid_proof(proof, url=url, field=field, key=key,
+                            sha256=document["sha256"], receipt=document.get("receipt"))
+                or row.get("ref") != field.get("ref") or state.get("invalid") is not False
+                or state.get("receipt") != proof["upload_receipt"]
+                or state.get("value") != proof["filename"]
+                or observed.get("other_invalid") is not False
+                or observed.get("field_path") != proof["field_path"]
+                or observed.get("displayed_filename") != proof["filename"]
+                or server.get("typename") != "File" or server.get("id") != proof["saved_file_id"]
+                or server.get("filename") != proof["filename"]):
+            raise ValueError("Current upload proof does not match the retained server attachment")
+
+
+async def submit_reviewed(job, packet_path, answers, *, authorization, attempt, cli=None, reviewer=None):
+    """Submit once, after durable ownership and two fresh retained-value checks.
+
+    ``answers`` contains selected_role, documents (verified booklet records), and
+    filled (the packet's exact approved records). Caller owns queue/tracking;
+    receipt.json is persisted before a confirmed success is returned.
+    """
+    client = cli or AuthorizedSubmissionCLI(timeout=120)
+    attempt_path = Path(attempt)
+    authorization_path = authorization["authorization_path"]
+    context = {"authorization_path": authorization_path, "attempt_path": str(attempt_path)}
+    national = answers.get("approved_phone_national", {})
+    if national.get("status") == "verified" and national.get("source") and isinstance(national.get("value"), str):
+        context["approved_phone_national"] = national
+    try:
+        authority, persisted, packet = load_gate(authorization_path, attempt_path)
+        if (str(private_file(packet_path)) != persisted["packet_path"]
+                or job.get("dedupe_hash") != persisted["job_hash"]
+                or boards.job_identity(job.get("url")) != boards.job_identity(persisted["application_url"])):
+            raise ValueError("Requested job differs from the durable attempt")
+        documents = document_manifest(answers, packet)
+        located = await client.invoke("locate", **context)
+        if located.get("state"):
+            return located
+        client.target_id, client.expected_url = located["target_id"], persisted["application_url"]
+        # Explicit current-form approval preserves the native uploads. Fresh
+        # browser File hashes verify bytes without replacing the candidate's file.
+        current_form = authority.get("approval_mode") == "candidate_current_form"
+        for key, document in ({} if current_form else documents).items():
+            snapshot = await client.invoke("check", **context, documents=documents, require_receipts=False)
+            if snapshot.get("state"):
+                return snapshot
+            matches = [f for f in snapshot["fields"] if f.get("answer_key") == key]
+            if len(matches) != 1:
+                raise ValueError("Approved document control is unavailable or ambiguous")
+            result = await client.invoke("document", **context, field=matches[0], value=document["path"])
+            if not result.get("verified") or not result.get("upload_receipt"):
+                raise ValueError("Approved document upload was not verified")
+            document["receipt"] = result["upload_receipt"]
+            proof_required = any(row.get("key") == key and row.get("ashby_upload_proof")
+                                 for row in packet.get("filled", [])) or any(
+                row.get("answer_key") == key and isinstance(row.get("state", {}).get("ashby_saved_file"), dict)
+                for row in snapshot.get("retained", []))
+            _retain_upload_proof(document, result, matches[0], key, persisted["application_url"],
+                                 required=proof_required)
+        if authority.get("require_independent_review") is True or any(
+                document.get("ashby_upload_proof") for document in documents.values()):
+            snapshot = await client.invoke("check", **context, documents=documents)
+            if snapshot.get("state"):
+                return snapshot
+            _check_upload_proofs(documents, snapshot, persisted["application_url"])
+        if authority.get("require_independent_review") is True:
+            if reviewer is None:
+                from .application_review import review_application
+                reviewer = review_application
+            independent = await asyncio.to_thread(reviewer, job, {**answers, "documents": documents,
+                                                                 "approved_documents": answers["documents"],
+                                                                 "application_inventory": packet.get("review_inventory"),
+                                                                 "review_mode": authority.get("approval_mode", "portal"),
+                                                                 "user_blank_acknowledgments": authority.get("acknowledged_blank_refs", [])}, snapshot, authorization)
+            from .application_review import snapshot_digest
+            snapshot_sha = snapshot_digest(snapshot)
+            if (not isinstance(independent, dict) or independent.get("verdict") != "approved"
+                    or independent.get("reviewer") != "codex-readonly"
+                    or independent.get("source") != "independent_application_review"
+                    or independent.get("issues") != []
+                    or independent.get("snapshot_sha256") != snapshot_sha
+                    or independent.get("authorization_id") != persisted["authorization_id"]
+                    or independent.get("job_hash") != persisted["job_hash"]):
+                return {"state": "waiting_review", "reason": "Independent application review did not approve the retained draft", "click_started": False}
+            reviewed_book = private_file(independent.get("approved_book_path", ""))
+            if hashlib.sha256(reviewed_book.read_bytes()).hexdigest() != independent.get("approved_book_sha256"):
+                return {"state": "waiting_review", "reason": "Candidate answers changed during independent review", "click_started": False}
+            # The runtime verifies this exact snapshot again inside the browser
+            # lane. A reviewer never receives authority to alter field values.
+            token = {"verdict": "approved", "source": "independent_application_review",
+                     "job_hash": persisted["job_hash"], "authorization_id": persisted["authorization_id"],
+                     "packet_sha256": persisted["packet_sha256"], "audit_sha256": audit_hash(snapshot, documents),
+                     "approved_book_path": str(reviewed_book), "approved_book_sha256": independent["approved_book_sha256"],
+                     "review": independent, "reviewed_at": datetime.now(timezone.utc).isoformat()}
+            write_private(attempt_path.parent / "independent-review.json", token)
+        from .historical import refresh_before_submit
+        history = await asyncio.to_thread(refresh_before_submit, job)
+        if history.get("state") == "blocked":
+            return {"state": "waiting_review", "reason": "A manually recorded prior application blocks submission",
+                    "click_started": False, "retryable": False, "history_match": history["match"]}
+        if history.get("state") not in {"clear", "disabled"}:
+            return {"state": "waiting_review", "reason": "Fresh spreadsheet history is temporarily unavailable",
+                    "click_started": False, "retryable": True, "error_kind": "application_history_transport"}
+        return await client.invoke("submit", **context, documents=documents)
+    except Exception as exc:
+        # Transport failure after a durable click is uncertain, never replayable.
+        try:
+            safe_attempt = private_file(attempt_path)
+            latest = json.loads(safe_attempt.read_text())
+        except (OSError, ValueError, TypeError):
+            safe_attempt, latest = None, {}
+        transport = isinstance(exc, RuntimeError) and str(exc) in {
+            "Browser Use CLI failed; run browser-use --doctor",
+            "Browser Use CLI returned no structured result",
+        }
+        result = {"state": "uncertain" if latest.get("runtime_click_started") else "waiting_review",
+                  "reason": "Authorized submission needs technical review",
+                  "error_kind": "browser_transport" if transport else type(exc).__name__,
+                  "click_started": bool(latest.get("runtime_click_started")),
+                  "retryable": not latest.get("runtime_click_started") and (
+                      transport or isinstance(exc, (TimeoutError, ConnectionError, FileNotFoundError))
+                      or isinstance(exc, BrowserOperationError) and exc.retryable)}
+        if safe_attempt:
+            write_private(attempt_path.parent / "runtime-error.json", result)
+        return result

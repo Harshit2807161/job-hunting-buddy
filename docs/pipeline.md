@@ -1,0 +1,400 @@
+# Phase 1 → application preparation
+
+Phase 1 records each new posting in `application_sources` before collapsing
+duplicate email cards or marking postings notified. This includes direct ATS
+links, LinkedIn/Indeed wrappers, and employer career pages. Seed and dry-run
+polls do not schedule source checks. Recording a source check does not start a
+browser; scheduled execution requires `JHB_APPLICATIONS_ENABLED=1`.
+
+The source checker calls the official Playwright MCP server over stdio, in an
+isolated headless browser. It records redirects, job-specific application links,
+and embedded forms, and classifies supported ATS host patterns. It neither
+attaches to the candidate's Chrome nor inherits candidate sessions. A page
+requiring login, a verification challenge, or a choice among several different
+application identities produces a handoff. Unsupported boards are classified
+and recorded, but never dispatched to Phase 2. A closed posting is not prepared.
+
+An exact official application identity enters the queue only when its board's
+preparation adapter is enabled in `jhb/applications/boards.py`. Preparation and
+submission capabilities are separate. Previously resolved sources can be routed
+once when a reviewed adapter becomes available. Canonical identities deduplicate
+wrappers and tracking links; submitted and uncertain attempts stay protected.
+
+The standing eligibility filter excludes jobs requiring a particular citizenship,
+security clearance, TS/SCI, or a polygraph, including the ability to obtain or
+maintain those requirements. It also excludes explicit employer refusals of
+present or future visa sponsorship and explicit F-1/OPT exclusions. A CPT-only
+restriction does not exclude a post-graduation OPT application. Generic
+work authorization, sponsorship questions and offers of sponsorship are not
+denials. These are the candidate's standing employment restrictions, not a
+blanket ban on descriptions containing the words "visa" or "citizenship".
+
+Phase 1 checks available titles, structured sponsorship metadata and descriptions;
+the preparation worker verifies the exact job's official Greenhouse description
+before accessing the candidate browser. Other reviewed boards require an exact
+official description with identity, timestamp, and content-hash provenance.
+The verified official title is screened too, even when the feed title is generic.
+MCP extraction preserves headings and bullets so a required clearance bullet
+cannot disappear into a neighboring preferred-qualification section. Label/value
+pairs such as "Visa Sponsorship: Not available" remain meaningful.
+When both JSON-LD and an exact-title, exact-job rendered description are observed,
+the rendered employment/qualification sections are retained too. A shorter
+metadata description cannot hide those requirements; conflicting observed job
+containers require a description handoff.
+
+Newly resolved links and replayed classifications are screened before they can
+dispatch a Phase 2 worker. Disqualified sources become `filtered`; preparation
+queue claims also recheck legacy pending jobs without consuming browser attempts.
+Filtered/skipped jobs cannot be reactivated by routine queue resumption. The
+dashboard opening records expose the matched requirement and category, including
+restrictions discovered only in the official description. Unknown or unavailable
+descriptions remain explicit handoffs and do not count as eligibility approval.
+Matched requirements and their source
+are saved privately, and the application becomes `skipped`. Answering an older
+question or resuming the queue cannot reactivate that state. This filter does not
+infer the candidate's citizenship and does not exclude optional citizenship
+questions, disclosure requirements, generic work authorization, background
+checks, explicitly unnecessary clearances, or citizenship with a permanent-
+resident alternative.
+
+An unavailable or empty official description prevents preparation. Stale,
+mismatched, or altered cached descriptions trigger one bounded official fetch,
+then an isolated Playwright MCP inspection of the exact job if the page requires
+JavaScript. Fresh valid source or private context snapshots are reused without
+another fetch. Verified description, country metadata, advertised salary ranges,
+and inspection provenance are saved privately before the filler starts. The
+eligibility check consumes that same snapshot. Fresh descriptions must match
+the exact official identity, content hash, and retrieval timestamp.
+
+Closed jobs become `skipped`; mismatched or unverifiable descriptions become an
+`unsupported` technical handoff. Site authentication and challenges remain
+explicit source access handoffs. Transport failures use the existing finite
+three-attempt retry budget. These outcomes contain no candidate question, and
+no candidate application tab is opened or filled. Evidence is available in the
+job's private `source-refresh.json` and `public-job-context.json`.
+Older zero-field `waiting_input` packets caused solely by job-description
+verification are reconsidered once, in a bounded batch with attempts preserved.
+Any actual question, observed field, approval, submission attempt, confirmation,
+or terminal evidence excludes the packet from this technical migration.
+
+Greenhouse preparation uses the registered Browser Use skill and its official
+CLI, default daemon, and existing local Chrome CDP endpoint. Independent job
+planners can run concurrently. Every browser operation holds the shared browser
+lane and selects that job's tab before acting. Tabs containing drafts remain
+open. Final submission is guarded; review, unknown answers, login, and CAPTCHA
+are explicit stopping points. Google SSO is the default authentication mode;
+the reviewed Broadridge-only exception permits reuse of its existing OS-keyring
+credential when the answer booklet contains the verified exact-origin approval.
+Workday remains disabled until its live wizard validation is complete.
+
+An explicit, verified rejection of an exact job stops both direct preparation
+and submission of an older review draft. Resume-backed role-fit review follows
+official-description verification, before any browser action. When independent
+semantic review is enabled, submission requires an eligible independent verdict
+bound to the current job description, selected role, and verified career evidence.
+The fit screen rejects unsupported core specializations and genuinely senior
+roles. A small shortfall against a generic junior experience requirement can
+proceed to personal portal review when relevant transferable skills are strong;
+the exact gap remains in `packet.role_fit.review_notes`. Verified availability
+helps assess a degree expected before the proposed start, while that degree
+remains expected in candidate records and factual application answers. This
+does not satisfy a requirement to hold the degree immediately. Policy changes
+invalidate older semantic fit decisions.
+
+The manager writes `private/pipeline-status.json` with its current stage and
+aggregate queue counts, refreshing every 15 seconds during asynchronous work.
+The dashboard treats a heartbeat older than 45 seconds as stale. Quarantined
+repairs produce a blocked status; manager contention preserves the active
+manager's heartbeat. Candidate values, question text, and credentials are absent.
+Status reports distinguish parked factual questions, exhausted capacity,
+inactive submission authority, and an empty ready backlog. They do not create
+progress or change queue states. Technical failures remain local and notices
+retain their durable deduplication and delivery backoff.
+An explicit `private/pipeline-pause.json` takes precedence over repair quarantine
+and reports `paused`. Scheduled managers never expire or remove this pause;
+resumption requires the user's instruction after the reported defect is resolved.
+
+The two browser tools have separate access paths. Source discovery uses the
+official **Playwright MCP** protocol in a temporary isolated browser. Application
+filling uses `skills/browser-use/SKILL.md` and the official **Browser Use CLI**
+against the existing local session. The application planner uses
+`skills/prepare-greenhouse/SKILL.md`; cover-letter preparation follows
+`skills/tailor-cover-letter/SKILL.md` and the candidate's local source skill.
+Direct Playwright application filling is confined to synthetic fixtures.
+
+## Run and inspect
+
+Install the pinned official MCP server and its local Chromium dependency before
+running source checks. Node.js with `npm` is required; candidate credentials are
+not passed to the server.
+
+```sh
+npm ci
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" npx playwright install chromium
+# Separate Chromium revision for Python fixture tests:
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-browsers" .venv/bin/python -m playwright install chromium
+```
+
+```sh
+# Read-only isolated source classification; no application filling.
+.venv/bin/python -m jhb.applications.cli classify 'https://example.com/careers/job'
+
+# Explicitly run a bounded batch using approved field/key bindings.
+.venv/bin/python -m jhb.applications.cli pipeline
+
+# Same opt-in gate used by the launchd wrapper.
+.venv/bin/python -m jhb.applications.cli pipeline --if-enabled
+
+.venv/bin/python -m jhb.applications.cli source-status
+.venv/bin/python -m jhb.applications.cli status
+.venv/bin/python -m jhb.applications.cli questions
+
+# Interactive answers are saved privately rather than passed on the command line.
+.venv/bin/python -m jhb.applications.cli answer-question q_QUESTION_ID
+
+# Retry a source after its handoff has been resolved.
+.venv/bin/python -m jhb.applications.cli source-resume SOURCE_JOB_HASH
+```
+
+New application questions are employer scoped, carry their exact wording and
+form context, and are deduplicated across applications. CLI answers automatically
+resume eligible `waiting_input` jobs once their required pending questions are
+answered. An explicit portal edit of a reviewed draft also revokes its old
+approval and queues a fresh filling pass using a durable, snapshot-bound edit
+intent. Saving an answer during a pause still queues that work; workers remain
+idle until the pause clears. Neither path requeues running, submitted, skipped
+or uncertain applications. A refilled draft needs a new portal review and approval.
+`--decline` is available for optional questions; required questions require an
+explicit answer. Verification codes and credentials do not enter this ledger.
+
+## Reusing approved answers
+
+Explicit user answers and standing preferences take priority over imported
+profile observations. The worker reuses approved identity, work authorization,
+sponsorship, disclosure, and role-specific resume facts through exact field
+aliases. New wording without an approved binding remains a question handoff.
+Employer-specific certifications stay employer scoped; an answer for one
+employer does not authorize another employer's consent.
+
+The private booklet can also carry explicit standing rules for relocation,
+office/HQ willingness, career-fair contact, and preferred name. Their application
+is restricted to supported question templates. Preferred first name can remain
+blank when optional and use the approved first name when required. A career-fair
+contact rule can select `N/A` when available; it cannot invent a person's name.
+
+Salary expectations use the arithmetic midpoint of one recognized advertised
+annual USD base salary range. When no range is recognized, the worker uses the
+user's approved annual fallback. Multiple distinct ranges require a location or
+range decision; hourly, foreign-currency and total-compensation text is excluded
+from range extraction. Salary values and their evidence remain private.
+
+School answers use original verified education records, with an explicit rule
+to reuse those facts for supported institution-specific screening questions.
+Institution matching normalizes punctuation and uses exact names or an approved
+alias; it does not substitute a different campus. Employer catalog mappings such
+as `Other` never replace the actual institution in the booklet or resume.
+
+Private evidence and notifications live in `private/source-checks`,
+`private/applications`, and `private/notifications`. Review-ready drafts and new
+required questions use the configured recipient when `JHB_APPLICATION_EMAIL=1`.
+Technical failures and optional questions remain local. Sustained source access
+blocks produce one grouped digest after an hour. Delivery keys persist across
+worker restarts; category-wide email backoff starts at five minutes and grows to
+six hours, so newly discovered jobs cannot bypass a failing mail channel.
+Failed email delivery retries independently of browser preparation. The pending question outbox reflects the current private ledger,
+including earlier batches and questions that have since been answered.
+
+## Scheduled limits and recovery
+
+`run_poll.sh` executes Phase 1 in its existing conda environment, then invokes
+the pipeline in `.venv`. The existing launchd agent runs this wrapper every
+15 minutes. Its logs are ignored local files under `data`.
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `JHB_SOURCE_BATCH_SIZE` | 3 | Source checks per cycle |
+| `JHB_APPLICATION_BATCH_SIZE` | 3 | Application preparations per cycle |
+| `JHB_PIPELINE_CONCURRENCY` | 2 | Independent source checks / job planners |
+| `JHB_MAX_ACTIVE_DRAFTS` | 10 | Capacity for running and handoff drafts |
+| `JHB_SOURCE_TIMEOUT_SECONDS` | 90 | Source check budget |
+| `JHB_APPLICATION_TIMEOUT_SECONDS` | 600 | Application preparation budget |
+
+Work exceeding a batch or draft limit stays queued. One manager lock prevents
+overlapping cron and manual workers. Claims have leases; expired claims recover,
+and repeated crashed claims stop after three attempts. Transient source errors
+use bounded exponential backoff. Classified application transport/mechanics
+failures retry after five minutes, then ten minutes, with at most three preparation
+attempts. Generic validation errors do not qualify for automatic recovery.
+Review and verification handoffs do not retry
+without explicit intervention. Closing or submitting a draft manually does not
+automatically change its ledger state; update the recorded state before reusing
+capacity. Record actual submission evidence with `confirm-submission` rather than
+changing a draft state based on a click. The pipeline preserves unfinished
+drafts and user tabs. Bounded cleanup can close only proven worker-created
+read-only sources or positively confirmed
+applications with matching receipt evidence; see
+[browser-tab-lifecycle.md](browser-tab-lifecycle.md). A matching URL alone never
+establishes ownership or authorizes closure.
+
+If a user answers a question while a worker still holds an older booklet
+snapshot, the newer explicit answer is preserved. Once all current required
+questions have answers, that job queues a fresh pass in the next bounded cycle.
+An incompatible answer stays at a question handoff rather than retrying forever.
+
+## Final step: submission tracking
+
+The current workflow stops every application at review. With
+`JHB_REQUIRE_PORTAL_APPROVAL=1`, scheduled dispatch consumes only that exact
+draft's explicit Approve action in the local portal. The portal lists all
+discovered application questions, selected resume, approved documents, and
+final screenshot. Optional blank answers require explicit acknowledgment.
+Each approval expires after two hours and binds those exact facts and artifacts;
+changes require a fresh review. Independent review and two live retained-answer
+audits still precede the terminal click. Old blanket authorizations are rejected
+under this policy. Durable attempts prevent blind repetition after an uncertain
+click, and positive receipts precede spreadsheet updates.
+
+Hourly reports use a separate, verified finite
+`private/progress-report-window.json` and `JHB_HOURLY_PROGRESS_EMAIL=1`.
+Reporting consent has no submission privilege and can remain active while
+preparation is paused. One durable message is delivered per hourly bucket,
+including zero-confirmation updates; failed delivery uses the existing backoff.
+Reports count captured positive receipts and verified sheet deliveries, and
+distinguish them from drafts and uncertain attempts.
+
+After a separately authorized submission succeeds, the agent records the exact
+job's private success receipt with `confirm-submission`. This durably records the
+submission and automatically synchronizes the configured existing spreadsheet.
+The final stage of subsequent pipeline cycles reconciles pending sheet deliveries;
+it never submits drafts or infers success from preparation results.
+
+Sheet logging preserves the existing eight-column format, checks canonical ATS
+job links and legacy employer/role/date entries, and verifies every appended row.
+An uncertain write stays pending for read-only reconciliation instead of being
+blindly repeated. Configuration, credentials and receipts remain private; CI
+uses synthetic tool responses. See [submission-tracking.md](submission-tracking.md)
+for configuration and receipt recording commands.
+
+Historical manual confirmations are reconciled before source replay, enqueue,
+and queue claim. The tracker verifies the exact ATS identity and saved positive
+receipt digest before restoring a `submitted` application row. If an exact
+historical confirmation exists but its private receipt is missing, changed, or
+unverifiable, that job is held as `submission_uncertain` for technical review;
+it cannot become a fresh application. Existing submitted rows remain submitted.
+This reconciliation opens no browser and performs no spreadsheet append.
+
+## Validation boundaries
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python -m jhb.applications.cli demo
+```
+
+The demo uses synthetic Phase 1 postings, an injected source classifier, and
+actual guarded browser filling against local fixture forms. It includes a
+direct Greenhouse link, a simulated LinkedIn-to-Greenhouse result, and a Lever
+posting; two Greenhouse jobs reveal one new employer question, an explicit
+synthetic answer resumes both, and both stop at review with zero submissions.
+This proves the orchestration and handoff flow. It is not evidence of live MCP
+resolution or live Browser Use behavior. Dedicated MCP fixture tests exercise
+the actual MCP protocol; live site results must be reported separately.
+
+Synthetic eligibility regressions cover required citizenship and clearance,
+negated requirements, disclosure-only questions, permanent-resident alternatives,
+unavailable descriptions, and proof that excluded jobs never construct a browser
+client. A separate live-description audit excluded a previously prepared draft
+whose official posting required citizenship and clearance; its tab remained
+untouched. Another audited draft passed the filter and reached review using the
+Browser Use CLI. No submission is part of these checks. Phase 1's `main` and
+`v0.1.0` baseline remain unchanged; these changes belong to the Phase 2 branch.
+
+### Live source validation, 2026-10-02
+
+These results come from actual isolated Playwright MCP source checks. Ignored
+`private/source-checks/live-validation-*.json` files retain navigation and form
+evidence. No candidate profile or browser session was supplied to these checks.
+
+| Source | Observed result |
+| --- | --- |
+| OneImaging | Rendered individual hosted Greenhouse job confirmed |
+| Parallel Systems | Old board URL redirected to the confirmed hosted Greenhouse job |
+| Block employer career page | Rendered embedded Greenhouse application confirmed after navigation |
+| Pinterest | Cloudflare verification handoff; no target guessed |
+| RTX via Recruitics | Actual employer redirect, then Cloudflare verification handoff |
+| Cedars-Sinai via LinkedIn | Observed Apply destination required login |
+| Atlas Energy Solutions | Individual Greenhouse job redirected to its board error page; recorded closed |
+
+Separately, live Browser Use CLI preparation on OneImaging and Parallel Systems
+verified known contact fields, disclosures, and role-specific resume uploads,
+then stopped for new employer questions. Subsequent answers and tailored
+documents are being validated in fresh passes. These source checks do not
+establish that every new draft is review-ready or that blocked sites can be
+completed autonomously.
+
+The final connected live check prepared Block's embedded form through the same
+scheduled source queue and Browser Use worker. After explicit new answers, its
+required and optional controls were accounted for and the draft stopped at
+review. Two hosted Greenhouse drafts also reached review. A scheduled Phase 1
+poll independently found two fresh postings: Workday was recorded without
+preparation, and an unresolved LinkedIn destination became a source handoff.
+Private candidate artifacts contain the field audits and notifications.
+
+Public Greenhouse job metadata supplies country context only when the location
+explicitly names one country. City-only or ambiguous locations remain unknown;
+a US authorization answer cannot substitute for a Canadian one. Standing
+compliance, signature, prior-employer and education-catalog preferences require
+explicit candidate authorization. They are not enabled by the example profile.
+
+GitHub's Ubuntu runner restricts Chromium user namespaces. CI explicitly opts
+into a sandbox override for the trusted localhost-only MCP fixture. The same
+flag has no effect on live source checks; those retain MCP's browser sandbox.
+
+
+### Reliability validation, 2026-10-04
+
+The live repair reproduced a slow planning call, inactive-tab input timeouts,
+interrupted dropdown overlays, and a screenshot failure after a job redirect.
+Known answer bindings now avoid model calls. The CLI can wake its exact owned
+job after a frozen-page/native-scroll timeout, close an interrupted dropdown
+without changing its selection, and recheck retained values. A redirected job
+is handed off before further filling. Screenshots are optional evidence and
+cannot turn a valid preparation result into a file-not-found failure.
+
+One existing Phase 1 Greenhouse job completed through the real connected
+pipeline using the local Browser Use CLI: 23 retained fields/documents, zero
+missing required answers, a working final submit control, and its submission
+guard still enabled. The attached resume was re-uploaded from the approved SDE
+source with a matching SHA-256 and retained in the review packet even after
+Greenhouse removed its file input. SMTP accepted its review notification; the
+delivery key was persisted. Two recovered jobs redirected outside supported individual forms
+and stopped as unsupported. A fresh scheduled wrapper cycle exited successfully
+without another review or failure email. Exact job and browser evidence stay in
+ignored private artifacts. These live checks are separate from synthetic tests.
+
+Additional fixture regressions cover minimal launchd PATH, persistent mail
+backoff and concurrent delivery claims, retry leases and attempt limits,
+required clearance headings, export-control alternatives, menu/geometry recovery,
+and salary-category retention. They do not prove universal ATS compatibility or
+CAPTCHA solving. Unsupported controls and genuinely unknown factual answers
+remain explicit handoffs; the pipeline never changes an answer to improve
+screening results. Default scheduled preparation stops before submission; the
+separate expiring overnight policy requires explicit verified authorization.
+
+
+A subsequent live education audit verified four indexed year fields across two
+education records. Chrome exposes these numeric inputs as AX `spinbutton`
+controls. The adapter now recognizes that role and extracts calendar years only
+from verified valid original dates, retaining expected-graduation provenance.
+Malformed dates and different record indexes cannot receive a guessed year.
+
+When the worker-owned browser tab limit is reached before opening a job, the
+application or authenticated LinkedIn source claim waits for 60 seconds without
+spending a technical retry attempt. The manager only refunds its still-current,
+untouched claim; completed, changed, or submitted claims stay protected. This
+capacity wait creates no candidate question or failure email and is not counted
+as a prepared application. Reusing an existing exact-job tab remains allowed.
+Within each candidate-priority tier, due capacity waits follow other due work,
+so refunded attempt-zero claims do not repeatedly displace repairable drafts.
+Explicitly handpicked jobs still lead; ordinary untried jobs retain priority
+over technical retries. Retry budgets, backoff, and all claim screening remain
+unchanged, and queue order never establishes browser-tab ownership.

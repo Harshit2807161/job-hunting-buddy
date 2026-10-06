@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bindings", "next_ref", "reason"],
+  "properties": {
+    "bindings": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["ref", "answer_key"],
+        "properties": {"ref": {"type": "string"}, "answer_key": {"type": "string"}}
+      }
+    },
+    "next_ref": {"type": ["string", "null"]},
+    "reason": {"type": "string"}
+  }
+}

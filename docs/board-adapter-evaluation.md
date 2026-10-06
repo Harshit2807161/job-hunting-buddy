@@ -1,0 +1,374 @@
+# Job-board adapter evaluation
+
+Derived custom answers with complete observed-question provenance now require
+the unchanged owned question during planning and Greenhouse native filling.
+Synthetic Chromium regressions cover changed work-authorization qualifiers,
+trial terms, candidate-only wording and choices before answer selection.
+Legacy records without this provenance retain their existing policies. This
+guard has fixture evidence only; it is not additional live adapter validation.
+
+The discovery pipeline classifies multiple ATS providers. The current registry
+enables preparation for Greenhouse, Ashby, Workable and Lever. Workday, LinkedIn
+Easy Apply, SmartRecruiters and iCIMS retain explicit limitations and are not
+enabled for generic preparation. Submission capability is separate and currently
+limited to Greenhouse/Ashby, with mandatory candidate approval through the local
+portal. Phase 1's `main` and `v0.1.0` remain unchanged on the Phase 2 branch.
+
+The historical manual evaluations below establish observed mechanics, not current
+submission authority. Live validation exposed a required-only completeness defect:
+substantive optional questions could remain blank. Every new review packet now
+includes the complete question inventory; the portal requires individual blank
+acknowledgments and an explicit per-draft Approve click. See
+[portal-review.md](portal-review.md). Exact incident evidence remains private.
+
+Ashby benefits from a shared adapter: four employers share the same field
+and selection patterns. Workable needs a smaller layer for its uploads and
+repeaters. Workday needs tenant authentication and a separate wizard/repeater
+adapter. The existing CLI transport, browser lane and tab scope
+are useful across all three; each board does not need its own browser controller.
+
+## Live evidence
+
+Public HTTP reads verified each Ashby posting's exact UUID, title and complete
+description from the page's embedded `window.__appData.posting` object. The four
+descriptions contained no excluded citizenship, clearance or polygraph
+requirement. No authenticated API endpoint was guessed. Official company pages
+supplied company-specific prose material.
+
+Live application interaction used the registered Browser Use CLI, its default
+daemon and the existing local Chrome session. Each operation held the shared
+browser lane and selected the owned job target. Source-check evidence from
+isolated Playwright MCP browsers is distinct from candidate-browser filling.
+Screenshots, DOM/AX snapshots, source hashes and field audits remain ignored
+private artifacts; candidate answers are not reproduced here.
+
+| Posting | Board | Observed mechanics and outcome |
+| --- | --- | --- |
+| [EvenUp — Software Engineer (New Grad), AI Entities](https://jobs.ashbyhq.com/evenup/19eb22cd-9540-49ed-840b-6422714413b5) | Ashby | Required text, country combobox, sponsorship/office radios, Yes/No employment buttons and PDF resume. All 13 required groups retained; guarded draft ready for review. |
+| [Clay — Early Career Software Engineer](https://jobs.ashbyhq.com/claylabs/16778e12-31cb-4ca1-a321-7f629a7cf273/application) | Ashby | Adapter found 21 fields including a classless graduation radio group and optional surveys. All eight required fields retained in guarded live validation. |
+| [Harvey — Software Engineer, New Grad (2027)](https://jobs.ashbyhq.com/harvey/b0996df6-6b6e-42be-a4f9-0084536068f5/application) | Ashby | Adapter found 23 fields and verified all 22 required fields, including a selected location autocomplete, checkbox groups and team matching. The calendar requires an explicitly approved exact date; it was handled through observed calendar controls. |
+| [Parasail — Software Engineer, Forward Deploy — New Graduate '27](https://jobs.ashbyhq.com/parasail/da595923-4e35-4ba1-875d-383276069cf7) | Ashby | Actual form requires only name, email and PDF resume. All three retained; guarded draft ready for review. No graduation-screening question appeared, so posting eligibility remains a review consideration. |
+| [Texas Sports Academy — AI Operations Associate](https://apply.workable.com/texas-sports-academy-main/j/FC4151F98F/) | Workable | Public application, native contact fields, separate resume/avatar uploads, text cover letter and education/experience repeaters. Manual preparation reached review with no submission; reusable Workable execution remains incomplete. |
+| [Broadridge — Junior Full Stack Software Engineer (Hybrid)](https://broadridge.wd5.myworkdayjobs.com/careers/job/Newark-NJ/Full-Stack-Software-Engineer--Hybrid-_JR1086388) | Workday | No Google option appeared. An explicitly approved tenant account unlocked the wizard. Live CLI validation reached guarded Review, step six after authentication, with contact information, resume, education/employment repeaters, all nine application questions, voluntary disclosures and self-identification retained. No final submission occurred. |
+
+These results cover the observed postings and controls. A ready draft means
+reviewable field completion, not a submitted application or a guarantee of
+employer eligibility. No final-submit action is part of the evaluation.
+
+## What should be shared, and what needs an adapter
+
+| Layer | Recommendation and evidence |
+| --- | --- |
+| Browser access, tab selection, locking, guarded terminal actions | Share across boards. An inactive local tab accepted inserted text while silently ignoring native mouse/keyboard actions on Ashby and Workable. Activating only the owned target under the lane resolved the demonstrated failures. This is not an ATS-specific defect. |
+| Click targets and fixed overlays | Share hit-testing and bounded geometry checks. Workday's sticky footer covered a settled target center; viewport-valid coordinates alone did not establish that the intended control received the click. Scroll and reacquire the exact visible option before clicking. |
+| Ashby field observation and execution | Keep a small shared Ashby adapter. Question-level requiredness, plain-wrapper radio fieldsets, grouped Yes/No buttons, ID-less controls and separate resume/autofill inputs recur across employers. Exact-job scope prevents one form's observation from being used on another. |
+| Employer questions and conditional fields | Map observed wording to approved booklet answers; do not create a separate company adapter for each question. Re-observe after selections reveal new controls. Unknown factual or preference decisions are handoffs. |
+| Workable native inputs | Reuse native text, file and button actions with observed Workable labels and attributes. Resume and avatar file inputs must be distinguished; dynamic input IDs alone are insufficient. |
+| Workable education/experience repeaters | Add reusable repeater support before automatic dispatch. Live manual work identified Add/Update/Edit controls, month/year dates, current-employment controls and duplicate summary textarea IDs. A future graduation date rejected by the picker was retained truthfully in degree text and the original resume, with the end-date field left blank. |
+| Workday tenant access and multi-page state | A dedicated adapter is justified by the seven-step wizard, saved repeaters, degree/major catalogs, date spinbuttons and sticky-footer occlusion. The observed tenant has no Google route; explicit site-specific instructions govern account creation. Catalog values must be checked after the popup closes; month/year controls cannot be treated as ordinary textboxes. |
+
+The observed Workday wizard returned a transient server error while advancing.
+One site-directed refresh recovered the saved contact and experience sections,
+but questionnaire selections reset. Recovery must re-audit each restored section
+and re-enter only previously verified answers before continuing. The final Review
+page confirmed retained values across all sections. No Skills field, education
+date controls, sexual-orientation question or separate cover-letter upload was
+offered on this tenant's observed form; other tenants may differ.
+
+The current `ManualATSCLI` scopes Ashby, Workable and Lever around the shared CLI
+transport and is wired into the scheduled dispatcher. Location autocomplete
+uses an approved query and exact choice scoped to that field's visible listbox;
+the selected value and closed popup are verified. Calendars and new repeater
+shapes still need observed, bounded handling. Existing Greenhouse
+behavior remains restricted to Greenhouse application identities.
+
+## Answer and document preparation
+
+Use the board-specific preparation skill selected by `boards.py` for each
+scheduled or manually queued job. Match
+the selected resume to the actual role responsibilities, preserving its source
+path and hash. An AI-related engineering team does not automatically require the
+ML resume. Match skills to both the job description and selected resume; include
+other relevant skills or courses only from verified candidate records.
+
+Reuse approved standing preferences and known factual answers. Keep university,
+GPA and graduation status consistent within the same education record; never
+change an expected degree into a completed one to fit an employer's wording.
+Retain any mismatch between a posting's eligibility criteria and the original
+resume as a review note.
+
+Subjective answers follow the user's shared writing guidance: brief first-person
+language, concrete company/product reasons, and a short verified experience
+connection when useful. Experience questions use relevant source facts, with
+AWS before AnyFeast when both fit. Company claims come from official sources;
+assistant drafts are suggestions, not candidate profile facts. New required
+authorization, sponsorship, demographic, consent or preference decisions need
+the candidate's answer.
+
+## Synthetic validation versus live validation
+
+`tests/applications/test_manual_ats.py` uses synthetic HTML and a synthetic PDF.
+It checks exact-job scope, grouped Yes/No state, hidden radio/checkbox labels,
+ID-less inputs, resume/autofill separation, changed-field rejection, bounded
+foreground behavior and submission guards. All browser requests are fulfilled
+from fixture HTML. Async portaled autocomplete tests reject missing, ambiguous,
+uncommitted and unrelated-listbox choices. This covers the observed pattern,
+not every custom combobox implementation.
+
+```sh
+.venv/bin/python -m pytest -q tests/applications/test_manual_ats.py
+.venv/bin/python -m pytest -q
+```
+
+These fixture checks do not exercise the Browser Use daemon, candidate session,
+tenant authentication or real upload service. Live evidence in the table above
+comes from actual CLI calls and retained controls on the stated sites. No claim
+of autonomous CAPTCHA handling or general Workday/Workable support follows from
+either type of validation.
+
+SuccessFactors classification recognizes the observed NS2 host
+`career-hcm03.ns2cloud.com` and exact `/sfcareer/jobreqcareer` route with one
+positive decimal `jobId` and one explicit `company` tenant. The canonical URL
+retains both identity parameters; duplicate/case-variant parameters, unsafe URLs,
+listing pages and redirects to another tenant or requisition do not yield an
+application route. Tenant case is preserved because case equivalence is not
+established. Other SuccessFactors datacenters remain outside this exact identity
+registry until their URL rules are reviewed. Preparation and submission are
+disabled, and no preparation skill is implied by this classification. The local
+isolated-source evidence establishes the destination URL; synthetic tests cover
+identity parsing and routing, not a live SuccessFactors form fill. SAP's own
+[NS2 SuccessFactors documentation](https://userapps.support.sap.com/sap/support/knowledge/en/3763492)
+identifies the hosting family, and its
+[job-posting URL documentation](https://userapps.support.sap.com/sap/support/knowledge/en/2852775)
+describes the tenant/requisition URL shape.
+
+UKG currently has identity-only support for the observed
+`wbdus.rec.pro.ukg.net` host. Exact tenant, JobBoard UUID, and opportunity UUID
+are part of the durable identity. The observed `OpportunityDetail` and
+`OpportunityApply` routes share that identity; canonical links point to the
+detail route. Only one exact `opportunityId` query parameter is accepted;
+malformed, duplicate, case-variant and additional parameters are rejected.
+Tenant case is preserved, while UUIDs normalize to lowercase. Other UKG hosts,
+login pages and board listings are not individual application identities.
+
+The evaluated UKG form exposes resume upload, contact fields, optional
+experience/education/skills sections, employer screening questions and voluntary
+disclosures. Public HTTP provides an exact opportunity object and complete JD
+inside the detail page, even when its visible HTML is a JavaScript shell.
+Interactive preparation uses the existing guarded Browser Use CLI tab.
+Identity support allows a private manual packet to appear in the portal; it
+neither validates a reusable UKG preparation adapter nor enables final
+submission. Both registry capabilities remain disabled. Synthetic tests verify
+identity parsing, draft visibility and rejection by the submission capability
+gate; they are not live UKG filling or submission validation.
+
+The separately evaluated interactive flow is documented in
+[UKG preparation observations](ukg-interactive-preparation.md), including import
+corrections, saved-record audits and the remaining terminal-action limitations.
+
+An observed Ashby residence control returned no results when reopened with its
+already-selected full display label. Preparation may query the verified state
+and recommit only the exact original state/country option from the control's
+owned native results. It must verify the actual selection, not merely restore
+typed display text. A bounded native-catalog receipt is tied to the same input,
+job, question and retained value; edits or changed question context invalidate
+it. Later read-only inspection can use that evidence without clearing a saved
+selection. Synthetic fixtures cover successful native recommit, absent choices,
+foreign listboxes, changed descriptions and edit invalidation. A separate live
+CLI retry verified retained selection and the completed question inventory.
+
+The standard Ashby contact Location field also needs a native catalog selection;
+a stored city string alone cannot fill it. Its adapter now derives a query and
+one exact city/state/country option from verified application-location preferences,
+independently of the mailing city. This is restricted to the observed system field
+with no help or its exact “City, State, and Country” hint. Synthetic Chromium fixtures cover restored blank
+queries, already-filled values, wrong-country and ambiguous choices, native
+commit, final retained-answer audit, and changed-context rejection. Live validation
+of this contact-field extension remains pending; the residence retry above does
+not establish it.
+
+The observed current-or-in-progress education group has its own native school
+catalog. A scoped projection uses one verified current record for institution,
+degree and major, and the candidate's explicitly sourced exact expected graduation
+day. It requires the observed instruction accepting study in progress and does
+not infer a completed qualification. Synthetic fixtures cover owned catalog
+commit, absent/ambiguous schools, changed instructions, original record validation
+and date consistency. Its live validation also remains pending.
+
+A subsequent live Browser Use read inspected ten owned school options and restored
+the original blank query. The native markup separates institution name, country
+and domain; the accessibility label concatenates all three. The adapter now uses
+those structured spans for exact institution matching, keeps the complete option
+label for the click, and retains a scoped native-commit proof when the input only
+displays the primary name. Synthetic fixtures cover this final audit, proof
+invalidation after edits, and wrong-campus/Extension/ambiguous option rejection.
+That live read establishes the option shape, not a completed live school fill.
+
+The Browser Use transport currently counts waiting for the shared browser lane
+inside its operation timeout. An explicit interactive batch can allow more
+bounded queue time while retaining the same lock, exact-tab scope and process
+cleanup. A timeout before inspection does not establish an authentication or
+candidate-answer problem. Do not respond by opening duplicate tabs, bypassing
+the browser lock or changing final-submission deadlines.
+
+Demonstrated native-choice retention failures can now receive one automatic
+foreground retry on the same already-owned target. Fresh question/option,
+URL, target and submission-guard checks run inside the CLI transport lane before
+activation and again before filling. Synthetic fixtures exercise native hidden
+radios and grouped Yes/No buttons, lock ownership, successful recovery, a second
+failure, changed questions/targets/guards, and visible verification challenges.
+Generic transport failures, missing catalog choices and terminal actions remain
+outside this repair. Prior interactive foreground recoveries motivated this
+change; they do not establish live validation of the new automatic path.
+
+### Read-only source tabs and application capacity
+
+A local classification run exposed six retained LinkedIn source listings using
+all worker-owned tab slots. Those pages had login or unsupported outcomes, so
+the older cleanup rule requiring a verified external job description never ran.
+The result was browser-capacity backpressure before application preparation.
+
+Owned source creation is now limited to two tabs (and below the total cap),
+reserving capacity for application drafts. Exact existing-source reuse remains
+available. A read-only classification records a private no-click witness in the
+ownership ledger. Terminal classification can close that exact source only
+with a fresh SHA-bound private proof and matching target, URL and job identity.
+A fresh DOM inspection preserves changed inputs, passwords, uploads, dialogs,
+application forms and verification challenges. User tabs and unclaimed popups
+remain untouched. Native Apply routing invalidates earlier read-only evidence.
+Capacity deferral remains separate from a failed application attempt.
+
+Synthetic Chromium fixtures cover terminal/login/unsupported outcomes and
+preservation guards. This establishes no live candidate-tab closure or live
+submission evidence; existing stale source tabs require fresh classification.
+
+### Ashby restored attachment identity
+
+Live read-only inspection found that Ashby restores server-saved resumes as an
+opaque `savedFile.id` and filename while leaving the native FileList empty. The
+observed upload component has Replace/Delete controls, without a file download
+or preview action. An ephemeral input receipt alone cannot survive that remount.
+
+New upload proof waits for a changed, exact owned server ID after verifying the
+native browser File bytes against the approved PDF hash. The private packet
+retains the ID, hash, job identity, field path/ref and semantic document key.
+Read-only review accepts a restored file only when every binding still matches;
+same-named replacement IDs and source-byte changes invalidate it. Existing
+uploads without this proof are not retrospectively verified by their filename.
+
+Synthetic Chromium tests cover upload/save/remount, packet serialization,
+same-name replacement, field/job mismatches, failed saves, and preservation of
+validation errors. The new correlation mechanism has not yet been validated
+with a live upload. No live documents were replaced or applications submitted
+during this repair.
+
+### Greenhouse upload control replacement
+
+A live Nuro draft retained 17 current controls while its preparation inventory
+contained 18 entries: the original cover-letter input and its replacement
+`uploaded:Cover Letter` appeared as separate questions. The normal submission
+guard stopped before any click. Read-only Browser Use CLI audits verified all
+17 retained answers, both native upload receipts and the actual local PDF hashes.
+
+Inventory construction now reconciles this standard Greenhouse transition only
+with a single current owner, matching document provenance/content/receipt, and
+an older native-input observation. Original retained rows remain audit history.
+The native input reports empty description metadata while its uploaded display
+omits those properties; only that empty, untruncated difference is normalized.
+Instructions, ambiguous ownership, changed bytes or receipts remain blockers.
+
+Synthetic worker and inventory tests cover the observed transition and its
+negative cases. Live evidence establishes unchanged form values and documents;
+it does not establish a subsequent successful submission. A refreshed packet
+still requires a new independent review and both retained-answer audits.
+
+### Native pre-click scroll recovery
+
+A live Greenhouse preparation stalled in `DOM.scrollIntoViewIfNeeded` while
+bringing the owned education Add another control into view, before any click.
+Greenhouse and Ashby now recover only this proven native scroll timeout: check
+exact target, job and active submit guard; activate once; repeat those checks;
+retry the identical backend-node scroll once; then retain normal fresh geometry
+and obstruction checks. Existing native click failures are never replayed.
+
+Synthetic Chromium fixtures cover actual education-row creation and hidden
+Ashby radio selection, unchanged successful actions without activation, a second
+timeout, detached controls, target/job/guard changes, and an unknown delivered
+mouse-press outcome. The new automatic recovery still requires live validation;
+the motivating failure is not evidence of a successful live repair.
+
+The same live Astera form later exposed a separate education postcondition
+failure: native input completed without creating the row on a hidden tab. A
+bounded manual activation followed by a fresh row-count check and native action
+retained exactly two rows. The production education operation now performs that
+recovery once, checking for delayed rows before any repeat action. Synthetic
+fixtures cover delayed rendering without duplicate rows, changed targets and
+guards, visible-page failure, extra unexpected rows and unknown click delivery.
+The generalized automatic postcondition recovery has fixture validation; the
+successful live evidence belongs to the preceding scoped manual recovery.
+
+### Workday modern My Information controls
+
+An explicitly authorized LSEG account was verified through its official email
+and reused in the exact application tab. Read-only live inspection of My
+Information found plain-text inputs marked `data-uxi-widget-type=selectinput`,
+selected chips in a matching multiselect list, phone input typed as text, and
+requiredness on the owned previous-employment radio wrapper. The adapter now
+recognizes these control shapes. Synthetic browser checks cover committed chip
+reuse, foreign-list rejection, uncommitted queries, invalid values, native new
+selection with other selected-item lists present, national phone binding, and
+required radio ownership. Account activation and first-page inspection do not
+validate completion or submission of the Workday wizard. Both global capability
+flags remain disabled; later pages and final retained-document auditing remain
+to be validated independently.
+
+### Ashby queryless autocomplete catalogs
+
+Read-only Browser Use CLI inspection under the browser-lane lock found a closed
+graduation-month combobox with a separate toggle. Its component opens the popup
+through typing, the toggle or keyboard navigation; input clicks alone do not
+explicitly open it. The describe path previously sent ArrowDown only for an
+existing search query. It now also uses that native opening step for Ashby
+catalogs without a query, preserving the owned-listbox and unchanged-value checks.
+
+Synthetic Chromium fixtures cover blank and retained values, no input or commit
+events, rejection of absent or ambiguous listbox ownership, and exact-job scope.
+The initial live inspection did not open or select any choices. A later guarded
+normal-worker run completed the month/year catalog inspections, then stopped at
+the separate university catalog. Complete application preparation remains
+unverified for this case.
+
+### Ashby large university catalogs
+
+An official Browser Use CLI diagnostic found a uniquely ARIA-owned university
+list containing 928 options. Generic describe returned its bounded first 50 and
+correctly marked the result truncated; the verified original institution was
+present beyond that slice. All 19 observed controls and retained documents were
+unchanged after inspection. This establishes a catalog-size mechanic, not a
+missing candidate fact or permission to use Other.
+
+For the exact observed current/most-recent-university prompt, the preparation
+and retained-answer audit paths now pass the verified institution as a scoped
+native search query. Only a complete unambiguous filtered result may supply the
+option. Existing selections are inspected without retyping, and a blank input
+is restored before planning. Month/year/university Ashby combobox answers retain
+both the native search query and exact observed choice; native select answers
+remain scalar.
+
+Synthetic Chromium tests cover finding an institution beyond the first 50,
+query restoration, missing/duplicate/unowned results, retained manual edits,
+changed source facts and final read-only audit binding. The repaired scoped
+query was subsequently validated through the official CLI, and a normal worker
+retained 14 fields. Re-inspection then exposed a distinct behavior: reopening the
+committed university showed all 928 owned options rather than filtering by the
+displayed text. The matching institution was uniquely observed outside the first
+50 and was the only option marked selected. Every retained answer stayed intact.
+
+The retained-university descriptor now returns that freshly observed native
+selected option only when its exact label equals the unchanged valid display,
+the verified institution matches uniquely under punctuation-only normalization,
+and no other native option is selected. It neither types a query nor creates a
+commit marker. The generic catalog limit is unchanged. Synthetic fixtures cover
+the full reopened list and reject missing/duplicate/ambiguous matches, display-only
+values, manual changes and invalid controls. This follow-up still requires live
+validation; the earlier 14-field preparation is not evidence of its success.

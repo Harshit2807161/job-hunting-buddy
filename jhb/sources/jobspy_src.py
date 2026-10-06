@@ -17,6 +17,7 @@ import re
 import time
 
 from .. import config
+from ..eligibility import preliminary
 from ..matching import classify_title, is_us_location
 from ..store import Job
 
@@ -73,6 +74,7 @@ def poll(conn) -> tuple[list[Job], str]:
                         "location": str(r.get("location") or "").strip(),
                         "url": str(r.get("job_url_direct") or r.get("job_url") or ""),
                         "date_posted": str(r.get("date_posted") or ""),
+                        "description": str(r.get("description") or ""),
                     })
             except Exception as e:
                 fail += 1
@@ -83,6 +85,8 @@ def poll(conn) -> tuple[list[Job], str]:
     out, seen = [], set()
     for r in rows:
         if _blocked(r["company"]):
+            continue
+        if preliminary(r):
             continue
         m = classify_title(r["title"])
         if not m.any:
@@ -107,6 +111,6 @@ def poll(conn) -> tuple[list[Job], str]:
             source=f"jobspy:{r['site']}", source_id=r["id"], company=r["company"],
             title=r["title"], url=r["url"], locations=[loc] if loc else [],
             role_classes=m.classes, date_posted=ts,
-            raw={"site": r["site"]},
+            raw={"site": r["site"], "description": r.get("description", "")},
         ))
     return out, f"queries ok={ok} fail={fail} raw={len(rows)} kept={len(out)}"

@@ -11,10 +11,15 @@ dependencies = ["requests>=2.32,<3"]
 
 [project.optional-dependencies]
 discovery = ["python-jobspy==1.1.82"]
-dev = ["pytest>=8,<10"]
+dev = ["pytest>=8,<10", "jsonschema==4.26.0", "psutil==7.2.2"]
+browser-tests = ["playwright==1.63.0", "pypdf==6.16.2", "keyring==25.7.0", "pillow==12.3.0"]
+applications = ["browser-use==0.13.10", "playwright==1.63.0", "pypdf==6.16.2", "jsonschema==4.26.0", "keyring==25.7.0", "psutil==7.2.2"]
+dashboard = ["fastapi==0.142.2", "uvicorn==0.54.0", "httpx==0.28.1"]
 
 [project.scripts]
 jhb-poll = "jhb.poll:main"
+jhb-apply = "jhb.applications.cli:main"
+jhb-dashboard = "jhb.dashboard:main"
 
 [tool.setuptools.packages.find]
 include = ["jhb*"]

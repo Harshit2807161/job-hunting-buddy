@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {"type": "string", "enum": ["approved", "reject", "handoff"]},
+    "issues": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "properties": {"field_ref": {"type": "string"}, "reason": {"type": "string"}},
+      "required": ["field_ref", "reason"]}},
+    "summary": {"type": "string"},
+    "blank_decisions": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "properties": {"field_ref": {"type": "string"},
+        "decision": {"type": "string", "enum": ["leave_blank", "needs_answer"]},
+        "reason": {"type": "string", "minLength": 1}},
+      "required": ["field_ref", "decision", "reason"]}}
+  },
+  "required": ["verdict", "issues", "summary", "blank_decisions"]
+}

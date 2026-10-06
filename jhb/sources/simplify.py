@@ -16,6 +16,7 @@ import json
 import requests
 
 from .. import config
+from ..eligibility import preliminary
 from ..matching import classify_title, listing_in_us
 from ..store import Job
 
@@ -43,6 +44,8 @@ def to_jobs(listings: list[dict]) -> list[Job]:
         if r.get("sponsorship") in config.EXCLUDE_SPONSORSHIP:
             continue
         if config.REQUIRE_US and not listing_in_us(r.get("locations")):
+            continue
+        if preliminary({"title": r.get("title", ""), "raw": r}):
             continue
         m = classify_title(r.get("title", ""))
         if not m.any:

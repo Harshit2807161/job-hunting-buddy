@@ -75,6 +75,10 @@ BURST_THRESHOLD = 25
 
 def load_dotenv(path: pathlib.Path | None = None) -> None:
     """Minimal .env loader -- avoids a python-dotenv dependency."""
+    # A supervisor validation child must not reload live runtime authority.
+    # Explicit paths remain available for synthetic dotenv fixtures.
+    if path is None and os.environ.get("JHB_VALIDATION_ISOLATED") == "1":
+        return
     p = path or (ROOT / ".env")
     if not p.exists():
         return

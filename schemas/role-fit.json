@@ -1,0 +1,11 @@
+{
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "verdict": {"type": "string", "enum": ["fit", "not_fit", "needs_review"]},
+    "reason": {"type": "string"},
+    "matched_requirements": {"type": "array", "items": {"type": "string"}},
+    "unsupported_core_requirements": {"type": "array", "items": {"type": "string"}},
+    "review_notes": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+  },
+  "required": ["verdict", "reason", "matched_requirements", "unsupported_core_requirements", "review_notes"]
+}
