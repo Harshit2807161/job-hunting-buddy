@@ -387,14 +387,35 @@ def _signal_owned_group(process, sig):
             raise
 
 
-def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
+def child_environment(*, validation=False):
+    """Validation receives tooling settings, never the local application session.
+
+    Repair commands retain their existing subscribed Codex/CLI environment.
+    The per-command ownership token is added independently by bounded().
+    """
+    if not validation:
+        return {key: value for key, value in os.environ.items()
+                if key not in {"OPENAI_API_KEY", "CODEX_API_KEY"}}
+    tooling = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
+               "LANG", "LANGUAGE", "TZ", "VIRTUAL_ENV", "PYTHONHASHSEED",
+               "PLAYWRIGHT_BROWSERS_PATH", "SSL_CERT_FILE", "SSL_CERT_DIR",
+               "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"}
+    environment = {key: value for key, value in os.environ.items()
+                   if key in tooling or re.fullmatch(r"LC_[A-Z_]+", key)}
+    if os.environ.get("JHB_MCP_FIXTURE_NO_SANDBOX") == "1":
+        environment["JHB_MCP_FIXTURE_NO_SANDBOX"] = "1"
+    environment.update(CI="1", JHB_VALIDATION_ISOLATED="1")
+    return environment
+
+
+def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None, validation=False):
     """Reap the owned subprocess group before releasing repair/browser locks."""
     prefix = _private(prefix)
     paths = [prefix.with_suffix(".jsonl"), prefix.with_suffix(".stderr")]
     for path in paths:
         path.touch(mode=0o600, exist_ok=True)
         path.chmod(0o600)
-    environment = {key: value for key, value in os.environ.items() if key not in {"OPENAI_API_KEY", "CODEX_API_KEY"}}
+    environment = child_environment(validation=validation)
     from .owned_processes import OwnedProcesses, TOKEN_ENV
     process = owned = None
     token = secrets.token_hex(32)
@@ -468,7 +489,7 @@ def validate(auth, run=bounded, *, auth_path=None):
         if remaining <= 0:
             return {"state": "authorization_ended"}
         result = run(command, directory() / f"validation-{time.time_ns()}-{index}", auth,
-                     min(allowance, remaining), auth_path=auth_path)
+                     min(allowance, remaining), auth_path=auth_path, validation=True)
         if result["state"] != "complete":
             return result
     return {"state": "complete"}
