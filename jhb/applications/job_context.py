@@ -223,6 +223,26 @@ def country_context(text):
     return found[0]
 
 
+def _us_region_location(label):
+    """An exact city/full-state posting location establishes US jurisdiction.
+
+    Bare cities, abbreviations such as CA, and Georgia (also a country) do not.
+    This is job metadata, never the candidate's mailing address or JD prose.
+    """
+    if not isinstance(label, str):
+        return None
+    match = re.fullmatch(r"([A-Za-z][A-Za-z .'-]+),\s*([A-Za-z ]+?)(?:\s*\((?:HQ|Headquarters)\))?", label.strip(), re.I)
+    if not match or match[1].strip().casefold() in {"remote", "anywhere", "multiple locations"}:
+        return None
+    states = set(("Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|"
+                  "Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|"
+                  "Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|"
+                  "New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|"
+                  "Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|"
+                  "Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia").casefold().split("|"))
+    return "United States" if match[2].strip().casefold() in states else None
+
+
 def greenhouse_country(data):
     """Use attached offices only when every explicit country agrees.
 
@@ -234,13 +254,13 @@ def greenhouse_country(data):
     if not isinstance(location, dict) or not isinstance(location.get("name", ""), str):
         return None
     label = location.get("name", "")
-    primary = country_context(label)
+    primary = country_context(label) or _us_region_location(label)
     offices = data.get("offices")
     if offices is None or offices == []:
         return primary
     if not isinstance(offices, list) or any(not isinstance(office, dict) for office in offices):
         return None
-    countries = {country_context(office.get("location")) for office in offices}
+    countries = {country_context(office.get("location")) or _us_region_location(office.get("location")) for office in offices}
     if None in countries or len(countries) != 1:
         return None
     country = next(iter(countries))
