@@ -1020,6 +1020,9 @@ def test_dashboard_cli_loads_same_local_runtime_gate_as_workers(tmp_path, monkey
     import uvicorn
     from jhb import dashboard
     monkeypatch.setattr(config, 'ROOT', tmp_path)
+    # Exercise ordinary CLI loading from this synthetic project, even when the
+    # suite itself runs inside the supervisor's isolated validation child.
+    monkeypatch.delenv('JHB_VALIDATION_ISOLATED', raising=False)
     (tmp_path / '.env').write_text('JHB_OVERNIGHT_SUBMISSIONS_ENABLED=1\n')
     if existing is None:
         monkeypatch.delenv('JHB_OVERNIGHT_SUBMISSIONS_ENABLED', raising=False)
