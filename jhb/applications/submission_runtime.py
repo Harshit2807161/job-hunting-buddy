@@ -28,6 +28,22 @@ TERMINAL = re.compile(r"(?:submit(?: application)?|apply(?: now)?|send applicati
 CONFIRMATION = re.compile(r"your application (?:was successfully submitted|has been submitted successfully|has been received)|(?:we have|we've|we) received your application|thank you for applying", re.I)
 
 
+def _same_native_number(actual, expected):
+    """HTML number serialization may drop .0; compare exact finite decimals."""
+    from decimal import Decimal, InvalidOperation
+    if not isinstance(actual, str) or type(expected) not in {str, int, float}:
+        return False
+    expected = str(expected)
+    number = r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+    if any(len(value) > 128 or not re.fullmatch(number, value) for value in (actual, expected)):
+        return False
+    try:
+        first, second = Decimal(actual), Decimal(expected)
+        return first.is_finite() and second.is_finite() and first == second
+    except InvalidOperation:
+        return False
+
+
 def _native_form_submit(helpers, button, approved_refs, board="greenhouse"):
     """Read the exact AX node's native form owner, never infer from its label."""
     if not str(button.get("ref", "")).isdigit() or int(button["ref"]) <= 0:
@@ -359,7 +375,9 @@ def _checks(request, helpers, packet, attempt):
             valid = (all(len(options) == 1 for options in choices)
                      and (kind != "radio" or len(choices) == 1)
                      and sorted(state.get("selected", [])) == sorted(options[0] for options in choices))
-        elif kind in {"text", "email", "tel", "textarea", "url", "number", "date"}:
+        elif kind == "number":
+            valid = _same_native_number(state["value"], value)
+        elif kind in {"text", "email", "tel", "textarea", "url", "date"}:
             actual, expected = state["value"], str(value)
             if board == "ashby" and kind == "text" and field.get("calendar_format") == "MM/DD/YYYY":
                 from .calendar_dates import retained_day
