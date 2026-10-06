@@ -414,7 +414,9 @@ def dispatch(request, helpers):
                         # potentially committed selection. Native ArrowDown
                         # opens the owned catalog; it never presses Enter.
                         click(expr)
-                        if existing_query:
+                        # Ashby's queryless catalogs may only focus on click;
+                        # ArrowDown opens their owned popup without selecting.
+                        if existing_query or scope["board"] == "ashby":
                             cdp("DOM.focus", backendNodeId=backend(expr))
                             if not js("document.activeElement===("+expr+")"):
                                 raise ValueError("Observed manual input did not receive focus")

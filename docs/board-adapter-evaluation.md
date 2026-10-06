@@ -314,3 +314,18 @@ required radio ownership. Account activation and first-page inspection do not
 validate completion or submission of the Workday wizard. Both global capability
 flags remain disabled; later pages and final retained-document auditing remain
 to be validated independently.
+
+### Ashby queryless autocomplete catalogs
+
+Read-only Browser Use CLI inspection under the browser-lane lock found a closed
+graduation-month combobox with a separate toggle. Its component opens the popup
+through typing, the toggle or keyboard navigation; input clicks alone do not
+explicitly open it. The describe path previously sent ArrowDown only for an
+existing search query. It now also uses that native opening step for Ashby
+catalogs without a query, preserving the owned-listbox and unchanged-value checks.
+
+Synthetic Chromium fixtures cover blank and retained values, no input or commit
+events, rejection of absent or ambiguous listbox ownership, and exact-job scope.
+The live inspection did not open or select any choices. The repaired operation
+has fixture validation only; successful live catalog inspection and subsequent
+application preparation remain unverified.

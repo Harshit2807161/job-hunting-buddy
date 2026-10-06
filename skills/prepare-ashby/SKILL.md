@@ -44,6 +44,13 @@ from the resume-autofill uploader. For a custom country or location combobox,
 inspect and select an exact observed option; a typed search string is not a
 verified selection. Unsupported controls require a bounded manual handoff.
 
+Some autocomplete inputs only focus on click, including queryless graduation
+catalogs. The describe operation must focus the exact owned input and send native
+ArrowDown to open its popup. Inspect only its uniquely ARIA-linked listbox, then
+Escape and verify the original value is unchanged. Do not type a query or press
+Enter to inspect these catalogs. Missing or ambiguous ownership remains a
+mechanical failure; choices from another dropdown cannot supply the catalog.
+
 Choice matching must preserve the observed question context through both filling
 and final audit. A verified No for Veteran Status can match the corresponding
 nonprotected-veteran option; that wording is not a generic synonym for No in
