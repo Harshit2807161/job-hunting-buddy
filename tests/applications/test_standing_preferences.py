@@ -157,6 +157,10 @@ def test_exact_employer_office_answer_overrides_general_willingness():
 
 
 def test_run_job_injects_only_explicit_standing_policies_and_uses_application_city(monkeypatch, tmp_path):
+    from jhb.applications import resume_selection
+    monkeypatch.setattr(resume_selection, "select", lambda *args, **kwargs: {
+        "state": "selected", "selected_role": "sde", "reason": "Synthetic upstream document comparison",
+        "selected_resume_sha256": "0" * 64})
     job = {"dedupe_hash": "b" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123", "role_classes": "swe"}
     import hashlib, time
     job["verified_job_description"] = {"status": "verified", "source_url": "https://boards-api.greenhouse.io/v1/boards/example/jobs/123",
@@ -198,6 +202,10 @@ def test_run_job_injects_only_explicit_standing_policies_and_uses_application_ci
 
 
 def test_school_attendance_uses_original_verified_catalog_not_dropdown_other_mapping(monkeypatch, tmp_path):
+    from jhb.applications import resume_selection
+    monkeypatch.setattr(resume_selection, "select", lambda *args, **kwargs: {
+        "state": "selected", "selected_role": "sde", "reason": "Synthetic upstream document comparison",
+        "selected_resume_sha256": "0" * 64})
     job = {"dedupe_hash": "a" * 64, "url": "https://job-boards.greenhouse.io/example/jobs/123", "role_classes": "swe"}
     import hashlib, time
     job["verified_job_description"] = {"status": "verified", "source_url": "https://boards-api.greenhouse.io/v1/boards/example/jobs/123",

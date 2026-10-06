@@ -696,7 +696,7 @@ async def _run_job(job, book, *, planner_name="codex", demo_origin=None, headles
     owner_token = _FEEDBACK_ATTEMPT.get()
     attempt_token = owner_token or uuid.uuid4().hex
     from . import resume_selection
-    selected_role = resume_selection.explicit_role(book, job) or role or (role_for_job(job) if demo_origin else None)
+    selected_role = resume_selection.explicit_role(book, job) or ((role or role_for_job(job)) if demo_origin else None)
     selection = None
     job = {**job, "selected_role": selected_role}
     if not re.fullmatch(r"[a-f0-9]{64}", job["dedupe_hash"]): raise ValueError("Invalid job identity")

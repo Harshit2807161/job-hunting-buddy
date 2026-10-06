@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from jhb import config, eligibility
-from jhb.applications import attempt_feedback, capture, cli_browser, pipeline, role_fit, worker
+from jhb.applications import attempt_feedback, capture, cli_browser, pipeline, resume_selection, role_fit, worker
 
 
 def candidate_job(number=1):
@@ -27,6 +27,9 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(eligibility, "assess_job", lambda job: {
         "state": "eligible", "reason": "Synthetic eligibility", "policy": "synthetic"})
     monkeypatch.setattr(role_fit, "assess", lambda *args: {"state": "eligible", "reason": "Synthetic role fit"})
+    monkeypatch.setattr(resume_selection, "select", lambda *args, **kwargs: {
+        "state": "selected", "selected_role": "sde", "reason": "Synthetic upstream document comparison",
+        "selected_resume_sha256": "0" * 64})
     monkeypatch.setattr(cli_browser, "BrowserUseCLI", SimpleNamespace)
     async def fresh(*args, **kwargs):
         return {"verified": True}

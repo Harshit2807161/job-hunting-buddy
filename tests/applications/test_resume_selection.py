@@ -111,6 +111,32 @@ def test_candidate_choice_wins_but_agent_prior_guess_does_not(context):
     assert result['selected_role']=='ml' and result['method']=='explicit_candidate_choice'
 
 
+def test_internal_role_argument_is_not_candidate_authority(context):
+    job,book=context;calls=[]
+    result=selection.select(job,book,requested_role='sde',execute=executor('ml',calls))
+    assert result['selected_role']=='ml' and result['method']=='independent_codex'
+    assert calls[0]['non_authoritative_caller_hint']=='sde'
+
+
+def test_candidate_choice_provenance_remains_bound_until_submission(context):
+    job,book=context;key=job['dedupe_hash']
+    book['job_role_answers']={key:booklet.answer('ml',{'provider':'explicit_candidate_resume_choice','job_hash':key})}
+    result=selection.select(job,book)
+    packet={'job':job,'selected_role':'ml','resume_selection':result}
+    assert selection.packet_role(job,packet,book)=='ml'
+    book['job_role_answers'][key]['source']['provider']='agent_exact_job_resume_selection'
+    with pytest.raises(ValueError,match='no longer verified'):selection.packet_role(job,packet,book)
+
+
+@pytest.mark.parametrize('source', [{'method':'agent_exact_job_resume_selection'},
+    {'provider':'explicit_candidate_resume_choice','job_hash':'0'*64},
+    {'provider':'explicit user question response','contexts':['0'*64]}])
+def test_override_flag_or_other_job_response_does_not_establish_candidate_choice(context,source):
+    job,book=context;book['job_role_answers']={job['dedupe_hash']:{**booklet.answer('sde',source),'user_override':True}}
+    result=selection.select(job,book,execute=executor('ml',[]))
+    assert result['selected_role']=='ml' and result['method']=='independent_codex'
+
+
 @pytest.mark.parametrize('mode',['missing_pdf','unverified_source','empty_pdf','malformed_pdf','wrong_job','unverified_description'])
 def test_incomplete_source_evidence_never_falls_back_to_title_or_tag(context,mode):
     job,book=context
@@ -167,7 +193,7 @@ def test_submission_rejects_changed_selection_evidence_without_relabeling_packet
     if change=='selected_pdf':pdf(Path(book['roles']['ml']['documents.resume']['value']),ML+' New content.')
     if change=='other_pdf':pdf(Path(book['roles']['sde']['documents.resume']['value']),SDE+' New content.')
     if change=='description':change_jd(job,'Now build frontend application interfaces.')
-    if change=='candidate_choice':book['job_role_answers']={job['dedupe_hash']:{**booklet.answer('sde','Explicit candidate selection'),'user_override':True}}
+    if change=='candidate_choice':book['job_role_answers']={job['dedupe_hash']:{**booklet.answer('sde',{'provider':'explicit_candidate_resume_choice'}),'user_override':True}}
     if change=='cross_job':job['dedupe_hash']='0'*64
     if change=='selection_role':packet['resume_selection']['selected_role']='sde';original=copy.deepcopy(packet)
     with pytest.raises(ValueError):selection.packet_role(job,packet,book)

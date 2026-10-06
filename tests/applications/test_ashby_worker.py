@@ -1,6 +1,7 @@
 """Selected-role preparation routing with synthetic CLI observations only."""
 import asyncio
 import base64
+import hashlib
 import json
 
 import pytest
@@ -14,7 +15,7 @@ URL='https://jobs.ashbyhq.com/example/11111111-2222-3333-4444-555555555555'
 @pytest.mark.parametrize('unknown',[False,True])
 def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_path,unknown):
     from jhb import eligibility
-    from jhb.applications import role_fit
+    from jhb.applications import role_fit, resume_selection
     monkeypatch.setattr(eligibility,'assess_job',lambda job:{'state':'eligible','reason':'Synthetic verified JD','policy':'synthetic'})
     fit = {'state':'eligible','reason':'Synthetic role-fit dependency',
            'review_notes':['Two-year preference exceeds documented experience; review this minor gap.']}
@@ -41,6 +42,9 @@ def test_worker_routes_exact_ashby_job_role_and_unknown_handoff(monkeypatch,tmp_
     monkeypatch.setattr(manual_ats,'ManualATSCLI',FixtureCLI)
     sde=tmp_path/'sde.pdf';sde.write_bytes(b'%PDF-synthetic')
     ml=tmp_path/'ml.pdf';ml.write_bytes(b'%PDF-synthetic-other')
+    monkeypatch.setattr(resume_selection,'select',lambda *args,**kwargs:{'state':'selected','selected_role':'sde',
+        'selected_resume_sha256':hashlib.sha256(sde.read_bytes()).hexdigest(),
+        'reason':'Synthetic independent resume-selection dependency'})
     book={'answers':{'identity.full_name':booklet.answer('Sam Example','synthetic verified identity')},
           'roles':{'sde':{'documents.resume':booklet.answer(str(sde),'selected SDE source')},
                    'ml':{'documents.resume':booklet.answer(str(ml),'selected ML source')}}}

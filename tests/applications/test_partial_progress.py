@@ -108,10 +108,13 @@ def test_checkpoint_cannot_cross_job_or_survive_a_fresh_open_failure():
 
 def test_run_job_persists_actual_partial_fills_and_never_imports_prior_packet(tmp_path, monkeypatch):
     from jhb import eligibility
-    from jhb.applications import cli_browser, role_fit
+    from jhb.applications import cli_browser, role_fit, resume_selection
     monkeypatch.setattr(config, 'ROOT', tmp_path)
     monkeypatch.setattr(eligibility, 'assess_job', lambda *a: {'state': 'eligible', 'description': 'Synthetic official description'})
     monkeypatch.setattr(role_fit, 'assess', lambda *a: {'state': 'eligible', 'reason': 'Synthetic verified fit'})
+    monkeypatch.setattr(resume_selection, 'select', lambda *args, **kwargs: {
+        'state': 'selected', 'selected_role': 'sde', 'reason': 'Synthetic upstream document comparison',
+        'selected_resume_sha256': '0' * 64})
     form = Form()
     monkeypatch.setattr(cli_browser, 'BrowserUseCLI', lambda: form)
     current_job = job()

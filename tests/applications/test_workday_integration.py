@@ -18,9 +18,12 @@ URL = "https://broadridge.wd5.myworkdayjobs.com/en-US/Careers/job/Example/Engine
 ])
 def test_worker_wires_os_store_only_for_explicit_verified_broadridge_exception(tmp_path, monkeypatch, origin, verified, source, expected):
     from jhb import eligibility
-    from jhb.applications import role_fit
+    from jhb.applications import role_fit, resume_selection
     monkeypatch.setattr(eligibility, "assess_job", lambda job: {"state": "eligible", "reason": "Synthetic verified JD", "policy": "synthetic"})
     monkeypatch.setattr(role_fit, "assess", lambda *args: {"state": "eligible", "reason": "Isolated wiring fixture"})
+    monkeypatch.setattr(resume_selection, "select", lambda *args, **kwargs: {
+        "state": "selected", "selected_role": "sde", "reason": "Synthetic upstream document comparison",
+        "selected_resume_sha256": "0" * 64})
     monkeypatch.setitem(boards.ADAPTERS["workday"], "prep_enabled", True)
     url = URL.replace(workday.BROADDRIDGE_ORIGIN, origin)
     monkeypatch.setattr(workday, "WorkdayCLI", lambda *args, **kwargs: SimpleNamespace())
