@@ -107,6 +107,12 @@ validation history or any repository change still requires the full checks;
 failed children and authority/protected-state changes cannot gain approval by
 reuse. The private validation result records `reused_validated_repository` so it
 does not claim that tests ran again, or that the diagnosed application recovered.
+This snapshot binds repository content, not installed dependencies, ignored runtime
+helpers, browser state or the operating system. The repair child is instructed to
+make repository-only changes and must not install/upgrade dependencies or modify
+ignored helpers/environment configuration. Required environment changes are a
+separate handoff. This operating constraint is not proof of arbitrary environment
+immutability or OS containment; it does not expand the repair's authority.
 
 Repair tools can start nested commands in separate sessions. The supervisor
 tracks descendants by PID and creation time while the command runs. A unique

@@ -91,7 +91,11 @@ def test_one_repair_coalesces_jobs_and_validates_before_releasing_gate(setup):
     # validation pass while the worker gate is held (checked by runner above).
     assert "focused synthetic regression tests" in calls[0][1]
     assert "Do not run the full test suite in this repair child" in calls[0][1]
-    assert "supervisor runs the single full suite" in calls[0][1]
+    assert "supervisor runs full validation for a changed or unvalidated checkout" in calls[0][1]
+    assert "already-validated repository snapshot may reuse prior validation only" in calls[0][1]
+    assert "Do not install or upgrade dependencies" in calls[0][1]
+    assert "modify ignored runtime helpers or environment" in calls[0][1]
+    assert "required environment change as a separate handoff" in calls[0][1]
     assert sum(command[-3:] == ["-m", "pytest", "-q"] for command, _ in calls) == 1
     assert len(json.loads((monitor.directory() / "health.json").read_text())["technical_issues"]) == 1
     assert json.loads((monitor.directory() / "health.json").read_text())["uncertain_submissions"] == 1
