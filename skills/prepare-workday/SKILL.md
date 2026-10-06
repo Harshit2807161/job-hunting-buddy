@@ -65,6 +65,19 @@ Observed mechanics retained in `workday_runtime.py`:
   deletion, each text event and final blur. A native focus request or click alone
   does not establish ownership. Some modern search widgets need their observed
   native open control first; a collapsed widget is not a successful search.
+- LSEG's observed remote Skills catalog keeps its results open after a selection.
+  Clicking the native Skills heading closes that popup and clears its query;
+  Escape did not. Existing chips can cover the input's center, so open the owned
+  prompt icon, verify the exact active empty input, then type the next query.
+  In this widget Enter starts the remote search when there are no selectable
+  results; never send it to a populated list as a substitute for selecting an
+  exact option. Wait for the native results, choose one unique grounded label,
+  and verify the new chip plus all prior selections before closing the popup.
+  Avoid select-all here: it was observed to move focus into the result list.
+  Preserve source-grounded catalog aliases and unresolved search results
+  privately; a nearby catalog label does not establish another skill. Verify
+  the full retained page before advancing. These observations do not establish
+  the same behavior on every Workday tenant.
 - Required radio state may be on the radio group's owned `aria-required`
   wrapper rather than each input. Do not treat these factual questions as
   optional, or copy requiredness from a neighboring group. An exact observed
