@@ -22,15 +22,16 @@ HTML = '''<form class=ashby-application-form-container><div data-field-path=univ
 <input role=combobox required aria-autocomplete=list aria-expanded=false placeholder="Start typing...">
 </div><button type=submit>Submit Application</button></form><div id=portal></div>
 <script>
-const input=document.querySelector('input');window.commits=0;window.submissions=0;window.queries=[];
+const input=document.querySelector('input');window.commits=0;window.submissions=0;window.queries=[];window.selectedSchool='';window.showAllOnReopen=false;
 window.ownership='owned';window.schools=[...Array(80)].map((_,i)=>'College '+i).concat(['Example University','Other']);
 function closeMenu(){document.querySelector('#portal').innerHTML='';input.setAttribute('aria-expanded','false');input.removeAttribute('aria-controls')}
 function openMenu(){
- const labels=window.schools.filter(s=>s.toLowerCase().includes(input.value.toLowerCase()));
+ const labels=window.showAllOnReopen?window.schools:window.schools.filter(s=>s.toLowerCase().replaceAll(',','').includes(input.value.toLowerCase().replaceAll(',','')));
  document.querySelector('#portal').innerHTML='<div role=listbox id=schools></div>';
  input.setAttribute('aria-expanded','true');input.setAttribute('aria-controls',window.ownership==='owned'?'schools':'missing');
  for(const label of labels){const option=document.createElement('div');option.setAttribute('role','option');option.textContent=label;
- option.onclick=()=>{input.value=label;window.commits++;closeMenu()};document.querySelector('#schools').append(option)}
+ option.setAttribute('aria-selected',String(window.selectedSchool===label));
+ option.onclick=()=>{input.value=label;window.selectedSchool=label;window.commits++;closeMenu()};document.querySelector('#schools').append(option)}
 }
 input.addEventListener('input',()=>{window.queries.push(input.value);openMenu()});
 input.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();openMenu()}if(e.key==='Escape'){e.preventDefault();closeMenu()}});
@@ -85,6 +86,49 @@ def test_large_owned_university_catalog_filters_beyond_fifty_and_commits(native)
     assert page.locator('input').input_value()==SCHOOL
     assert page.evaluate('[window.commits,window.submissions]')==[1,0]
     assert {k:values[k] for k in before}==before
+
+
+def commit_large_catalog(native):
+    page,call,_=native
+    page.evaluate("window.schools=[...Array(926)].map((_,i)=>'College '+i).concat(['Example, University','Other'])")
+    values=booklet.for_role(profile(),'sde');field=enrich(call,values)['fields'][0]
+    key=known_answers.enrich(field,{'url':URL},values)
+    assert call('fill',field=field,value=values[key]['value'])['verified']
+    page.evaluate('window.showAllOnReopen=true')
+    return values,field
+
+
+def test_retained_university_reads_unique_native_selected_option_beyond_fifty(native):
+    page,call,_=native;values,field=commit_large_catalog(native)
+    before=page.evaluate('[window.queries,window.commits,window.submissions]')
+    generic=call('describe',field=field)
+    assert generic['truncated'] and len(generic['choices'])==50
+    exact=call('describe',field=field,query=SCHOOL)
+    assert exact=={'type':'combobox','choices':['Example, University'],'truncated':False,
+                   'source':'owned_native_selected_university_option','observed_option_count':928}
+    observed=enrich(call,values)['fields'][0]
+    assert known_answers.enrich(observed,{'url':URL},values)
+    assert page.locator('input').input_value()=='Example, University'
+    assert page.locator('input').get_attribute('aria-expanded')=='false'
+    assert page.evaluate('[window.queries,window.commits,window.submissions]')==before
+    assert not page.locator('input').evaluate('e=>!!e.__jhbResidenceCatalog')
+
+
+@pytest.mark.parametrize('change',['missing','duplicate','alias','not_selected','other_selected','manual_value','invalid'])
+def test_retained_university_cannot_create_catalog_from_display_or_ambiguous_choices(native,change):
+    page,call,_=native;values,field=commit_large_catalog(native)
+    if change=='missing':page.evaluate("window.schools=window.schools.filter(s=>s!=='Example, University')")
+    if change=='duplicate':page.evaluate("window.schools.push('Example, University')")
+    if change=='alias':page.evaluate("window.schools.push('Example University')")
+    if change=='not_selected':page.evaluate("window.selectedSchool=''")
+    if change=='other_selected':page.evaluate("window.selectedSchool='Other'")
+    if change=='manual_value':page.locator('input').evaluate("e=>{e.value='Other'}")
+    if change=='invalid':page.locator('input').evaluate("e=>e.setAttribute('aria-invalid','true')")
+    value=page.locator('input').input_value();before=page.evaluate('[window.queries,window.commits,window.submissions]')
+    with pytest.raises(BrowserOperationError):enrich(call,values)
+    assert page.locator('input').input_value()==value
+    assert page.locator('input').get_attribute('aria-expanded')=='false'
+    assert page.evaluate('[window.queries,window.commits,window.submissions]')==before
 
 
 @pytest.mark.parametrize('question,choices,expected',[
@@ -167,13 +211,14 @@ def test_changed_facts_or_owned_context_do_not_issue_school_query(change):
         lambda *a,**kw:pytest.fail('Changed fact/context must not issue native query'))
 
 
-@pytest.mark.parametrize('change',[None,'manual_value','source_fact'])
+@pytest.mark.parametrize('change',[None,'retained_large_catalog','manual_value','source_fact'])
 def test_native_submission_audit_keeps_retention_and_fact_binding(native,tmp_path,monkeypatch,change):
     page,call,helpers=native;book=profile();job={'url':URL,'dedupe_hash':boards.application_hash(URL),
         'company':'Synthetic','title':'Software Engineer','selected_role':'sde'}
     values=booklet.for_role(book,'sde');snapshot=enrich(call,values);field=snapshot['fields'][0]
     key=known_answers.enrich(field,job,values);record=values[key]
     assert call('fill',field=field,value=record['value'])['verified']
+    if change=='retained_large_catalog':page.evaluate('window.showAllOnReopen=true')
     rows=[{'ref':field['ref'],'question':field['label'],'key':key,'value':record['value'],'source':record['source']}]
     packet={'job':job,'selected_role':'sde','filled':rows,**review_inventory.build(snapshot['fields'],rows,values,planner.key_for_field,complete=True)}
     monkeypatch.setattr(config,'ROOT',tmp_path);pp=tmp_path/'private/packet.json';bp=tmp_path/'private/book.json'
@@ -189,7 +234,7 @@ def test_native_submission_audit_keeps_retention_and_fact_binding(native,tmp_pat
         with pytest.raises(ValueError,match='facts'):submission_runtime._checks({'target_id':'fixture','documents':{}},helpers,packet,attempt)
     else:
         result=submission_runtime._checks({'target_id':'fixture','documents':{}},helpers,packet,attempt)
-        if change is None:assert not result.get('state') and result['double_check_count']==1
+        if change in {None,'retained_large_catalog'}:assert not result.get('state') and result['double_check_count']==1
         else:assert result['state']=='waiting_review' and result['click_started'] is False
     assert page.evaluate('window.commits')==commits and page.evaluate('window.queries.length')==queries
     assert page.evaluate('window.submissions')==0

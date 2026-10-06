@@ -351,5 +351,17 @@ remain scalar.
 Synthetic Chromium tests cover finding an institution beyond the first 50,
 query restoration, missing/duplicate/unowned results, retained manual edits,
 changed source facts and final read-only audit binding. The repaired scoped
-query has not yet been validated against the live widget; its search filtering
-and subsequent native commit remain live checks before another full retry.
+query was subsequently validated through the official CLI, and a normal worker
+retained 14 fields. Re-inspection then exposed a distinct behavior: reopening the
+committed university showed all 928 owned options rather than filtering by the
+displayed text. The matching institution was uniquely observed outside the first
+50 and was the only option marked selected. Every retained answer stayed intact.
+
+The retained-university descriptor now returns that freshly observed native
+selected option only when its exact label equals the unchanged valid display,
+the verified institution matches uniquely under punctuation-only normalization,
+and no other native option is selected. It neither types a query nor creates a
+commit marker. The generic catalog limit is unchanged. Synthetic fixtures cover
+the full reopened list and reject missing/duplicate/ambiguous matches, display-only
+values, manual changes and invalid controls. This follow-up still requires live
+validation; the earlier 14-field preparation is not evidence of its success.

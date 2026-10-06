@@ -59,6 +59,12 @@ then restore the original blank. Never retype an existing selection during
 inspection, raise the global catalog limit, or infer Other from a truncated or
 missing result. Keep the original institution fact and the exact observed option
 separate: native filling needs both the search query and selected choice.
+Reopening a committed university may show the whole list even with a populated
+input. A bounded descriptor may expose its one actual native selected option
+only when the owned list has a unique punctuation-equivalent match to the
+verified institution, that option alone is marked selected, and its exact label
+equals the unchanged valid display. The displayed text alone is insufficient;
+missing, duplicate or ambiguous native matches remain a mechanical handoff.
 
 Choice matching must preserve the observed question context through both filling
 and final audit. A verified No for Veteran Status can match the corresponding

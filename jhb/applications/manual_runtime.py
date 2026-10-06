@@ -410,6 +410,7 @@ def dispatch(request, helpers):
                     return {**cached,"type":"combobox","truncated":False,"source":"retained_owned_native_catalog"}
                 existing_query = query is not None and bool(before["value"])
                 details = []
+                selected_catalog = {}
                 try:
                     if query is not None and not existing_query:
                         type_text(expr, query)
@@ -433,6 +434,22 @@ def dispatch(request, helpers):
                         labels = [n.get("name", {}).get("value", "") for n in nodes]
                         if labels:
                             details = school_options(nodes)
+                            if (university and existing_query and len(labels) > 50
+                                    and before["expanded"] == "false" and not before["invalid"]):
+                                # A committed Ashby university can reopen the
+                                # entire list, ignoring its displayed value as
+                                # a query. Inspect the actual selected option;
+                                # never clear/retype the candidate's selection.
+                                matches = [n for n in nodes if option_matches(
+                                    n.get("name", {}).get("value", ""), query, field_id="school--0")]
+                                selected = [n for n in nodes if any(
+                                    p.get("name") == "selected" and p.get("value", {}).get("value") is True
+                                    for p in n.get("properties", []))]
+                                if (len(matches) == 1 and selected == matches
+                                        and matches[0].get("name", {}).get("value") == before["value"]):
+                                    selected_catalog = {"source": "owned_native_selected_university_option",
+                                                        "observed_option_count": len(labels)}
+                                    labels = [matches[0]["name"]["value"]]
                             break
                 finally:
                     if query is not None and not existing_query:
@@ -445,7 +462,7 @@ def dispatch(request, helpers):
                 if not before or not after or before["value"] != after["value"]:
                     raise ValueError("Read-only choices inspection changed the draft value")
                 return {"choices": labels[:50], "type": "combobox", "truncated": len(labels)>50,
-                        **({"choice_details": details} if details else {})}
+                        **({"choice_details": details} if details else {}), **selected_catalog}
             return {"choices": [o["label"] for o in field.get("options", [])], "type": field["type"], "truncated": False}
         value, kind = request["value"], field["type"]
         if kind in {"radio", "multiselect"}:
