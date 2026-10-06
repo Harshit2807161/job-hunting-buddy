@@ -296,7 +296,42 @@ def test_real_worker_prepares_synthetic_workday_wizard_and_hands_off_closed_revi
         assert result["state"] == "unsupported" and result.get("missing", []) == []
         assert "retained-answer and document auditing" in result["reason"]
         assert {record["key"] for record in result["filled"]} == set(values)|{"custom.fixture_disability"}
+        uploaded = next(record for record in result["filled"] if record["key"] == "documents.resume")
+        assert uploaded["document_sha256"] == __import__('hashlib').sha256(resume.read_bytes()).hexdigest()
+        assert uploaded["upload_receipt"]["sha256"] == uploaded["document_sha256"]
+        assert uploaded["upload_receipt"]["filename"] == resume.name
         assert inspect("window.continued") == 1 and inspect("window.submissions") == 0
+        assert inspect("window.__jhbGuard") is True
+
+
+@pytest.mark.parametrize("damage", ["missing", "hash", "filename", "nonce"])
+def test_workday_worker_rejects_invalid_structured_upload_proof(tmp_path, monkeypatch, damage):
+    import asyncio
+    from jhb.applications.booklet import answer
+    from jhb.applications.cli_browser import BrowserOperationError
+    from jhb.applications.planner import deterministic_plan
+    from jhb.applications.worker import prepare
+    from jhb.applications.workday import WorkdayCLI
+    resume = tmp_path / "synthetic-sde.pdf"
+    resume.write_bytes(b"%PDF-1.4\nSynthetic resume")
+    answers = {"documents.resume": answer(str(resume), "Synthetic exact-role document")}
+    html = '<h3>Resume/CV</h3><input id=resume type=file aria-label="Resume/CV"><button type=button>Submit</button>'
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        client = WorkdayCLI(URL)
+        async def invoke(operation, **payload):
+            result = call(operation, **payload)
+            if operation == "fill":
+                if damage == "missing":
+                    result.pop("upload_receipt")
+                else:
+                    key = {"hash": "sha256", "filename": "filename", "nonce": "nonce"}[damage]
+                    result["upload_receipt"][key] = "wrong-proof"
+            return result
+        monkeypatch.setattr(client, "invoke", invoke)
+        with pytest.raises(BrowserOperationError, match="field repair") as error:
+            asyncio.run(prepare(None, {"url": URL}, answers, deterministic_plan, None, cli_actions=client))
+        assert str(error.value.__cause__) == "Workday upload proof differs from the approved document binding"
+        assert client._preparation_progress["snapshot"]({"events": []})["filled"] == []
         assert inspect("window.__jhbGuard") is True
 
 

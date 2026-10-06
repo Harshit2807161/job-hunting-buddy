@@ -449,12 +449,26 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
                         document_hash = hashlib.sha256(document_bytes).hexdigest()
                 retained = await actions.fill(field, record["value"])
                 document_proof = {}
+                upload_receipt = retained.get("upload_receipt") if isinstance(retained, dict) else None
+                if document_hash and isinstance(retained, dict) and retained.get("verified") is True:
+                    from .boards import job_identity
+                    identity = job_identity(job.get("url"))
+                    if identity and identity[0] == "workday":
+                        if (not isinstance(upload_receipt, dict)
+                                or upload_receipt.get("sha256") != document_hash
+                                or upload_receipt.get("filename") != Path(str(record["value"])).name
+                                or not isinstance(upload_receipt.get("nonce"), str)
+                                or not re.fullmatch(r"[a-f0-9]{32}", upload_receipt["nonce"])):
+                            from .cli_browser import BrowserOperationError
+                            raise BrowserOperationError("Workday upload proof differs from the approved document binding")
+                        upload_receipt = {key: upload_receipt[key] for key in ("sha256", "filename", "nonce")}
                 if (document_hash and isinstance(retained, dict) and retained.get("verified") is True
-                        and isinstance(retained.get("upload_receipt"), str) and retained["upload_receipt"]):
+                        and upload_receipt and (isinstance(upload_receipt, str)
+                            or isinstance(upload_receipt, dict) and identity and identity[0] == "workday")):
                     if hashlib.sha256(Path(str(record["value"])).read_bytes()).hexdigest() != document_hash:
                         from .cli_browser import BrowserOperationError
                         raise BrowserOperationError("Approved document changed during upload", retryable=True)
-                    document_proof = {"upload_receipt": retained["upload_receipt"], "document_sha256": document_hash}
+                    document_proof = {"upload_receipt": upload_receipt, "document_sha256": document_hash}
                     if retained.get("ashby_upload_proof"):
                         from .ashby_uploads import valid_proof
                         if not valid_proof(retained["ashby_upload_proof"], url=job["url"], field=field,
