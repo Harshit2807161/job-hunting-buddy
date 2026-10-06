@@ -83,7 +83,12 @@ decision (leave_blank or needs_answer), and a concrete evidence-based reason.
 Leave a blank only when an explicit saved preference supports it, the employer
 explicitly invites that blank and verified preferences fit, or it is an inapplicable
 conditional question. Optional demographic questions may remain unanswered rather
-than inventing a sensitive fact. Never approve an omitted substantive application
+than inventing a sensitive fact. An optional social-profile URL may also remain
+blank when the verified profile supplies no URL for that service: explain that
+the link was not supplied, without asserting that no account exists or inventing
+candidate approval. Review each such field separately. This exception applies
+only to an optional social/profile link, never required contact details, employment
+facts, consent, substantive prose, or requested documents. Never approve an omitted substantive application
 answer or expected cover letter merely because the website marks it optional.
 Any needs_answer decision requires handoff. Do not treat delegated review as a
 candidate's affirmative answer, consent, or acknowledgment of an unknown fact.
