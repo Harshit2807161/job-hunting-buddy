@@ -43,6 +43,67 @@ def test_full_browser_defers_without_candidate_question_or_retry_budget_loss(set
         db.execute("UPDATE applications SET available_at=0"); db.commit()
 
 
+def test_repeated_capacity_waits_cannot_starve_due_technical_retries(setup, monkeypatch):
+    db, _ = setup
+    clock = [1000]
+    monkeypatch.setattr(queue.time, 'time', lambda: clock[0])
+    for number in range(3):
+        queue.enqueue(db, [job(f'https://job-boards.greenhouse.io/synthetic/jobs/{100+number}')])
+    capacity_hashes = {row['job_hash'] for row in db.execute('SELECT job_hash FROM applications')}
+    # Exercise actual claim/refund cycles, without resetting counters or dates.
+    for _ in range(2):
+        claimed = set()
+        for _ in range(3):
+            item = queue.claim(db)
+            claimed.add(item['job_hash'])
+            assert queue.defer_capacity(db, item)
+        assert claimed == capacity_hashes
+        clock[0] += 60
+    before = {row['job_hash']: dict(row) for row in db.execute('SELECT * FROM applications')}
+    assert all(row['attempts'] == 0 for row in before.values())
+
+    retry_job = job('https://job-boards.greenhouse.io/synthetic/jobs/999')
+    queue.enqueue(db, [retry_job])
+    initial = queue.claim(db, job_hash=queue.boards.application_hash(retry_job.url))
+    assert queue.retry(db, initial['job_hash'], error_kind='browser_mechanics', retry_seconds=0)
+    for expected_attempt in (2, 3):
+        item = queue.claim(db)
+        assert item['job_hash'] == initial['job_hash'] and item['attempts'] == expected_attempt
+        if expected_attempt == 2:
+            assert queue.retry(db, item['job_hash'], error_kind='browser_mechanics', retry_seconds=0)
+        else:
+            queue.finish(db, item['job_hash'], 'waiting_review', 'synthetic-review.html')
+    after = {row['job_hash']: dict(row) for row in db.execute('SELECT * FROM applications')
+             if row['job_hash'] in capacity_hashes}
+    assert after == before
+    # Capacity work remains eligible when no higher-throughput work is due.
+    item = queue.claim(db)
+    assert item['job_hash'] in capacity_hashes and item['attempts'] == 1
+    assert queue.defer_capacity(db, item)
+    assert db.execute('SELECT attempts FROM applications WHERE job_hash=?', (item['job_hash'],)).fetchone()[0] == 0
+
+
+def test_capacity_ordering_keeps_handpicked_priority_and_backoff(setup, monkeypatch):
+    db, _ = setup
+    clock = [1000]
+    monkeypatch.setattr(queue.time, 'time', lambda: clock[0])
+    selected = {'dedupe_hash': 'candidate-selection', 'source': 'user_selected', 'company': 'Synthetic',
+                'title': 'Engineer', 'url': 'https://job-boards.greenhouse.io/synthetic/jobs/222'}
+    queue.enqueue(db, [selected])
+    picked = queue.claim(db)
+    assert queue.defer_capacity(db, picked)
+    queue.enqueue(db, [job('https://job-boards.greenhouse.io/synthetic/jobs/333')])
+    other = queue.claim(db)
+    assert other['job_hash'] != picked['job_hash']
+    assert queue.retry(db, other['job_hash'], error_kind='browser_mechanics', retry_seconds=120)
+    clock[0] += 60
+    # Explicit candidate priority remains first, even for a capacity recheck.
+    next_item = queue.claim(db)
+    assert next_item['job_hash'] == picked['job_hash']
+    assert queue.defer_capacity(db, next_item)
+    assert queue.claim(db) is None  # Neither tier may bypass its backoff.
+
+
 def test_linkedin_capacity_preserves_source_budget_and_does_not_fall_back(setup):
     db, path = setup
     source_queue.enqueue(db, [job("https://www.linkedin.com/jobs/view/123/")])

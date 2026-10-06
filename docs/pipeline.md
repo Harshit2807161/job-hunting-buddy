@@ -393,3 +393,8 @@ spending a technical retry attempt. The manager only refunds its still-current,
 untouched claim; completed, changed, or submitted claims stay protected. This
 capacity wait creates no candidate question or failure email and is not counted
 as a prepared application. Reusing an existing exact-job tab remains allowed.
+Within each candidate-priority tier, due capacity waits follow other due work,
+so refunded attempt-zero claims do not repeatedly displace repairable drafts.
+Explicitly handpicked jobs still lead; ordinary untried jobs retain priority
+over technical retries. Retry budgets, backoff, and all claim screening remain
+unchanged, and queue order never establishes browser-tab ownership.

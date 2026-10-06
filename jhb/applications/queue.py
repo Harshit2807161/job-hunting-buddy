@@ -129,10 +129,15 @@ def claim(conn, lease_seconds=1200, *, max_attempts=3, job_hash=None):
                      (now, now, max_attempts, job_hash, job_hash))
         # Bound archival scans; a later cycle can drain the next batch.
         for _ in range(100):
+            # Capacity waits refund an untouched attempt. Within each candidate
+            # priority tier, do not let those perpetual attempt-zero rows starve
+            # due technical retries that may reuse an existing draft. The
+            # browser still decides capacity/ownership when the claim runs.
             row = conn.execute("SELECT * FROM applications WHERE ((state IN ('queued','retry') AND available_at <= ?) OR "
                                "(state='running' AND (lease_until IS NULL OR lease_until <= ?))) AND attempts < ? "
                                "AND (? IS NULL OR job_hash=?) "
                                "ORDER BY CASE WHEN json_extract(job_json,'$.source')='user_selected' THEN 0 ELSE 1 END,"
+                               "CASE WHEN state='retry' AND error_kind='browser_capacity' THEN 1 ELSE 0 END,"
                                "attempts,updated_at,job_hash LIMIT 1",
                                (now, now, max_attempts, job_hash, job_hash)).fetchone()
             if row is None:
