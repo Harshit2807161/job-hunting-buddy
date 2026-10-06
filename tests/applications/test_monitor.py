@@ -83,6 +83,12 @@ def test_one_repair_coalesces_jobs_and_validates_before_releasing_gate(setup):
     assert calls[1][0][-4:] == ["compileall", "-q", "jhb", "tests"]
     assert calls[2][0][-3:] == ["-m", "pytest", "-q"]
     assert calls[3][0] == ["git", "diff", "--check"]
+    # The child exercises its regression; the supervisor alone owns the full
+    # validation pass while the worker gate is held (checked by runner above).
+    assert "focused synthetic regression tests" in calls[0][1]
+    assert "Do not run the full test suite in this repair child" in calls[0][1]
+    assert "supervisor runs the single full suite" in calls[0][1]
+    assert sum(command[-3:] == ["-m", "pytest", "-q"] for command, _ in calls) == 1
     assert len(json.loads((monitor.directory() / "health.json").read_text())["technical_issues"]) == 1
     assert json.loads((monitor.directory() / "health.json").read_text())["uncertain_submissions"] == 1
     assert not (monitor.directory() / "repair-pending.json").exists()
