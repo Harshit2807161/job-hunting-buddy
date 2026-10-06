@@ -288,23 +288,74 @@ def _prompt(field):
     return re.sub(r" \((?:mark all that apply|select one)\)$", "", _label(field))
 
 
+def catalog_basis(field, answers):
+    """Complete verified prerequisites for inspecting a known native catalog.
+
+    This never selects an option. Missing context cannot be hidden indefinitely
+    as agent work when the actual answer derivation would reject the facts.
+    """
+    if field.get("description_truncated"):
+        return {}
+    label, records = _prompt(field), {}
+    def require(key):
+        item = _verified(answers, key)
+        if item:
+            records[key] = item
+        return item
+    if label in _GRADUATION_LABELS | _START_LABELS:
+        key = "education.expected_graduation_date" if label in _GRADUATION_LABELS else "preferences.start_date"
+        item = require(key)
+        bounds = _bounds(item.get("value")) if item else None
+        if not bounds:
+            return {}
+        if label in _GRADUATION_LABELS:
+            current = require("standing.current_education_school")
+            source = current.get("source", {}) if current else {}
+            original = source.get("original_record", {}) if isinstance(source, dict) else {}
+            end = _bounds(original.get("end_date"))
+            if original.get("expected") is not True or not end or not (end[0] <= bounds[0] <= bounds[1] <= end[1]):
+                return {}
+    elif label in RELATIVE_AUTHORIZATION:
+        suffix = {"united states": "us", "canada": "canada", "united kingdom": "uk"}.get(
+            normalize(str(field.get("country_context") or "")))
+        item = require("eligibility.authorized_" + suffix) if suffix else None
+        if not item or type(item["value"]) is not bool:
+            return {}
+    elif (label in RELATIVE_SPONSORSHIP or label.replace("u.s.", "united states")
+          == "will you now or in the future require visa sponsorship to work in the united states?"):
+        country = normalize(str(field.get("country_context") or ""))
+        explicit_us = label.replace("u.s.", "united states").endswith("in the united states?")
+        if not (country == "united states" or explicit_us and country == ""):
+            return {}
+        item = require("eligibility.sponsorship")
+        if not item or type(item["value"]) is not bool:
+            return {}
+        for part in ("now", "future"):
+            require("eligibility.sponsorship_" + part)
+    elif label in {"what is your current gpa", "what is your current gpa?"}:
+        item = require("standing.current_education_gpa")
+        match = re.fullmatch(r"(\d(?:\.\d+)?)\s*/\s*4(?:\.0+)?", str(item.get("value"))) if item else None
+        if not match or not 0 <= float(match[1]) <= 4:
+            return {}
+    elif label in _DISCLOSURES:
+        if field.get("description"):
+            return {}
+        key = _DISCLOSURES[label]
+        item = require(key)
+        if not item:
+            return {}
+        if key == "disclosure.veteran":
+            service = require("screening.us_government_or_military_5y")
+            if item["value"] is not False or not service or service["value"] is not False:
+                return {}
+        elif key == "disclosure.race":
+            require("disclosure.hispanic")
+    return records
+
+
 def needs_catalog(field, answers):
     """A verified fact selects a bounded native inspection, not an answer."""
-    label = _prompt(field)
-    keys = []
-    if label in _GRADUATION_LABELS:
-        keys = ["education.expected_graduation_date"]
-    elif label in _START_LABELS:
-        keys = ["preferences.start_date"]
-    elif label in RELATIVE_AUTHORIZATION:
-        keys = ["eligibility.authorized_us", "eligibility.authorized_canada", "eligibility.authorized_uk"]
-    elif label in RELATIVE_SPONSORSHIP:
-        keys = ["eligibility.sponsorship"]
-    elif label in {"what is your current gpa", "what is your current gpa?"}:
-        keys = ["standing.current_education_gpa"]
-    elif label in _DISCLOSURES:
-        keys = [_DISCLOSURES[label]]
-    return any(_verified(answers, key) for key in keys)
+    return bool(catalog_basis(field, answers))
 
 
 def _month_choice_bounds(text):

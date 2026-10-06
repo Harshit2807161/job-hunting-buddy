@@ -231,3 +231,41 @@ def test_role_catalog_preserves_exact_job_discovery_over_old_generic_and_role_va
     assert a['standing.discovery_source']['company_question']=='How did you hear about Example Company?'
     assert a['documents.resume']['value']=='/synthetic/ml.pdf'
     assert b==before
+
+
+@pytest.mark.parametrize('change', ['missing_current', 'different_end', 'unverified_date', 'invalid_date', 'truncated'])
+def test_missing_graduation_prerequisite_does_not_hide_candidate_question_as_native_work(change):
+    a=values(); f=field('What is your expected graduation month & year?',kind='combobox')
+    if change=='missing_current': del a['standing.current_education_school']
+    if change=='different_end': a['education.expected_graduation_date']['value']='2027-12-14'
+    if change=='unverified_date': a['education.expected_graduation_date']['status']='needs_input'
+    if change=='invalid_date': a['education.expected_graduation_date']['value']='after I graduate'
+    if change=='truncated': f['description_truncated']=True
+    assert known_answers.catalog_basis(f,a)=={}
+
+
+@pytest.mark.parametrize('country', [None, 'Canada', 'United Kingdom'])
+def test_native_relative_authorization_probe_requires_the_actual_work_country_fact(country):
+    f=field('Are you legally authorized to work in the country where the job is located?',kind='combobox',country=country)
+    assert known_answers.catalog_basis(f,values())=={}
+    f['country_context']='United States'
+    assert set(known_answers.catalog_basis(f,values()))=={'eligibility.authorized_us'}
+
+
+def test_native_disclosure_probe_needs_all_context_specific_facts():
+    a=values(); f=field('Are you a veteran or active member of the United States Armed Forces? (select one)',kind='combobox')
+    assert set(known_answers.catalog_basis(f,a))=={'disclosure.veteran','screening.us_government_or_military_5y'}
+    del a['screening.us_government_or_military_5y']; assert not known_answers.needs_catalog(f,a)
+    f=field('How would you describe your gender identity? (mark all that apply)',kind='combobox',description='Report your sex assigned at birth.')
+    assert not known_answers.needs_catalog(f,a)
+    f=field('Race',kind='combobox')
+    assert 'disclosure.hispanic' in known_answers.catalog_basis(f,a)
+
+
+def test_native_probe_fingerprint_exposes_graduation_and_sponsorship_dependencies():
+    a=values(); f=field('What is your expected graduation date?',kind='combobox')
+    assert set(known_answers.catalog_basis(f,a))=={'education.expected_graduation_date','standing.current_education_school'}
+    f=field('Will you now or in the future require sponsorship for employment visa status in this country?',kind='combobox',country='United States')
+    a['eligibility.sponsorship_future']=booklet.answer(True,'synthetic explicit future need')
+    assert set(known_answers.catalog_basis(f,a))=={'eligibility.sponsorship','eligibility.sponsorship_future'}
+    f['country_context']='Canada'; assert not known_answers.needs_catalog(f,a)
