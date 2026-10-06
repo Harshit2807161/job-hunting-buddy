@@ -105,6 +105,26 @@ def test_worker_retains_actual_catalog_and_user_override_without_terminal_action
     assert result['review_inventory']['complete'] is True
 
 
+def test_worker_catalog_rejection_keeps_exact_field_diagnostic_without_candidate_answer():
+    from jhb.applications import boards
+    class CLI:
+        last_failure = None
+        blocked_requests = 0
+        def allowed_url(self, url): return url == URL
+        async def open(self, url): pass
+        async def observe(self): return {'url': URL, 'fields': [field()], 'buttons': []}
+        async def describe(self, control): return {'choices': [], 'type': 'combobox'}
+        async def fill(self, *args): pytest.fail('Catalog rejection must precede input')
+    cli = CLI(); job = {'url': URL, 'dedupe_hash': boards.application_hash(URL)}
+    with pytest.raises(BrowserOperationError) as failure:
+        asyncio.run(worker.prepare(None, job, {'custom.history': record()},
+                                   deterministic_plan, None, cli_actions=cli))
+    result = worker.failure_result(failure.value, cli, job=job)
+    assert result['failure_context'] == {'operation': 'describe', 'field_ref': 'question_101', 'field_type': 'combobox'}
+    assert result['events'][-1]['mechanical_error'] == 'Approved-answer native dropdown catalog is unavailable'
+    assert result['filled'] == [] and not result.get('missing')
+
+
 @pytest.mark.parametrize('change',[None,'choices','description','country','missing_override','unrelated_question'])
 def test_real_closed_native_catalog_reopened_for_final_audit_with_no_selection_or_submit(change):
     from playwright.sync_api import sync_playwright

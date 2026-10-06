@@ -63,6 +63,10 @@ def failure_result(exc, actions=None, *, job=None):
         detail = observed.get("mechanical_error")
         if isinstance(detail, str) and detail in MECHANICAL_ERRORS:
             event["mechanical_error"] = detail
+    # Catalog enrichment can reject a successful CLI response outside the
+    # transport wrapper. Preserve only its fixed enum, never arbitrary text.
+    if isinstance(exc, BrowserOperationError) and str(exc) in MECHANICAL_ERRORS:
+        event["mechanical_error"] = str(exc)
     result = {"state": "failed", "reason": f"Preparation failed: {type(exc).__name__}",
               "error_kind": kind, "retryable": retryable, "events": [event], "filled": []}
     progress = getattr(actions, "_preparation_progress", None)
@@ -271,7 +275,12 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         if cli_actions and hasattr(actions, "describe") and not snapshot.get("handoff"):
             from .native_question_context import enrich_async
-            await enrich_async(snapshot, job, answers, actions.describe)
+            async def describe_catalog(field):
+                progress.update(operation="describe", field_ref=field["ref"], field_type=field["type"])
+                return await actions.describe(field)
+            await enrich_async(snapshot, job, answers, describe_catalog)
+            progress.update(operation="observe")
+            progress.pop("field_ref", None); progress.pop("field_type", None)
             for field in snapshot.get("fields", []):
                 observed_fields[(field["ref"], field["label"], field["type"])] = {**field, "observed_step": observed_step}
         if document_runner and not snapshot.get("handoff"):

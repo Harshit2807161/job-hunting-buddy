@@ -50,6 +50,10 @@ MECHANICAL_ERRORS = {
     "Calendar input did not retain the approved day",
     "Owned uploaded-file container is unavailable or ambiguous",
     "Owned upload input is unavailable or ambiguous",
+    "Approved-answer native catalog inspection exceeds its bounded budget",
+    "Approved-answer native dropdown catalog is unavailable",
+    "Approved-answer native select catalog changed during inspection",
+    "Approved-answer native dropdown inspection failed",
 }
 
 

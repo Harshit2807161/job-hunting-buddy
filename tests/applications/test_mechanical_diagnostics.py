@@ -44,3 +44,24 @@ def test_untrusted_adapter_or_packet_diagnostics_cannot_escape_allowlist(monkeyp
                                  result, attempt_token="synthetic")
     assert "mechanical_error" not in row
     assert "private exception detail" not in json.dumps(row)
+
+
+@pytest.mark.parametrize("message", [
+    "Approved-answer native catalog inspection exceeds its bounded budget",
+    "Approved-answer native dropdown catalog is unavailable",
+    "Approved-answer native select catalog changed during inspection",
+    "Approved-answer native dropdown inspection failed",
+    "private candidate dropdown answer",
+])
+def test_local_catalog_failure_retains_only_static_diagnostic(message):
+    result = worker.failure_result(cli_browser.BrowserOperationError(message, retryable=True),
+                                  SimpleNamespace(last_failure=None))
+    feedback = attempt_feedback.build(
+        {"dedupe_hash": "c"*64, "url": "https://job-boards.greenhouse.io/example/jobs/1234"},
+        result, attempt_token="local-enrichment")
+    known = message in cli_browser.MECHANICAL_ERRORS
+    assert (result["events"][0].get("mechanical_error") == message) is known
+    assert (feedback.get("mechanical_error") == message) is known
+    assert result["error_kind"] == "browser_mechanics" and not result.get("missing")
+    if not known:
+        assert message not in json.dumps(result) and message not in json.dumps(feedback)
