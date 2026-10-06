@@ -93,3 +93,14 @@ compatibility, a completed final Workday audit, or successful terminal submissio
 Synthetic date/ownership regressions are separate evidence and must be reported
 as fixtures. Candidate values, credentials, control IDs, screenshots, and runtime
 proofs remain in ignored private storage.
+
+Modern date widgets may expose a tiny hidden spinbutton behind a visible native
+`dateSectionMonth/Year/Day-display`. Focusing and typing into that hidden input
+can move focus to a sibling and corrupt the date. For this exact renderer, verify
+that the input and unique visible display share the same `dateInputWrapper`,
+click the display natively, and adjust the focused segment with bounded native
+ArrowUp/ArrowDown events. Stop if focus moves, the value jumps unexpectedly, or
+more than 100 increments would be needed. Finish composite blur and recheck all
+segments, including previously edited ones. This was validated through the
+registered CLI on six employment dates and four education years; the fixture
+regressions separately cover a foreign display, moved focus and unstable values.

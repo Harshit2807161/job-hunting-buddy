@@ -521,3 +521,55 @@ def test_segmented_date_stops_before_typing_into_a_sibling_when_native_focus_mov
         assert inspect("document.querySelector('[id$=Month-input]').value") == '9'
         assert inspect("document.querySelector('[id$=Year-input]').value") == '2'
         assert inspect('window.submissions') == 0 and inspect('window.__jhbGuard') is True
+
+
+DISPLAY_DATE_HTML = '''<style>
+.spin{position:absolute;width:.1px;height:.2px;padding:0;border:0;opacity:0}
+.segment{display:inline-block;padding:10px;margin:8px;border:1px solid black}
+</style><label for=workExperience-0--jobTitle>Job Title</label><input id=workExperience-0--jobTitle>
+<div data-automation-id=dateInputWrapper id=workExperience-0--startDate>
+<input class=spin id=workExperience-0--startDate-dateSectionMonth-input aria-label='Start Date Month'>
+<span class=segment data-automation-id=dateSectionMonth-display id=workExperience-0--startDate-dateSectionMonth-display>MM</span>
+<input class=spin id=workExperience-0--startDate-dateSectionYear-input aria-label='Start Date Year' value=2006>
+<span class=segment data-automation-id=dateSectionYear-display id=workExperience-0--startDate-dateSectionYear-display>YYYY</span>
+</div><input id=unrelated value='Keep my edit'><button type=button>Continue</button>
+<script>
+window.digits=0;window.arrows=0;
+for(const d of document.querySelectorAll('.segment'))d.onclick=()=>document.getElementById(d.id.replace('-display','-input')).focus();
+for(const e of document.querySelectorAll('.spin'))e.onkeydown=event=>{
+ if(/^\\d$/.test(event.key)){window.digits++;document.getElementById('unrelated').focus();return;}
+ if(!['ArrowUp','ArrowDown'].includes(event.key))return;
+ event.preventDefault();window.arrows++;
+ e.value=e.value?String(Number(e.value)+(event.key==='ArrowUp'?1:-1)):e.id.includes('Month')?'1':'2026';
+};
+</script>'''
+
+
+def test_hidden_date_spinbuttons_use_owned_visible_display_and_bounded_native_arrows():
+    with fixture_runtime(DISPLAY_DATE_HTML) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        assert call('fill', field=field, value='2026-06')['verified'] is True
+        assert inspect("[...document.querySelectorAll('.spin')].map(e=>e.value)") == ['6', '2026']
+        assert inspect('window.digits') == 0 and inspect('window.arrows') == 26
+        assert inspect("document.getElementById('unrelated').value") == 'Keep my edit'
+        assert inspect('window.__jhbGuard') is True
+
+
+@pytest.mark.parametrize('failure', ['foreign_display', 'focus_moves', 'unbounded_year', 'non_monotonic'])
+def test_hidden_date_segment_refuses_foreign_or_unstable_native_controls(failure):
+    html = DISPLAY_DATE_HTML
+    if failure == 'foreign_display':
+        html = html.replace('<span class=segment data-automation-id=dateSectionMonth-display', '</div><div><span class=segment data-automation-id=dateSectionMonth-display')
+    elif failure == 'focus_moves':
+        html = html.replace('event.preventDefault();window.arrows++;', "event.preventDefault();window.arrows++;document.getElementById('unrelated').focus();")
+    elif failure == 'unbounded_year':
+        html = html.replace('value=2006', 'value=1700')
+    else:
+        html = html.replace("event.key==='ArrowUp'?1:-1", "event.key==='ArrowUp'?2:-2")
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        field = next(f for f in call('observe')['fields'] if f['type']=='date')
+        with pytest.raises(ValueError, match='date did not retain an approved segment'):
+            call('fill', field=field, value='2026-06')
+        assert inspect('window.digits') == 0
+        assert inspect("document.getElementById('unrelated').value") == 'Keep my edit'
+        assert inspect('window.arrows') <= 26

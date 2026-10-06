@@ -214,6 +214,59 @@ def dispatch(request, helpers):
         cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=code or key, **params)
         cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=code or key)
     def type_value(node, value, *, segmented=False):
+        if segmented:
+            remote = cdp("DOM.resolveNode", nodeId=node)["object"]["objectId"]
+            try:
+                shape = cdp("Runtime.callFunctionOn", objectId=remote,
+                    functionDeclaration="""function(){
+                        const r=this.getBoundingClientRect(),m=this.id.match(/^(.*)-dateSection(Month|Year|Day)-input$/);
+                        const tiny=r.width<2||r.height<2;
+                        if(!tiny)return {tiny:false};
+                        const owner=this.closest('[data-automation-id=dateInputWrapper]');
+                        const id=m&&m[1]+'-dateSection'+m[2]+'-display';
+                        const displays=id?[...document.querySelectorAll('[id]')].filter(e=>e.id===id):[];
+                        const d=displays.length===1?displays[0]:null;
+                        return {tiny:true,id:this.id,display:owner&&m&&owner.id===m[1]&&d&&
+                            d.closest('[data-automation-id=dateInputWrapper]')===owner&&
+                            d.getAttribute('data-automation-id')==='dateSection'+m[2]+'-display'?id:null};
+                    }""", returnByValue=True)["result"].get("value")
+                if shape and shape.get("tiny"):
+                    # Modern Workday hides the editable spinbutton behind a
+                    # visible segment display. Focusing the hidden input and
+                    # typing digits can move focus and corrupt another segment.
+                    if not shape.get("display") or not str(value).isdigit():
+                        raise ValueError("Workday date did not retain an approved segment")
+                    owned_guard()
+                    display = node_for('[id='+json.dumps(shape["display"])+']')
+                    click_node(cdp("DOM.describeNode", nodeId=display)["node"]["backendNodeId"])
+                    def current_segment():
+                        owned_guard()
+                        state = cdp("Runtime.callFunctionOn", objectId=remote,
+                            functionDeclaration="function(){return {ready:this.isConnected&&document.activeElement===this&&!this.disabled&&!this.readOnly,value:this.value};}",
+                            returnByValue=True)["result"].get("value")
+                        if not state or state.get("ready") is not True:
+                            raise ValueError("Workday date did not retain an approved segment")
+                        return state["value"]
+                    actual = current_segment()
+                    if actual == "":
+                        press("ArrowUp"); actual = current_segment()
+                    if not str(actual).isdigit() or abs(int(value)-int(actual)) > 100:
+                        raise ValueError("Workday date did not retain an approved segment")
+                    for _ in range(101):
+                        actual = current_segment()
+                        if not str(actual).isdigit():
+                            raise ValueError("Workday date did not retain an approved segment")
+                        if int(actual) == int(value):
+                            press("Tab"); wait(0.1)
+                            return
+                        step = 1 if int(actual) < int(value) else -1
+                        press("ArrowUp" if step == 1 else "ArrowDown")
+                        after = current_segment()
+                        if not str(after).isdigit() or int(after) != int(actual)+step:
+                            raise ValueError("Workday date did not retain an approved segment")
+                    raise ValueError("Workday date did not retain an approved segment")
+            finally:
+                cdp("Runtime.releaseObject", objectId=remote)
         cdp("DOM.focus", nodeId=node)
         press("a", "KeyA", modifiers=4, commands=["selectAll"])
         if segmented:
