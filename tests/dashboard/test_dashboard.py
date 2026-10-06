@@ -48,7 +48,21 @@ def add_job(conn, root, n=1, state="waiting_review", packet_state=None, complete
 
 
 def pending_question(job, book, label="Will you relocate?", ref="relocate", required=True, kind="text"):
-    return questions.collect(job, {"missing": [{"question": label, "ref": ref, "required": required, "type": kind}]}, book)[0]
+    item = {"question": label, "ref": ref, "required": required, "type": kind}
+    current_question_packet(job, book, [item])
+    return questions.collect(job, {"missing": [item]}, book)[0]
+
+
+def current_question_packet(job, book, items):
+    """Synthetic workers publish their current packet before surfacing input."""
+    path = book.parent / "applications" / job["dedupe_hash"] / "packet.json"
+    if not path.exists():
+        return
+    packet = json.loads(path.read_text())
+    if packet["state"] == "waiting_input":
+        refs = {item["ref"] for item in items}
+        packet["missing"] = [item for item in packet["missing"] if item.get("ref") not in refs] + items
+        booklet.write_private(path, packet)
 
 
 def test_discard_requires_portal_click_and_hides_only_this_jobs_questions(portal):
@@ -262,7 +276,7 @@ def test_complete_inventory_blank_ack_and_revision_go_through_root_approval_api(
         "packet_sha256": hashlib.sha256((folder / "packet.json").read_bytes()).hexdigest(),
         "blank_questions": [{"ref": "why", "question": "Why this company?", "required": False, "type": "textarea"}]})
     called = []
-    def approve(connection, key, expected_revision, acknowledged_blank_refs, book_path):
+    def approve(connection, key, expected_revision, acknowledged_blank_refs, book_path, *, acknowledge_role_fit_warning=False):
         called.append((key, expected_revision, acknowledged_blank_refs, book_path))
         if expected_revision != "exact-revision" or acknowledged_blank_refs != ["why"]:
             raise ValueError("Unacknowledged blank")
@@ -462,9 +476,10 @@ def test_candidate_reply_never_requeues_protected_application_states(portal, sta
     root, conn, book, client, headers = portal
     job, _, _ = add_job(conn, root, state=state)
     q = pending_question(job, book, required=False)
+    before = book.read_bytes()
     response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
                            json={"value": "Synthetic answer", "revision": q["updated_at"]})
-    assert response.status_code == 200 and response.json()["resumed_jobs"] == []
+    assert response.status_code == 409 and book.read_bytes() == before
     assert conn.execute("SELECT state FROM applications").fetchone()[0] == state
 
 
@@ -551,17 +566,14 @@ def test_saved_answer_queue_failure_reports_durable_save_instead_of_inviting_dup
     assert conn.execute("SELECT state FROM applications").fetchone()[0] == "waiting_input"
 
 
-def test_required_ledger_question_prevents_approval_of_previously_complete_inventory(portal):
-    _, conn, book, client, headers = portal
+def test_stale_required_ledger_question_is_not_shown_on_current_complete_review(portal):
+    _, conn, book, client, _ = portal
     job, _, _ = reviewable(portal)
-    prior = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
-    pending_question(job, book, "Export controls authorization?", "export", required=True)
+    question = pending_question(job, book, "Export controls authorization?", "export", required=True)
     current = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
-    assert current["approval"]["can_approve"] is False
-    assert "required questions" in current["approval"]["reason"]
-    response = client.post(f"/api/v1/applications/{job['dedupe_hash']}/approve", headers=headers,
-        json={"revision": prior["approval"]["revision"], "acknowledged_blank_refs": ["why"]})
-    assert response.status_code == 409
+    assert current["questions"] == []
+    assert current["inventory_complete"] is True
+    assert booklet.load(book)["question_handoffs"][question["id"]]["status"] == "pending"
     assert conn.execute("SELECT COUNT(*) FROM application_approvals").fetchone()[0] == 0
 
 
@@ -569,7 +581,7 @@ def test_required_ledger_question_prevents_approval_of_previously_complete_inven
 def test_failed_optional_edit_sql_keeps_exact_durable_refill_intent_and_revoked_authority(portal, monkeypatch):
     root, conn, book, client, headers = portal
     job, folder, _ = reviewable(portal)
-    q = pending_question(job, book, "Why this company?", "why", required=False)
+    q = pending_question(job, book, "Why this company? Please, no AI text.", "why", required=False, kind="textarea")
     old_packet, binding, revision = approvals._draft(conn, job["dedupe_hash"], book)
     approvals.approve(conn, job["dedupe_hash"], revision, ["why"], book)
     real_answer = questions.answer
@@ -603,16 +615,16 @@ def test_ordinary_answer_has_no_review_edit_intent(portal):
 
 
 
-def test_ready_count_excludes_new_required_ledger_question_without_mislabeling_legacy(portal):
+def test_ready_count_ignores_ledger_question_absent_from_current_complete_packet(portal):
     _, _, book, client, _ = portal
     job, _, _ = reviewable(portal)
     assert client.get("/api/v1/overview").json()["summary"]["ready"] == 1
     pending_question(job, book, "Current work authorization?", "authorization", required=True)
     view = client.get("/api/v1/overview").json()
-    assert view["summary"]["ready"] == 0 and view["summary"]["legacy_review"] == 0
+    assert view["summary"]["ready"] == 1 and view["summary"]["legacy_review"] == 0
     row = next(a for a in view["applications"] if a["id"] == job["dedupe_hash"])
-    assert row["inventory_verified"] is True and row["inventory_ready"] is False
-    assert row["pending_required_questions"] == 1
+    assert row["inventory_verified"] is True and row["inventory_ready"] is True
+    assert row["pending_required_questions"] == 0
 
 
 def test_screenshot_endpoint_never_returns_new_image_under_old_review_digest(portal):
@@ -651,6 +663,7 @@ def test_help_text_change_keeps_question_identity_but_rejects_old_answer_version
             "description": "California applicants must choose N/A.", "description_truncated": False}
     before = questions.collect(job, {"missing": [item]}, book)[0]
     updated = questions.collect(job, {"missing": [{**item, "description": "Only California residents should choose N/A."}]}, book)[0]
+    current_question_packet(job, book, [{**item, "description": "Only California residents should choose N/A."}])
     assert before["id"] == updated["id"] and before["updated_at"] != updated["updated_at"]
     response = client.post(f"/api/v1/questions/{before['id']}/answer", headers=headers,
         json={"value": "No", "revision": before["updated_at"]})
@@ -670,6 +683,8 @@ def test_answer_description_proof_includes_only_displayed_active_contexts(portal
         "description": "Historical closed-job guidance."}]}, book)
     q = questions.collect(live, {"missing": [{"ref": "restriction", "question": label, "required": True,
         "description": "Current visible guidance."}]}, book)[0]
+    current_question_packet(live, book, [{"ref": "restriction", "question": label, "required": True,
+        "description": "Current visible guidance."}])
     response = client.post(f"/api/v1/questions/{q['id']}/answer", headers=headers,
         json={"value": "N/A", "revision": q["updated_at"]})
     assert response.status_code == 200
@@ -768,6 +783,8 @@ def test_public_question_descriptor_is_visible_and_changes_answer_revision_witho
     job,folder,packet=add_job(conn,root,state='waiting_input')
     q=questions.collect(job, {'missing':[{'question':'Eligibility options','ref':'question_123',
         'required':True,'type':'combobox'}]},book)[0]
+    current_question_packet(job, book, [{'question':'Eligibility options','ref':'question_123',
+        'required':True,'type':'combobox'}])
     def opener(request,**kwargs):
         return io.BytesIO(json.dumps({'id':1,'questions':[{'label':'Eligibility options','required':True,
             'description':'<p>Public condition &amp; scope</p>', 'fields':[{'name':'question_123',
@@ -791,6 +808,9 @@ def test_known_booklet_fields_and_document_work_never_ask_candidate_again(portal
     known = questions.collect(job, {"missing": [{"question": "Gender", "ref": "gender", "type": "combobox",
         "answer_key": "disclosure.gender", "reason": "Stored answer unavailable or incompatible with field", "choices": ["Female", "Male"]},
         {"question": "Cover Letter", "ref": "cover_letter", "type": "file", "answer_key": "documents.cover_letter"}]}, book)
+    current_question_packet(job, book, [{"question": "Gender", "ref": "gender", "type": "combobox",
+        "answer_key": "disclosure.gender", "choices": ["Female", "Male"]},
+        {"question": "Cover Letter", "ref": "cover_letter", "type": "file", "answer_key": "documents.cover_letter"}])
     assert client.get("/api/v1/overview").json()["questions"] == []
     detail = client.get(f"/api/v1/applications/{job['dedupe_hash']}").json()
     assert detail["questions"] == [] and not detail["approval"]["can_approve"]

@@ -247,12 +247,39 @@ class DashboardStore:
             raise ValueError("Review artifact is not a matching current capture")
         return content
 
-    def pending(self, book=None, queue_states=None):
+    def current_question_contexts(self, book, queue_states=None, *, allowed_states=("waiting_input",)):
+        """Project archival handoffs onto authoritative current application work."""
+        from .applications import application_discard, historical
+        from .applications.question_lifecycle import current_context
+        records = book.get("question_handoffs", {})
+        current = {}
+        with self.connection() as conn:
+            for row in conn.execute("SELECT * FROM applications"):
+                key = row["job_hash"]
+                if (row["state"] not in allowed_states or not HASH.fullmatch(key)
+                        or queue_states is not None and queue_states.get(key) != row["state"]):
+                    continue
+                job = _json(row["job_json"])
+                path, packet = self.packet(row, job)
+                # A missing/damaged current packet must not resurrect an older
+                # fallback artifact merely because that artifact has this job ID.
+                authoritative = Path(row["packet"]).with_name("packet.json") if row["packet"] else path
+                if authoritative and not authoritative.is_absolute():
+                    authoritative = self.root / authoritative
+                if (path is None or path.resolve() != authoritative.resolve()
+                        or application_discard.discarded(self.root, key)
+                        or historical.match(conn, job, root=self.root)):
+                    continue
+                for qid, record in records.items():
+                    context = record.get("contexts", {}).get(key)
+                    if current_context(book, record, context, row, packet, allowed_states=allowed_states):
+                        current.setdefault(qid, {})[key] = context
+        return current
+
+    def pending(self, book=None, queue_states=None, *, include_review_edits=False):
         book = self.book() if book is None else book
-        manual_states = {}
-        for record in book.get("manual_application_records", {}).values():
-            if isinstance(record, dict) and (key := boards.application_hash(record.get("url"))):
-                manual_states[key] = record.get("state")
+        states = ("waiting_input", "waiting_review") if include_review_edits else ("waiting_input",)
+        current = self.current_question_contexts(book, queue_states, allowed_states=states)
         output = []
         for record in book.get("question_handoffs", {}).values():
             if record.get("status") != "pending" or questions._SECRET.search(record.get("question", "")):
@@ -260,10 +287,8 @@ class DashboardStore:
             contexts = []
             from .applications.question_routing import candidate_contexts
             routed_contexts = candidate_contexts(book, record)
-            for key, context in record.get("contexts", {}).items():
-                if key not in routed_contexts or context.get("resolved") or (queue_states is not None and queue_states.get(key) in
-                                               {"submitted", "submission_uncertain", "skipped", "discarded"}) or manual_states.get(key) in {
-                                                   "submitted", "submission_uncertain", "skipped", "declined"} or booklet.job_excluded(book, {"dedupe_hash": key}):
+            for key, context in current.get(record["id"], {}).items():
+                if key not in routed_contexts:
                     continue
                 contexts.append({"job_hash": key, "company": _text(context.get("company")),
                     "title": _text(context.get("title")), "url": boards.canonical_url(context.get("url")),
@@ -441,10 +466,12 @@ class DashboardStore:
                                     "task_kind": task["task_kind"], "required": task.get("required") is True})
         try:
             current_book = self.book()
+            current_contexts = self.current_question_contexts(current_book, {job_hash: row["state"]},
+                allowed_states=("waiting_input", "waiting_review", "queued", "running", "retry", "failed"))
         except (ValueError, OSError):
-            current_book = {}
+            current_book, current_contexts = {}, {}
         for record in current_book.get("question_handoffs", {}).values():
-            context = record.get("contexts", {}).get(job_hash)
+            context = current_contexts.get(record.get("id"), {}).get(job_hash)
             if record.get("status") in {"pending", "answered"} and context and not context.get("resolved"):
                 if questions._SECRET.search(" ".join(str(value or "") for value in (record.get("question"), context.get("ref")))):
                     continue
@@ -722,10 +749,12 @@ class DashboardStore:
             current_book = self.book()
             pending = self.pending(book=current_book, queue_states=queue_states)
             from .applications.question_routing import agent_contexts
+            current_contexts = self.current_question_contexts(current_book, queue_states,
+                allowed_states=("waiting_input", "waiting_review", "queued", "running", "retry", "failed"))
             agent_blockers = Counter(key for record in current_book.get("question_handoffs", {}).values()
                                     if record.get("status") in {"pending", "answered"}
                                     for key in agent_contexts(current_book, record)
-                                    if queue_states.get(key) not in {"submitted", "submission_uncertain", "skipped"})
+                                    if key in current_contexts.get(record.get("id"), {}))
             booklet_available = True
         except (ValueError, OSError, KeyError, TypeError):
             pending, booklet_available, agent_blockers = [], False, Counter()
@@ -1063,8 +1092,13 @@ def create_app(*, root=None, db_path=None, book_path=None, static_dir=None):
                     raise HTTPException(409, "Question changed; refresh before answering")
                 with store.connection(write=True) as conn:
                     queue_states = dict(conn.execute("SELECT job_hash,state FROM applications"))
-                    visible = next((q for q in store.pending(queue_states=queue_states) if q["id"] == question_id), {})
+                    # Current review blanks can still be deliberately edited;
+                    # they are not outstanding Your input work or blockers.
+                    visible = next((q for q in store.pending(queue_states=queue_states, include_review_edits=True)
+                                    if q["id"] == question_id), {})
                     context_job_hashes = [c["job_hash"] for c in visible.get("contexts", [])]
+                    if not context_job_hashes:
+                        raise HTTPException(409, "Question no longer belongs to current application work; refresh before answering")
                     review_edits = []
                     affected = questions.answer(question_id, payload.value, store.book_path,
                                                 conn, decline=payload.decline, expected_revision=payload.revision,
