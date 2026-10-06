@@ -146,6 +146,21 @@ def test_monitor_reads_feedback_for_failure_even_if_packet_capture_failed(setup)
     assert health["attempt_feedback"]["attempts"] == 1
 
 
+def test_describe_failure_packet_and_feedback_coalesce_separately_from_old_runtime_issue(setup):
+    diagnostic = {"event": "technical_failure", "operation": "describe",
+                  "mechanical_error": "Approved-answer native dropdown catalog is unavailable"}
+    failure(setup, number=int("b"*64, 16), events=[diagnostic])
+    feedback_attempt(events=[diagnostic])
+    old = monitor._issue("application", "browser_mechanics", "runtime", "private/old.json")
+    state = {"log_cursors": {}, "issues": {old["fingerprint"]: {"state": "quarantined"}}}
+    health = monitor.snapshot(state, monitor.authorization())
+    assert len(health["technical_issues"]) == 1
+    observed = health["technical_issues"][0]
+    assert observed["operation"] == "describe" and observed["fingerprint"] != old["fingerprint"]
+    assert len(observed["evidence"]) == 2
+    assert state["issues"][old["fingerprint"]]["state"] == "quarantined"
+
+
 @pytest.mark.parametrize("mode", ["new_handoff", "new_complete", "current_ready", "terminal", "new_unknown"])
 def test_feedback_never_resurrects_old_attempt_or_repairs_candidate_handoff(setup, mode):
     _, _, now = setup

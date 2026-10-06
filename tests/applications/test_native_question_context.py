@@ -105,10 +105,11 @@ def test_worker_retains_actual_catalog_and_user_override_without_terminal_action
     assert result['review_inventory']['complete'] is True
 
 
-def test_worker_catalog_rejection_keeps_exact_field_diagnostic_without_candidate_answer():
-    from jhb.applications import boards
+@pytest.mark.parametrize('prior_failure', [None, {'operation': 'fill', 'kind': 'browser_mechanics'}])
+def test_worker_catalog_rejection_keeps_exact_field_diagnostic_without_candidate_answer(prior_failure):
+    from jhb.applications import attempt_feedback, boards
     class CLI:
-        last_failure = None
+        last_failure = prior_failure
         blocked_requests = 0
         def allowed_url(self, url): return url == URL
         async def open(self, url): pass
@@ -122,7 +123,11 @@ def test_worker_catalog_rejection_keeps_exact_field_diagnostic_without_candidate
     result = worker.failure_result(failure.value, cli, job=job)
     assert result['failure_context'] == {'operation': 'describe', 'field_ref': 'question_101', 'field_type': 'combobox'}
     assert result['events'][-1]['mechanical_error'] == 'Approved-answer native dropdown catalog is unavailable'
+    assert result['events'][-1]['operation'] == 'describe'
     assert result['filled'] == [] and not result.get('missing')
+    feedback = attempt_feedback.build(job, result, attempt_token='native-catalog-rejection')
+    assert feedback['operation'] == 'describe'
+    assert LABEL not in json.dumps(feedback) and 'field_ref' not in feedback
 
 
 @pytest.mark.parametrize('change',[None,'choices','description','country','missing_override','unrelated_question'])

@@ -315,8 +315,13 @@ async def prepare(page, job, answers, planner, vault, *, demo_origin=None, max_s
             value = progress.get(key)
             if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:.,\[\]-]{1,200}", value):
                 context[key] = value
+        from .attempt_feedback import OPERATIONS
+        failure_events = [
+            {**event, "operation": context["operation"]}
+            if event.get("event") == "technical_failure" and context["operation"] in OPERATIONS else event
+            for event in failure["events"]]
         return outcome({**failure, "filled": list(filled.values()),
-                        "events": [*events, *failure["events"]], "failure_context": context}, stable=False)
+                        "events": [*events, *failure_events], "failure_context": context}, stable=False)
     progress["snapshot"] = retain_progress
     actions._preparation_progress = progress
     previous = None
