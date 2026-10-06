@@ -14,6 +14,9 @@ EXCLUSIVE_EMPLOYMENT = ('At this time, we are only able to consider applicants w
                         'US Citizens or Green Card Holders for employment opportunities.')
 REQUIRED_US_PERSON = ('U.S. Person Required: Must be a U.S. citizen, lawful permanent resident, '
                       'or protected individual such as an asylee or refugee in compliance with ITAR / EAR regulations.')
+ADDITIONAL_RESTRICTIONS = ('Preferred Qualifications\nEmbedded systems experience.\n'
+                         'Additional Requirements\nCurrently a US Citizen with capability to '
+                         'obtain and maintain a US Q clearance.')
 
 
 @pytest.mark.parametrize('text', [
@@ -94,6 +97,31 @@ def test_employment_status_rule_preserves_questions_and_open_alternatives(text):
 ])
 def test_required_conditions_are_excluded(text):
     assert eligibility.restrictions(text)
+
+
+@pytest.mark.parametrize('heading', ['Additional Requirements', 'Additional Requirements:',
+                                     '<h3>Additional Requirements</h3>'])
+def test_additional_requirements_end_preferred_section(heading):
+    text = ('Preferred Qualifications\nEmbedded systems experience.\n' + heading + '\n'
+            'Currently a US Citizen with capability to obtain and maintain a US Q clearance.')
+    assert {item['category'] for item in eligibility.restrictions(text)} == {
+        'citizenship', 'security_clearance'}
+
+
+@pytest.mark.parametrize('condition', [
+    'Security clearance is not required.',
+    'Security clearance preferred.',
+    'US citizenship is not required.',
+    'Must be a US citizen or eligible to obtain an export authorization.',
+])
+def test_additional_requirements_preserve_nonrequirements_and_export_alternatives(condition):
+    assert eligibility.restrictions('Preferred Qualifications\nPython\n'
+                                    'Additional Requirements\n' + condition) == []
+
+
+def test_preferred_clearance_stays_optional_without_new_required_heading():
+    assert eligibility.restrictions('Preferred Qualifications\n'
+        'Currently a US Citizen with capability to obtain and maintain a US Q clearance.') == []
 
 
 @pytest.mark.parametrize("title", [
@@ -264,7 +292,7 @@ def job(description="Ordinary application development position."):
     return item
 
 
-@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON])
+@pytest.mark.parametrize("text", ["US citizenship required.", "Ability to obtain TS/SCI.", "Must pass a polygraph.", EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON, ADDITIONAL_RESTRICTIONS])
 def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path, monkeypatch, text):
     def forbidden(*args, **kwargs):
         pytest.fail("Excluded job must not access the candidate browser")
@@ -279,7 +307,7 @@ def test_direct_live_worker_never_constructs_browser_for_excluded_jobs(tmp_path,
 
 
 @pytest.mark.parametrize('source', [False, True])
-@pytest.mark.parametrize('description', [EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON])
+@pytest.mark.parametrize('description', [EXCLUSIVE_EMPLOYMENT, REQUIRED_US_PERSON, ADDITIONAL_RESTRICTIONS])
 def test_legacy_eligible_backlog_is_refiltered_before_either_queue_claim(source, description):
     from jhb.applications import source_queue
     module, table, state = (source_queue, 'application_sources', 'filtered') if source else (queue, 'applications', 'skipped')

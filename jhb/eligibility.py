@@ -78,7 +78,7 @@ _EXCLUSIVE_EMPLOYMENT_STATUSES = re.compile(
     r"(?:\s+for\s+(?:employment(?:\s+opportunities)?|this\s+(?:role|position)))?\s*$|"
     r"\b(?:must|shall)\s+be\s+" + _CITIZEN_RESIDENT_STATUSES + r"\s*$|"
     r"\b" + _CITIZEN_RESIDENT_STATUSES + r"\s+only\s*$", re.I)
-_REQUIRED_HEADING = re.compile(r"(?:required|requirements|minimum requirements|basic qualifications|"
+_REQUIRED_HEADING = re.compile(r"(?:required|requirements|additional requirements|minimum requirements|basic qualifications|"
                                r"required qualifications|qualifications|what you (?:need|must have))\s*:?", re.I)
 _OTHER_HEADING = re.compile(r"(?:desired|preferred(?: qualifications)?|nice[- ]to[- ]have|nice to have|"
                             r"responsibilities|benefits|compensation(?: and benefits)?|equal opportunity|"
