@@ -83,6 +83,25 @@ def test_derivations_require_current_verified_basis_and_exact_source_job(changed
     assert known_answers.enrich(field,current,values) is None
 
 
+def test_no_personal_referral_does_not_hide_recorded_discovery_source():
+    values=facts()
+    values['screening.personal_referral']=booklet.answer(False,'Synthetic no personal referral')
+    field=question(DISCOVERY,choices=CHOICES)
+    key=known_answers.enrich(field,job(),values)
+    assert values[key]['value']=='Other'
+
+
+@pytest.mark.parametrize('value',[False,True,'Synthetic direct answer'])
+def test_existing_verified_answer_to_discovery_question_is_preserved(value):
+    # screening.referral is the legacy discovery-question alias, distinct from
+    # the factual screening.personal_referral boolean. Do not reinterpret an
+    # explicit older answer here; incompatible answers need scoped review.
+    values=facts();values['screening.referral']=booklet.answer(value,'Synthetic existing discovery response')
+    before=copy.deepcopy(values)
+    assert known_answers.enrich(question(DISCOVERY,choices=CHOICES),job(),values) is None
+    assert values==before
+
+
 def conditional():
     parent=question("How did you hear about Synthetic?*",choices=["Simplify","Other"],ref="question_100")
     detail=question("If other, please specify",kind="text",choices=[],ref="question_101",required=False)
