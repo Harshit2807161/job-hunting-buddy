@@ -28,8 +28,9 @@ FIELDS = r"""(()=>{
   if((!e.id&&e.type!=='file')||(!visible(e)&&e.type!=='file'&&!(e.type==='radio'&&choiceVisible))||['hidden','password','submit','reset'].includes(e.type))continue;
   if(e.tagName==='BUTTON'&&!e.getAttribute('aria-haspopup'))continue;
   let ref=e.id,title=label(e),kind=e.tagName==='SELECT'?'select':e.tagName==='TEXTAREA'?'textarea':e.tagName==='BUTTON'?'combobox':e.type;
-  const catalog=e.getAttribute('type')==='selectinput'||e.getAttribute('role')==='combobox';
+  const catalog=e.getAttribute('type')==='selectinput'||e.getAttribute('role')==='combobox'||e.getAttribute('data-uxi-widget-type')==='selectinput';
   if(catalog)kind='combobox';
+  if(e.id==='phoneNumber--phoneNumber'&&e.name==='phoneNumber'&&/^phone number$/i.test(title)&&document.getElementById('phoneNumber--countryPhoneCode'))kind='tel';
   let file_index=null;
   if(e.type==='file'){
    file_index=[...document.querySelectorAll('input[type=file]')].indexOf(e);ref=e.id||'workday:file:'+file_index;
@@ -45,7 +46,10 @@ FIELDS = r"""(()=>{
    const legend=e.closest('fieldset')?.querySelector('legend')?.innerText?.trim();
    const heading=legend||(e.name==='disability'?'Disability status':null);
    if(!heading)continue;
-   fields.push({ref:'workday-radio:'+e.name,actual_id:e.id,label:heading,type:'radio',required:choices.some(r=>r.required||r.getAttribute('aria-required')==='true'),
+   const group=e.closest('[aria-required][aria-labelledby]');
+   const ownedGroup=group&&e.closest('fieldset')?.contains(group)&&choices.every(r=>group.contains(r))&&
+    [...group.querySelectorAll('input[type=radio]')].every(r=>r.name===e.name&&r.form===e.form);
+   fields.push({ref:'workday-radio:'+e.name,actual_id:e.id,label:heading,type:'radio',required:choices.some(r=>r.required||r.getAttribute('aria-required')==='true')||!!(ownedGroup&&group.getAttribute('aria-required')==='true'),
     options:choices.map(r=>({label:label(r),value:r.value,id:r.id,checked:r.checked}))});continue;
   }
   const ed=schoolIds.findIndex(id=>e.id.startsWith(id+'--'));
@@ -181,7 +185,11 @@ def dispatch(request, helpers):
         return choices[index]
     def read(field):
         return js("(()=>{const e=document.getElementById("+json.dumps(field["actual_id"])+
-                  ");if(!e)return null;let selected='';for(let p=e.parentElement,depth=0;p&&depth<5;p=p.parentElement,depth++){const chips=[...p.querySelectorAll('[data-automation-id=promptSelectionLabel]')];if(chips.length){selected=chips.map(c=>c.innerText.trim()).join(', ');break;}}return {value:e.value||'',text:e.innerText||'',selected,checked:e.checked,invalid:e.getAttribute('aria-invalid')==='true'}})()")
+                  ");if(!e)return null;let selected='';const owner=e.closest('[data-automation-id=multiselectInputContainer]');"
+                  "if(owner){const key=e.getAttribute('data-uxi-multiselect-id');const lists=[...owner.querySelectorAll('[data-automation-id=selectedItemList]')].filter(p=>p.closest('[data-automation-id=multiselectInputContainer]')===owner&&key&&p.getAttribute('data-uxi-multiselect-id')===key);"
+                  "if(lists.length===1){const chips=[...lists[0].querySelectorAll('[data-automation-id=selectedItem] [data-automation-id=promptOption]')];selected=chips.map(c=>c.innerText.trim()).filter(Boolean).join(', ');}}"
+                  "else{for(let p=e.parentElement,depth=0;p&&depth<5;p=p.parentElement,depth++){const controls=[...p.querySelectorAll('input')].filter(x=>x.getAttribute('type')==='selectinput'||x.getAttribute('role')==='combobox'||x.getAttribute('data-uxi-widget-type')==='selectinput');if(controls.length!==1||controls[0]!==e)break;const chips=[...p.querySelectorAll('[data-automation-id=promptSelectionLabel]')].filter(c=>c.innerText.trim());if(chips.length){selected=chips.map(c=>c.innerText.trim()).join(', ');break;}}}"
+                  "return {value:e.value||'',text:e.innerText||'',selected,checked:e.checked,invalid:e.getAttribute('aria-invalid')==='true'}})()")
     def press(key, code=None, **params):
         cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=code or key, **params)
         cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=code or key)
@@ -328,6 +336,12 @@ def dispatch(request, helpers):
         raise ValueError("Observed Workday field changed")
     field = matches[0]
     if field["type"] == "combobox":
+        if operation == "fill" and field.get("widget") == "catalog":
+            retained = read(field)
+            if (isinstance(request.get("value"), str) and retained and not retained.get("invalid")
+                    and retained.get("selected") and not retained.get("value")
+                    and option_matches(retained["selected"], request["value"], field_label=field["label"])):
+                return {"verified": True, "already_retained": True}
         node = node_for(selector(field)); backend = cdp("DOM.describeNode", nodeId=node)["node"]["backendNodeId"]
         press("Escape")
         if field.get("widget") == "catalog":
@@ -340,7 +354,7 @@ def dispatch(request, helpers):
         else:
             click_node(backend)
         wait(0.2)
-        ownership = js("(()=>{const e=document.getElementById("+json.dumps(field["actual_id"])+");const visible=x=>x.getClientRects().length&&getComputedStyle(x).visibility!=='hidden';const owned=e?.getAttribute('aria-controls');if(owned){const popup=document.getElementById(owned);return !!popup&&visible(popup);}return [...document.querySelectorAll('[role=listbox],[role=menu]')].filter(visible).length===1;})()")
+        ownership = js("(()=>{const e=document.getElementById("+json.dumps(field["actual_id"])+");const visible=x=>x.getClientRects().length&&getComputedStyle(x).visibility!=='hidden'&&x.getAttribute('data-automation-id')!=='selectedItemList';const owned=e?.getAttribute('aria-controls');if(owned){const popup=document.getElementById(owned);return !!popup&&visible(popup);}return [...document.querySelectorAll('[role=listbox],[role=menu]')].filter(visible).length===1;})()")
         if ownership is not True:
             press("Escape")
             raise ValueError("Workday dropdown ownership is ambiguous")
@@ -351,7 +365,7 @@ def dispatch(request, helpers):
             remote = cdp("DOM.resolveNode", backendNodeId=node["backendDOMNodeId"])["object"]["objectId"]
             try:
                 owned = cdp("Runtime.callFunctionOn", objectId=remote,
-                    functionDeclaration="function(id){const e=document.getElementById(id);const visible=p=>p.getClientRects().length&&getComputedStyle(p).visibility!=='hidden';const controlled=e?.getAttribute('aria-controls');const popups=[...document.querySelectorAll('[role=listbox],[role=menu]')].filter(visible);const popup=controlled?document.getElementById(controlled):popups.length===1?popups[0]:null;return !!popup&&visible(popup)&&popup.contains(this);}",
+                    functionDeclaration="function(id){const e=document.getElementById(id);const visible=p=>p.getClientRects().length&&getComputedStyle(p).visibility!=='hidden'&&p.getAttribute('data-automation-id')!=='selectedItemList';const controlled=e?.getAttribute('aria-controls');const popups=[...document.querySelectorAll('[role=listbox],[role=menu]')].filter(visible);const popup=controlled?document.getElementById(controlled):popups.length===1?popups[0]:null;return !!popup&&visible(popup)&&popup.contains(this);}",
                     arguments=[{"value": field["actual_id"]}], returnByValue=True)["result"].get("value")
             finally:
                 cdp("Runtime.releaseObject", objectId=remote)

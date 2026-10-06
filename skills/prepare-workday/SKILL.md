@@ -51,6 +51,17 @@ Observed mechanics retained in `workday_runtime.py`:
   stable question label. Search catalogs may use `type="selectinput"`; typing a
   query is not a committed selection. Choose one exact approved visible option
   and verify the retained chip/selection within the owned popup.
+  Modern tenants also use `data-uxi-widget-type="selectinput"` on plain text
+  inputs. Read their selected chips only from the same multiselect container
+  and matching `data-uxi-multiselect-id`; empty prompt placeholders and search
+  text are not selections. A uniquely owned, valid, already retained chip may
+  be verified without reopening the catalog. Selected-item listboxes are not
+  search-result popups. Ambiguous popup ownership remains a mechanics handoff.
+- Required radio state may be on the radio group's owned `aria-required`
+  wrapper rather than each input. Do not treat these factual questions as
+  optional, or copy requiredness from a neighboring group. An exact observed
+  Workday Phone Number input paired with Country Phone Code uses the saved
+  national number, even when its native HTML input type is `text`.
 - Dates can be separate month/year/day inputs. Type native digit keys and
   verify the whole retained date after all segment edits and blur, then after
   saving or inspecting the native review. A later year edit can change a month. A verified YYYY-MM date supplies month/year,

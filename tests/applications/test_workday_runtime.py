@@ -165,6 +165,86 @@ def test_workday_search_catalog_requires_retained_committed_chip_not_query_text(
             assert inspect("document.querySelector('#selected').innerText") == ""
 
 
+MODERN_CATALOG_HTML = """<body><style>input,button{display:block;padding:8px;margin:8px} [hidden]{display:none!important}</style>
+<label for=source--source>How Did You Hear About Us?</label>
+<div data-automation-id=multiselectInputContainer>
+ <div><input id=source--source data-uxi-widget-type=selectinput data-uxi-multiselect-id=source aria-required=true
+ onkeydown="if(event.key==='ArrowDown')document.querySelector('#choices').hidden=false">
+ <div data-automation-id=promptSelectionLabel></div></div>
+ <ul role=listbox data-automation-id=selectedItemList data-uxi-multiselect-id=source>
+  <li><div role=option data-automation-id=selectedItem><p id=source-chip data-automation-id=promptOption></p></div></li>
+ </ul>
+</div>
+<label for=phoneNumber--countryPhoneCode>Country Phone Code</label>
+<div data-automation-id=multiselectInputContainer>
+ <input id=phoneNumber--countryPhoneCode data-uxi-widget-type=selectinput data-uxi-multiselect-id=phone aria-required=true>
+ <div data-automation-id=promptSelectionLabel></div>
+ <ul role=listbox data-automation-id=selectedItemList data-uxi-multiselect-id=phone>
+  <li><div role=option data-automation-id=selectedItem><p data-automation-id=promptOption>United States of America (+1)</p></div></li>
+ </ul>
+</div>
+<label for=phoneNumber--phoneNumber>Phone Number</label><input type=text id=phoneNumber--phoneNumber name=phoneNumber aria-required=true>
+<label for=other-phone>Phone Number</label><input type=text id=other-phone name=phoneNumber>
+<div role=listbox id=choices hidden><div role=option tabindex=0 onclick="document.querySelector('#source-chip').innerText='Employer Website';document.querySelector('[id=source--source]').value='';this.parentElement.hidden=true;window.selections++">Employer Website</div></div>
+<script>window.selections=0;window.inputEvents=0;document.addEventListener('input',()=>window.inputEvents++)</script></body>"""
+
+
+def test_workday_modern_catalog_retains_own_chip_and_national_phone_binding():
+    from jhb.applications.booklet import answer
+    from jhb.applications.planner import deterministic_plan
+    with fixture_runtime(MODERN_CATALOG_HTML) as (call, inspect, helpers, lane):
+        snapshot = call("observe")
+        fields = {f["ref"]: f for f in snapshot["fields"]}
+        source, country = fields["source--source"], fields["phoneNumber--countryPhoneCode"]
+        assert source["type"] == country["type"] == "combobox"
+        assert source["widget"] == country["widget"] == "catalog"
+        assert fields["phoneNumber--phoneNumber"]["type"] == "tel"
+        assert fields["other-phone"]["type"] == "text"
+        answers = {"identity.phone": answer("+1 555 123 4567", "Synthetic verified source"),
+                   "identity.phone_national": answer("(555) 123-4567", "Synthetic verified source")}
+        plan = deterministic_plan({"fields": [fields["phoneNumber--phoneNumber"]], "buttons": []}, answers)
+        assert plan["bindings"][0]["answer_key"] == "identity.phone_national"
+        assert call("fill", field=country, value="United States of America (+1)") == {"verified": True, "already_retained": True}
+        assert inspect("window.inputEvents") == 0 and inspect("window.selections") == 0
+        assert call("fill", field=source, value="Employer Website")["verified"] is True
+        assert inspect("window.selections") == 1
+        assert inspect("document.querySelector('[id=source--source]').value") == ""
+        assert call("fill", field=source, value="Employer Website")["already_retained"] is True
+        assert inspect("window.selections") == 1
+
+
+@pytest.mark.parametrize("damage", ["foreign_key", "query_only", "invalid"])
+def test_workday_catalog_reuse_rejects_mismatched_owner_search_query_or_invalid_chip(damage):
+    with fixture_runtime(MODERN_CATALOG_HTML) as (call, inspect, helpers, lane):
+        country = next(f for f in call("observe")["fields"] if f["ref"] == "phoneNumber--countryPhoneCode")
+        if damage == "foreign_key":
+            inspect("document.querySelector('[data-automation-id=selectedItemList][data-uxi-multiselect-id=phone]').setAttribute('data-uxi-multiselect-id','foreign')")
+        elif damage == "query_only":
+            inspect("document.querySelector('[id=phoneNumber--countryPhoneCode]').value='Uncommitted query'")
+        else:
+            inspect("document.querySelector('[id=phoneNumber--countryPhoneCode]').setAttribute('aria-invalid','true')")
+        with pytest.raises(ValueError, match="ownership is ambiguous"):
+            call("fill", field=country, value="United States of America (+1)")
+
+
+def test_workday_required_radio_group_is_owned_and_does_not_leak_to_optional_neighbors():
+    html = """<fieldset><legend id=prior-label>Previously employed?</legend>
+      <div aria-required=true aria-labelledby=prior-label>
+       <input id=prior-yes name=prior type=radio value=true><label for=prior-yes>Yes</label>
+       <input id=prior-no name=prior type=radio value=false><label for=prior-no>No</label>
+      </div></fieldset>
+      <fieldset><legend>Optional survey</legend><div aria-required=true aria-labelledby=other>
+       <input id=optional-yes name=optional type=radio value=true><label for=optional-yes>Yes</label>
+       <input id=optional-no name=optional type=radio value=false><label for=optional-no>No</label>
+       <input id=unrelated name=unrelated type=radio value=x><label for=unrelated>Different question</label>
+      </div></fieldset>"""
+    with fixture_runtime(html) as (call, inspect, helpers, lane):
+        fields = {f["ref"]: f for f in call("observe")["fields"]}
+        assert fields["workday-radio:prior"]["required"] is True
+        assert fields["workday-radio:optional"]["required"] is False
+        assert fields["workday-radio:unrelated"]["required"] is False
+
+
 def test_workday_empty_education_section_adds_approved_rows_without_guessing_other_add_buttons():
     html = "<section><h2>Education</h2><button onclick=\"this.insertAdjacentHTML('beforebegin','<input id=education-0--schoolName aria-label=School>')\">Add</button></section><section><h2>Work Experience</h2><button onclick='window.wrong++'>Add</button></section><script>window.wrong=0</script>"
     with fixture_runtime(html) as (call, inspect, helpers, lane):

@@ -269,3 +269,18 @@ Ashby radio selection, unchanged successful actions without activation, a second
 timeout, detached controls, target/job/guard changes, and an unknown delivered
 mouse-press outcome. The new automatic recovery still requires live validation;
 the motivating failure is not evidence of a successful live repair.
+
+### Workday modern My Information controls
+
+An explicitly authorized LSEG account was verified through its official email
+and reused in the exact application tab. Read-only live inspection of My
+Information found plain-text inputs marked `data-uxi-widget-type=selectinput`,
+selected chips in a matching multiselect list, phone input typed as text, and
+requiredness on the owned previous-employment radio wrapper. The adapter now
+recognizes these control shapes. Synthetic browser checks cover committed chip
+reuse, foreign-list rejection, uncommitted queries, invalid values, native new
+selection with other selected-item lists present, national phone binding, and
+required radio ownership. Account activation and first-page inspection do not
+validate completion or submission of the Workday wizard. Both global capability
+flags remain disabled; later pages and final retained-document auditing remain
+to be validated independently.
