@@ -44,6 +44,39 @@ def _same_native_number(actual, expected):
         return False
 
 
+def _retained_question_matches(record, field, inventory):
+    """Recognize only the preparer's exact indexed education decoration.
+
+    Custom answers keep the native question in the complete inventory. That
+    evidence, including source and observed choices, must still match before
+    its display-only row suffix can be removed for planner binding.
+    """
+    if record.get("ref") != field.get("ref"):
+        return False
+    question = record.get("question", "")
+    if normalize(question) == normalize(field.get("label", "")):
+        return True
+    row = re.fullmatch(r"(?:school|degree|discipline|start_date|end_date)--(\d+)", str(field.get("ref", "")))
+    if not row or question != f"{field.get('label', '')} (education record {int(row[1])+1})":
+        return False
+    if not str(record.get("key", "")).startswith("custom."):
+        return True
+    originals = [item for item in inventory if item.get("ref") == field["ref"]]
+    if len(originals) != 1:
+        return False
+    original = originals[0]
+    return (original.get("question") == field["label"]
+            and original.get("type") == field.get("type")
+            and bool(original.get("required")) == bool(field.get("required"))
+            and original.get("calendar_format") == field.get("calendar_format")
+            and (original.get("description") or "") == (field.get("description") or "")
+            and bool(original.get("description_truncated")) == bool(field.get("description_truncated"))
+            and original.get("choices", []) == [option["label"] for option in field.get("options", [])]
+            and original.get("status") == "answered"
+            and original.get("answer_key") == record.get("key")
+            and bool(record.get("source")) and original.get("source") == record["source"])
+
+
 def _native_form_submit(helpers, button, approved_refs, board="greenhouse"):
     """Read the exact AX node's native form owner, never infer from its label."""
     if not str(button.get("ref", "")).isdigit() or int(button["ref"]) <= 0:
@@ -281,17 +314,19 @@ def _checks(request, helpers, packet, attempt):
         return {"state": snapshot["handoff"], "reason": snapshot["reason"], "click_started": False}
     annotate_work_country(snapshot, packet.get("job", {}))
     records = packet.get("filled", [])
+    inventory = packet.get("review_inventory", {}).get("fields", [])
     approved = {r["key"]: answer(r["value"], r.get("source")) for r in records}
     for r in records:
         if str(r["key"]).startswith("custom."):
-            approved[r["key"]].update(question=r["question"], field_ref=r["ref"])
+            native = [field for field in snapshot["fields"] if _retained_question_matches(r, field, inventory)]
+            question = native[0]["label"] if len(native) == 1 else r["question"]
+            approved[r["key"]].update(question=question, field_ref=r["ref"])
             if r.get("user_override") is True:
                 approved[r["key"]]["user_override"] = True
             if r.get("country_context"):
                 approved[r["key"]]["country_context"] = r["country_context"]
     if (attempt.get("authorization_scope") == "one exact application explicitly approved in the local review portal"
             or attempt.get("review_binding")):
-        inventory = packet.get("review_inventory", {}).get("fields", [])
         for field in snapshot["fields"]:
             matches = [f for f in inventory if
                        (f.get("ref") == field.get("ref") or field.get("type") == "file" and f.get("type") == "file")
@@ -317,8 +352,7 @@ def _checks(request, helpers, packet, attempt):
     for field in snapshot["fields"]:
         if field["type"] == "file" and not field["ref"].startswith("uploaded:") and normalize(field["label"]) in attached_labels:
             continue
-        matches = [r for r in records if r.get("ref") == field["ref"] and
-                   normalize(re.sub(r" \(education record \d+\)$", "", r.get("question", ""))) == normalize(field["label"])]
+        matches = [r for r in records if _retained_question_matches(r, field, inventory)]
         # Uploading changes the native ref into an attached-file virtual ref.
         if field["type"] == "file":
             key = key_for_field(field, approved)
