@@ -286,11 +286,18 @@ RELATIVE_AUTHORIZATION = frozenset({
 RELATIVE_SPONSORSHIP = frozenset({
     "will you now or in the future require sponsorship for employment visa status in this country?",
     "will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?",
+    "will you now or in the future require visa sponsorship to work in the country where this position is located?",
 })
 _GRADUATION_LABELS = frozenset({"what is your expected graduation date?",
     "what is your expected graduation month & year?", "what is your expected graduation month and year?"})
 _START_LABELS = frozenset({"when are you available to start work?", "when can you start a new role?",
-                         "how soon are you able to start a new role?"})
+                         "how soon are you able to start a new role?",
+                         "if offered a position, what is your ideal start-date?"})
+INTERVIEW_RECORDING_DESCRIPTION = (
+    "About Interview Recording\n\nTo keep your interview experience seamless and distraction-free, we use an AI Notetaker "
+    "to record and transcribe our interviews. This helps interviewers focus fully on the conversation and ensures your "
+    "responses are captured accurately. The recording will only be used internally for evaluation. If you would prefer "
+    "not to be recorded, you can opt out on this page. Opting out will not impact your candidacy in any way.")
 _DISCLOSURES = {
     "how would you describe your gender identity?": "disclosure.gender",
     "how would you describe your sexual orientation?": "disclosure.sexual_orientation",
@@ -321,7 +328,8 @@ def _office_willingness_question(label):
     days = r"(?:[1-5]|one|two|three|four|five) days(?: per | a )week"
     schedule = r"(?:"+days+r"|on (?:mondays|tuesdays|wednesdays|thursdays|fridays)(?: and (?:mondays|tuesdays|wednesdays|thursdays|fridays))? \([1-5] days/week\))"
     return bool(re.fullmatch(r"are you (?:able|willing) to work (?:"+days+r" )?(?:from|in) our [a-z ,.-]+ office(?: "+schedule+r")?\?", label)
-        or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?")
+        or label == "are you able and willing to report to the office location listed in the job description, in a hybrid capacity?"
+        or label == "are you open to a hybrid schedule with in-office days on monday, wednesday, and friday?")
 
 
 def catalog_basis(field, answers):
@@ -457,7 +465,22 @@ def _common_projection(field, job, answers):
         if len(matches) == 1:
             return result(matches if kind == "multiselect" else matches[0], records, criterion)
         return None
+    if label == "legal name" and kind == "text" and not field.get("description"):
+        item = _verified(answers, "identity.full_name")
+        if item and isinstance(item.get("value"), str) and item["value"].strip():
+            return result(item["value"], {"identity.full_name": item}, "Verified full name for an unqualified legal-name field")
+    if (label == "interview recording consent" and kind == "radio"
+            and field.get("ref") == "ashby:_systemfield_recording_consent"
+            and normalize(field.get("description") or "") == normalize(INTERVIEW_RECORDING_DESCRIPTION)
+            and sorted(map(normalize, choices)) == ["opt out of recording", "yes, i consent to be recorded"]):
+        item = _verified(answers, "standing.interview_recording")
+        if item and type(item.get("value")) is bool:
+            return chosen({"yes, i consent to be recorded" if item["value"] else "opt out of recording"},
+                          {"standing.interview_recording": item},
+                          "Explicit interview-recording preference for the observed internal recording/transcription consent")
     if label in _GRADUATION_LABELS | _START_LABELS:
+        if label == "if offered a position, what is your ideal start-date?" and field.get("description"):
+            return None
         key = "education.expected_graduation_date" if label in _GRADUATION_LABELS else "preferences.start_date"
         item = _verified(answers, key)
         bounds = _bounds(item.get("value")) if item else None
@@ -562,7 +585,7 @@ def _common_projection(field, job, answers):
     relocation = _verified(answers, "preferences.relocation")
     if select and office and office["value"] is True and relocation and relocation["value"] is True:
         willingness = _office_willingness_question(label)
-        if willingness:
+        if willingness and not field.get("description"):
             return chosen({"yes"}, {"standing.office_willingness": office, "preferences.relocation": relocation},
                           "Explicit office and relocation willingness; no assertion of current residence or immediate work eligibility")
         if (label == "please select all office locations of interest." and kind == "multiselect"

@@ -340,6 +340,11 @@ def key_for_field(field, answers):
         return "preferences.start_date"
     if label in {"your current location", "current location"} and "preferences.application_city" in answers:
         return "preferences.application_city"
+    if (label == "do you have any initial compensation expectations?" and field.get("type") in {"text", "number"}
+            and not field.get("description") and not field.get("description_truncated")
+            and answers.get("preferences.salary", {}).get("status") == "verified"
+            and answers["preferences.salary"].get("source")):
+        return "preferences.salary"
     if label in {"desired salary", "salary expectations", "what are your yearly salary expectations?", "what are your salary expectations?", "what are your base salary expectations?", "what is the annual salary or range you are targeting?"} and "preferences.salary" in answers:
         return "preferences.salary"
     education = re.fullmatch(r"are you currently attending or a recent graduate of (?:the )?(.+)\?", label)

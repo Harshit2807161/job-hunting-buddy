@@ -158,6 +158,15 @@ def common_answers(book: dict, job=None) -> dict:
           and re.search(r"\b(?:office|onsite|on-site|hybrid)\b", normalize(office))):
         values["standing.office_willingness"] = answer(True, {"policy": office,
             "method": "explicit_saved_office_willingness"})
+    recording = policy.get("interview_recording", {})
+    compliance = policy.get("application_compliance", {})
+    if isinstance(recording, dict) and type(recording.get("value")) is bool and recording.get("source"):
+        values["standing.interview_recording"] = answer(recording["value"], recording["source"])
+    elif (isinstance(compliance, dict) and compliance.get("value") is True
+          and isinstance(compliance.get("source"), str)
+          and re.search(r"\b(?:AI transcription|interview recording)\b", compliance["source"], re.I)):
+        # Generic acceptance of application terms does not authorize recording.
+        values["standing.interview_recording"] = answer(True, compliance["source"])
     salary = policy.get("salary_expectation", {})
     if (salary.get("source") and salary.get("rule") == "arithmetic midpoint of advertised base salary range"):
         values["standing.salary_policy"] = answer(True, salary["source"])
