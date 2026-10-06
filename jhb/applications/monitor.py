@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -392,7 +393,10 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
         path.touch(mode=0o600, exist_ok=True)
         path.chmod(0o600)
     environment = {key: value for key, value in os.environ.items() if key not in {"OPENAI_API_KEY", "CODEX_API_KEY"}}
-    process = None
+    from .owned_processes import OwnedProcesses, TOKEN_ENV
+    process = owned = None
+    token = secrets.token_hex(32)
+    environment[TOKEN_ENV] = token
     started = time.monotonic()
     outcome = {"state": "failed", "returncode": None}
     try:
@@ -401,13 +405,16 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
                 or current["authorization_id"] != auth["authorization_id"] or timeout <= 0):
             return {"state": "authorization_ended", "returncode": None}
         with paths[0].open("w") as out, paths[1].open("w") as err:
+            process_started_at = time.time()
             process = subprocess.Popen(command, cwd=config.ROOT, env=environment,
                                        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                                        stdout=out, stderr=err, text=True, start_new_session=True)
+            owned = OwnedProcesses(process, token, process_started_at)
             if input_text is not None:
                 process.stdin.write(input_text)
                 process.stdin.close()
             while process.poll() is None:
+                owned.scan()
                 current = authorization(auth_path)
                 if (current is None or current.get("repair_authority") is not True
                         or current["authorization_id"] != auth["authorization_id"]):
@@ -425,24 +432,10 @@ def bounded(command, prefix, auth, timeout, *, input_text=None, auth_path=None):
         if process is not None:
             cleanup_errors = []
             try:
-                _signal_owned_group(process, signal.SIGTERM)
-            except OSError as exc:
-                cleanup_errors.append(type(exc).__name__)
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-            except OSError as exc:
-                cleanup_errors.append(type(exc).__name__)
-            # Reap/stop descendants too, including background commands whose
-            # Codex parent has already exited; they must not outlive the lane.
-            try:
-                _signal_owned_group(process, signal.SIGKILL)
-            except OSError as exc:
-                cleanup_errors.append(type(exc).__name__)
-            try:
-                process.wait(timeout=3)
-            except (OSError, subprocess.TimeoutExpired) as exc:
+                if owned is None:
+                    raise RuntimeError("Repair process ownership was not established")
+                owned.cleanup()
+            except Exception as exc:
                 cleanup_errors.append(type(exc).__name__)
             if cleanup_errors:
                 # Never release quarantine as a successful repair when group

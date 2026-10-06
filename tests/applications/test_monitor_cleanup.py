@@ -78,29 +78,38 @@ def test_other_failures_never_become_proof_of_cleanup(monkeypatch, cause):
 @pytest.mark.parametrize("members,expected", [("1 1 Ss\n54322 54321 Z\n", "complete"),
                                                ("1 1 Ss\n54322 54321 S\n", "failed")])
 def test_bounded_cleanup_records_failure_instead_of_success_or_exception(setup, monkeypatch, members, expected):
+    from jhb.applications import owned_processes
     monitor.directory().mkdir()
-    signals = []
+    cleanups = []
     monkeypatch.setattr(monitor.subprocess, "Popen", lambda *args, **kwargs: ReapedProcess())
-    monkeypatch.setattr(monitor.os, "killpg", permission(signals))
-    snapshot(monkeypatch, members)
+    class Tracker:
+        def __init__(self, *args): pass
+        def scan(self): pass
+        def cleanup(self):
+            cleanups.append(True)
+            if expected == "failed":
+                raise owned_processes.CleanupUnproven("Synthetic live new-session child remains")
+    monkeypatch.setattr(owned_processes, "OwnedProcesses", Tracker)
     result = monitor.bounded(["synthetic"], monitor.directory() / "cleanup", monitor.authorization(), 5)
     assert result["state"] == expected
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert cleanups == [True]
     if expected == "failed":
         assert result["error_kind"] == "ProcessCleanupError"
-        assert result["cleanup_errors"] == ["PermissionError"]
+        assert result["cleanup_errors"] == ["CleanupUnproven"]
 
 
 def test_unproven_cleanup_preserves_repair_quarantine_and_skips_validation(setup, monkeypatch):
+    from jhb.applications import owned_processes
     failure(setup)
-    signals = []
+    cleanups = []
     monkeypatch.setattr(monitor.subprocess, "Popen", lambda *args, **kwargs: ReapedProcess())
-    # Both denied signals still get attempted. Neither can be excused by a live group.
-    def denied(pid, sig):
-        signals.append(sig)
-        raise PermissionError(errno.EPERM, "synthetic denied signal")
-    monkeypatch.setattr(monitor.os, "killpg", denied)
-    snapshot(monkeypatch, "1 1 Ss\n54322 54321 S\n")
+    class Tracker:
+        def __init__(self, *args): pass
+        def scan(self): pass
+        def cleanup(self):
+            cleanups.append(True)
+            raise owned_processes.CleanupUnproven("Synthetic new-session child ownership changed")
+    monkeypatch.setattr(owned_processes, "OwnedProcesses", Tracker)
     calls = []
     def run(command, prefix, auth, timeout, **kwargs):
         calls.append(command)
@@ -110,7 +119,7 @@ def test_unproven_cleanup_preserves_repair_quarantine_and_skips_validation(setup
     result = monitor.once(run=run, inspect_repository=repo)
     assert result["state"] == "quarantined"
     assert len(calls) == 1
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert cleanups == [True]
     pending = monitor.directory() / "repair-pending.json"
     assert pending.exists()
     evidence = json.loads(pending.read_text())

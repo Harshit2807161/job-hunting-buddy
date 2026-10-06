@@ -82,8 +82,20 @@ pushes, merges or changes `main` or `v0.1.0`. There are at most eight distinct
 repair attempts per authorization. Each Codex process has a maximum 15-minute
 runtime, further reduced by remaining authorization time. Compile, full pytest
 and diff checks have limits of 120, 1200 and 30 seconds respectively; the complete
-validation budget is reserved before starting a repair. Owned process groups are
-terminated and reaped on timeout, pause or revocation.
+validation budget is reserved before starting a repair. The child runs focused
+synthetic regressions; the supervisor owns the single full-suite pass.
+
+Repair tools can start nested commands in separate sessions. The supervisor
+tracks descendants by PID and creation time while the command runs. A unique
+inherited command token identifies quickly reparented children during cleanup;
+their environments are not logged. Cleanup freezes verified owned processes,
+rechecks their descendants, stops children before the leader, and reaps the
+leader. It signals individual identities rather than a possibly shared or reused
+process-group ID. Unrelated processes remain untouched. PID reuse, unreadable
+ownership or surviving children leaves the repair quarantined, including after
+normal child exit, timeout, pause or revocation. This uses `psutil`, declared in
+the applications dependencies. Repair commands must preserve the inherited
+ownership token in subprocess environments.
 
 ## Serialization and quarantine
 
